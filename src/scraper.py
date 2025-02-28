@@ -63,6 +63,19 @@ class ProFootballReferenceScraper:
         Returns:
             BeautifulSoup object
         """
+        # Calculate the raw file path
+        url_path = url.replace(self.base_url, "").replace("/", "_").strip("_")
+        if not url_path:
+            url_path = "index"
+        raw_path = os.path.join(self.data_dir, "raw", f"{url_path}.html")
+        
+        # Check if the raw file already exists
+        if os.path.exists(raw_path):
+            logger.info(f"Using existing file {raw_path}")
+            with open(raw_path, "r", encoding="utf-8") as f:
+                html_content = f.read()
+            return BeautifulSoup(html_content, 'lxml')
+        
         # Add jitter to delay to avoid detection
         time.sleep(delay + random.uniform(0.5, 1.5))
         
@@ -72,10 +85,6 @@ class ProFootballReferenceScraper:
             response.raise_for_status()
             
             # Save raw HTML
-            url_path = url.replace(self.base_url, "").replace("/", "_").strip("_")
-            if not url_path:
-                url_path = "index"
-            raw_path = os.path.join(self.data_dir, "raw", f"{url_path}.html")
             with open(raw_path, "w", encoding="utf-8") as f:
                 f.write(response.text)
                 
@@ -112,11 +121,12 @@ class ProFootballReferenceScraper:
         for th in table.find('thead').find_all('th'):
             # Get the column name
             col_name = th.get_text(strip=True)
-            # If it's a player column, also extract player_id
-            if th.find('a') and 'href' in th.find('a').attrs and '/players/' in th.find('a')['href']:
-                if headers:  # Only add player_id if we already have at least one column
-                    headers.append('player_id')
             headers.append(col_name)
+        
+        # The table has a complex header structure with category headers and actual column headers
+        # We need to use only the actual column headers (the last 33 headers)
+        if len(headers) > 33:
+            headers = headers[-33:]
         
         # Extract table rows
         rows = []
@@ -127,13 +137,8 @@ class ProFootballReferenceScraper:
                 
             row = []
             for td in tr.find_all(['th', 'td']):
-                # Extract player ID from links
-                if td.find('a') and 'href' in td.find('a').attrs:
-                    href = td.find('a')['href']
-                    if '/players/' in href:
-                        player_id = href.split('/')[-1].split('.')[0]
-                        row.append(player_id)
                 row.append(td.get_text(strip=True))
+            
             rows.append(row)
         
         # Create DataFrame
@@ -276,6 +281,17 @@ class ProFootballReferenceScraper:
                 row = [td.get_text(strip=True) for td in tr.find_all(['th', 'td'])]
                 rows.append(row)
             
+            # Check if we have a mismatch between headers and data columns
+            if rows and len(headers) != len(rows[0]):
+                # If there's a mismatch, adjust headers to match the data
+                if len(headers) > len(rows[0]):
+                    # If we have more headers than columns, take the last N headers
+                    headers = headers[-len(rows[0]):]
+                else:
+                    # If we have more columns than headers, truncate the data
+                    for i in range(len(rows)):
+                        rows[i] = rows[i][:len(headers)]
+            
             df = pd.DataFrame(rows, columns=headers)
             
             # Add year column
@@ -324,6 +340,17 @@ class ProFootballReferenceScraper:
             for tr in table.find('tbody').find_all('tr'):
                 row = [td.get_text(strip=True) for td in tr.find_all(['th', 'td'])]
                 rows.append(row)
+            
+            # Check if we have a mismatch between headers and data columns
+            if rows and len(headers) != len(rows[0]):
+                # If there's a mismatch, adjust headers to match the data
+                if len(headers) > len(rows[0]):
+                    # If we have more headers than columns, take the last N headers
+                    headers = headers[-len(rows[0]):]
+                else:
+                    # If we have more columns than headers, truncate the data
+                    for i in range(len(rows)):
+                        rows[i] = rows[i][:len(headers)]
             
             df = pd.DataFrame(rows, columns=headers)
             
