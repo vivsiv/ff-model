@@ -108,7 +108,15 @@ class ProFootballReferenceScraper:
             return pd.DataFrame()
         
         # Extract table headers
-        headers = [th.text for th in table.find('thead').find_all('th')]
+        headers = []
+        for th in table.find('thead').find_all('th'):
+            # Get the column name
+            col_name = th.get_text(strip=True)
+            # If it's a player column, also extract player_id
+            if th.find('a') and 'href' in th.find('a').attrs and '/players/' in th.find('a')['href']:
+                if headers:  # Only add player_id if we already have at least one column
+                    headers.append('player_id')
+            headers.append(col_name)
         
         # Extract table rows
         rows = []
@@ -125,11 +133,11 @@ class ProFootballReferenceScraper:
                     if '/players/' in href:
                         player_id = href.split('/')[-1].split('.')[0]
                         row.append(player_id)
-                row.append(td.text.strip())
+                row.append(td.get_text(strip=True))
             rows.append(row)
         
         # Create DataFrame
-        df = pd.DataFrame(rows)
+        df = pd.DataFrame(rows, columns=headers)
         
         # Clean up column names and data
         if not df.empty:
@@ -177,36 +185,62 @@ class ProFootballReferenceScraper:
         else:
             player_name = "Unknown"
         
-        # Convert table to DataFrame
-        try:
-            dfs = pd.read_html(str(table))
-            if not dfs:
-                return pd.DataFrame()
+        # Extract headers
+        headers = []
+        header_row = table.find('thead')
+        if header_row:
+            # Handle multi-level headers if present
+            header_rows = header_row.find_all('tr')
+            if len(header_rows) > 1:
+                # Multi-level headers
+                top_headers = [th.get_text(strip=True) for th in header_rows[0].find_all('th')]
+                bottom_headers = [th.get_text(strip=True) for th in header_rows[1].find_all('th')]
+                
+                # Combine multi-level headers
+                current_top = ""
+                for i, header in enumerate(top_headers):
+                    if header:
+                        current_top = header
+                    if i < len(bottom_headers):
+                        if bottom_headers[i]:
+                            headers.append(f"{current_top}_{bottom_headers[i]}" if current_top else bottom_headers[i])
+                        else:
+                            headers.append(current_top)
+            else:
+                # Single level headers
+                headers = [th.get_text(strip=True) for th in header_rows[0].find_all('th')]
+        
+        # Extract rows
+        rows = []
+        for tr in table.find('tbody').find_all('tr'):
+            # Skip header rows
+            if 'class' in tr.attrs and ('thead' in tr.attrs['class'] or 'divider' in tr.attrs['class']):
+                continue
             
-            df = dfs[0]
-            
-            # Clean up DataFrame
-            # Remove multi-level column headers if present
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = ['_'.join(col).strip() for col in df.columns.values]
-            
-            # Remove rows that are headers or have NaN in date column
+            # Extract row data
+            row = [td.get_text(strip=True) for td in tr.find_all(['th', 'td'])]
+            if row and len(row) > 1:  # Skip empty rows
+                rows.append(row)
+        
+        # Create DataFrame
+        df = pd.DataFrame(rows, columns=headers)
+        
+        # Clean up DataFrame
+        # Remove rows that are headers or have NaN in date column
+        if 'Date' in df.columns:
             df = df[df['Date'].notna()]
-            
-            # Add player information
-            df['Player_ID'] = player_id
-            df['Player_Name'] = player_name
-            df['Season'] = year
-            
-            # Save to CSV
-            output_path = os.path.join(self.data_dir, "processed", f"game_logs_{player_id}_{year}.csv")
-            df.to_csv(output_path, index=False)
-            logger.info(f"Saved game logs for {player_id} ({player_name}) in {year} to {output_path}")
-            
-            return df
-        except Exception as e:
-            logger.error(f"Error processing game logs for {player_id} in {year}: {e}")
-            return pd.DataFrame()
+        
+        # Add player information
+        df['Player_ID'] = player_id
+        df['Player_Name'] = player_name
+        df['Season'] = year
+        
+        # Save to CSV
+        output_path = os.path.join(self.data_dir, "processed", f"game_logs_{player_id}_{year}.csv")
+        df.to_csv(output_path, index=False)
+        logger.info(f"Saved game logs for {player_id} ({player_name}) in {year} to {output_path}")
+        
+        return df
     
     def scrape_team_stats(self, year: int) -> pd.DataFrame:
         """
@@ -231,13 +265,18 @@ class ProFootballReferenceScraper:
             logger.error(f"Team stats table not found for {year}")
             return pd.DataFrame()
         
+        # Extract headers
+        headers = [th.get_text(strip=True) for th in table.find('thead').find_all('th')]
+        
         # Convert table to DataFrame
         try:
-            dfs = pd.read_html(str(table))
-            if not dfs:
-                return pd.DataFrame()
+            # Instead of using pd.read_html, extract the data manually to ensure proper headers
+            rows = []
+            for tr in table.find('tbody').find_all('tr'):
+                row = [td.get_text(strip=True) for td in tr.find_all(['th', 'td'])]
+                rows.append(row)
             
-            df = dfs[0]
+            df = pd.DataFrame(rows, columns=headers)
             
             # Add year column
             df['Season'] = year
@@ -275,13 +314,18 @@ class ProFootballReferenceScraper:
             logger.error(f"Advanced team stats table not found for {year}")
             return pd.DataFrame()
         
+        # Extract headers
+        headers = [th.get_text(strip=True) for th in table.find('thead').find_all('th')]
+        
         # Convert table to DataFrame
         try:
-            dfs = pd.read_html(str(table))
-            if not dfs:
-                return pd.DataFrame()
+            # Instead of using pd.read_html, extract the data manually to ensure proper headers
+            rows = []
+            for tr in table.find('tbody').find_all('tr'):
+                row = [td.get_text(strip=True) for td in tr.find_all(['th', 'td'])]
+                rows.append(row)
             
-            df = dfs[0]
+            df = pd.DataFrame(rows, columns=headers)
             
             # Add year column
             df['Season'] = year
