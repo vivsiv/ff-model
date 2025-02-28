@@ -1,0 +1,174 @@
+# Cell 1 - Markdown
+# # Fantasy Football Data Collection
+# 
+# This notebook focuses on collecting NFL player and team statistics for fantasy football analysis.
+
+# Cell 2 - Markdown
+# ## Setup
+# 
+# First, let's import the necessary libraries and set up our environment.
+
+# Cell 3 - Code
+# Import necessary libraries
+import os
+import sys
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+# Add the src directory to the path so we can import our modules
+sys.path.append('../')
+from src.scraper import ProFootballReferenceScraper
+
+# Cell 4 - Markdown
+# ## Data Collection
+# 
+# Let's use the ProFootballReferenceScraper to collect NFL player and team statistics.
+
+# Cell 5 - Code
+# Initialize the scraper
+scraper = ProFootballReferenceScraper(data_dir='../data')
+
+# Check if data directory exists, create if not
+os.makedirs('../data/raw', exist_ok=True)
+os.makedirs('../data/processed', exist_ok=True)
+os.makedirs('../data/final', exist_ok=True)
+
+# Cell 6 - Code
+# Define the years to collect data for
+start_year = 2020
+end_year = 2024  # Current year
+
+# Collect player season stats for each year
+for year in range(start_year, end_year + 1):
+    print(f"Collecting player stats for {year}...")
+    scraper.scrape_player_stats(year)
+    
+    # Add a small delay to avoid overloading the server
+    import time
+    time.sleep(2)
+
+# Cell 7 - Code
+# Collect team stats for each year
+for year in range(start_year, end_year + 1):
+    print(f"Collecting team stats for {year}...")
+    scraper.scrape_team_stats(year)
+    
+    # Add a small delay to avoid overloading the server
+    import time
+    time.sleep(2)
+
+# Cell 8 - Markdown
+# ## Data Exploration
+# 
+# Let's explore the collected data to make sure it looks good.
+
+# Cell 9 - Code
+# List the files in the raw data directory
+raw_files = os.listdir('../data/raw')
+print(f"Found {len(raw_files)} files in the raw data directory:")
+for file in raw_files:
+    print(f" - {file}")
+
+# Cell 10 - Code
+# Load and preview a player stats file
+player_files = [f for f in raw_files if 'player_stats' in f]
+if player_files:
+    latest_player_file = sorted(player_files)[-1]
+    print(f"Loading {latest_player_file}...")
+    
+    player_data = pd.read_csv(f'../data/raw/{latest_player_file}')
+    print(f"Shape: {player_data.shape}")
+    
+    # Display the first few rows
+    player_data.head()
+
+# Cell 11 - Code
+# Load and preview a team stats file
+team_files = [f for f in raw_files if 'team_stats' in f]
+if team_files:
+    latest_team_file = sorted(team_files)[-1]
+    print(f"Loading {latest_team_file}...")
+    
+    team_data = pd.read_csv(f'../data/raw/{latest_team_file}')
+    print(f"Shape: {team_data.shape}")
+    
+    # Display the first few rows
+    team_data.head()
+
+# Cell 12 - Markdown
+# ## Data Quality Check
+# 
+# Let's check the quality of the collected data.
+
+# Cell 13 - Code
+# Check for missing values in player data
+if 'player_data' in locals():
+    print("Missing values in player data:")
+    print(player_data.isnull().sum())
+    
+    # Check data types
+    print("\nData types in player data:")
+    print(player_data.dtypes)
+    
+    # Check for duplicates
+    print(f"\nDuplicate rows in player data: {player_data.duplicated().sum()}")
+
+# Cell 14 - Code
+# Check for missing values in team data
+if 'team_data' in locals():
+    print("Missing values in team data:")
+    print(team_data.isnull().sum())
+    
+    # Check data types
+    print("\nData types in team data:")
+    print(team_data.dtypes)
+    
+    # Check for duplicates
+    print(f"\nDuplicate rows in team data: {team_data.duplicated().sum()}")
+
+# Cell 15 - Markdown
+# ## Basic Visualization
+# 
+# Let's create some basic visualizations to get a feel for the data.
+
+# Cell 16 - Code
+# Visualize player stats if available
+if 'player_data' in locals():
+    # Filter to relevant positions
+    fantasy_positions = ['QB', 'RB', 'WR', 'TE']
+    fantasy_data = player_data[player_data['position'].isin(fantasy_positions)]
+    
+    # Plot count by position
+    plt.figure(figsize=(10, 6))
+    position_counts = fantasy_data['position'].value_counts()
+    sns.barplot(x=position_counts.index, y=position_counts.values)
+    plt.title('Number of Players by Position')
+    plt.xlabel('Position')
+    plt.ylabel('Count')
+    plt.show()
+
+# Cell 17 - Code
+# Visualize team stats if available
+if 'team_data' in locals() and 'total_yards' in team_data.columns:
+    # Plot team total yards
+    plt.figure(figsize=(12, 8))
+    team_yards = team_data.sort_values('total_yards', ascending=False)
+    sns.barplot(x='team', y='total_yards', data=team_yards)
+    plt.title('Total Yards by Team')
+    plt.xlabel('Team')
+    plt.ylabel('Total Yards')
+    plt.xticks(rotation=90)
+    plt.tight_layout()
+    plt.show()
+
+# Cell 18 - Markdown
+# ## Next Steps
+# 
+# Now that we've collected the data, we can:
+# 
+# 1. Process the raw data to create clean datasets
+# 2. Engineer features for fantasy football analysis
+# 3. Build predictive models for fantasy points
+# 4. Make predictions for the 2025 season
