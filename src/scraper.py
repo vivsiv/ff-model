@@ -22,7 +22,7 @@ from tqdm import tqdm
 
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    format='%(asctime)s - %(name)s - %(levelname)s - %(funcName)s - %(message)s',
     handlers=[
         logging.FileHandler("scraper.log"),
         logging.StreamHandler()
@@ -51,10 +51,11 @@ class ProFootballReferenceScraper:
         })
 
         # Create data directories if they don't exist
+        os.makedirs(self.data_dir, exist_ok=True)
         os.makedirs(self.raw_data_dir, exist_ok=True)
         os.makedirs(self.processed_data_dir, exist_ok=True)
 
-    def _get_soup(self, url: str, delay: float = 3.0, overwrite: bool = False) -> BeautifulSoup:
+    def _get_soup(self, url: str, raw_file_name: str, delay: float = 3.0, overwrite: bool = False) -> BeautifulSoup:
         """
         Get BeautifulSoup object from URL with rate limiting.
 
@@ -66,15 +67,11 @@ class ProFootballReferenceScraper:
         Returns:
             BeautifulSoup object
         """
-        # Calculate the raw file path
-        url_path = url.replace(self.base_url, "").replace("/", "_").strip("_")
-        if not url_path:
-            url_path = "index"
-        raw_path = os.path.join(self.raw_data_dir, f"{url_path}.html")
+        raw_path = os.path.join(self.raw_data_dir, f"{raw_file_name}.html")
 
         # Check if the raw file already exists
         if os.path.exists(raw_path) and not overwrite:
-            logger.info(f"Using existing file {raw_path}")
+            logger.info(f"Using existing raw data file {raw_path}")
             with open(raw_path, "r", encoding="utf-8") as f:
                 html_content = f.read()
             return BeautifulSoup(html_content, 'lxml')
@@ -107,7 +104,7 @@ class ProFootballReferenceScraper:
             DataFrame with player fantasy stats
         """
         url = f"{self.base_url}/years/{year}/fantasy.htm"
-        soup = self._get_soup(url)
+        soup = self._get_soup(url, f"{year}_player_fantasy_stats")
 
         if not soup:
             logger.error(f"Failed to get data for {year}")
@@ -119,241 +116,195 @@ class ProFootballReferenceScraper:
             logger.error(f"Fantasy table not found for {year}")
             return pd.DataFrame()
 
-        # Extract columns
+        # Extract columns from thead elements
         columns = []
         for th in table.find('thead').find_all('th'):
             col_name = th.get_text(strip=True)
             columns.append(col_name)
 
-        data = []
+        # Extract data from tbody elements
+        rows = []
         for tr in table.find('tbody').find_all('tr'):
             # Skip column names
             if 'class' in tr.attrs and 'thead' in tr.attrs['class']:
                 continue
 
             row = [td.get_text(strip=True) for td in tr.find_all(['th', 'td'])]
-            data.append(row)
+            rows.append(row)
 
-        if data:
+        if len(rows) > 0:
             # Adjust columns to match whats in the data, this ignores category headers that precede the actual data.
-            actual_column_count = len(data[0])
+            actual_column_count = len(rows[0])
             # If we have more headers than actual columns, take the last N headers
             if len(columns) > actual_column_count:
                 original_count = len(columns)
                 columns = columns[-actual_column_count:]
                 logger.info(f"Adjusted headers from {original_count} to {actual_column_count}")
+            elif len(columns) < actual_column_count:
+                # Add dummy column names for extra data columns
+                extra_cols_needed = actual_column_count - len(columns)
+                for i in range(extra_cols_needed):
+                    columns.append(f"Unknown_Col_{i+1}")
+                logger.info(f"Added {extra_cols_needed} dummy columns")
+            else:
+                logger.info(f"Headers and data columns match for {year}")
         else:
             logger.warning(f"No data rows found for {year}")
             return pd.DataFrame()
 
-        df = pd.DataFrame(data, columns=columns)
+        df = pd.DataFrame(rows, columns=columns)
 
         if not df.empty:
             df['Season'] = year
 
-            output_path = os.path.join(self.processed_data_dir, f"fantasy_stats_{year}.csv")
+            output_path = os.path.join(self.processed_data_dir, f"{year}_player_fantasy_stats.csv")
             df.to_csv(output_path, index=False)
             logger.info(f"Saved fantasy stats for {year} to {output_path}")
 
         return df
 
-    def scrape_team_stats(self, year: int) -> pd.DataFrame:
+    def scrape_team_stats(self, year: int) -> Dict[str, pd.DataFrame]:
         """
-        Scrape team offensive stats for a specific season.
+        Scrape multiple team offensive stats tables for a specific season.
+        Tables scraped: team_offense, passing_offense, rushing_offense.
 
         Args:
             year: NFL season year
 
         Returns:
-            DataFrame with team stats
+            Dictionary of DataFrames, keyed by table ID.
         """
-        url = f"{self.base_url}/years/{year}/"
-        soup = self._get_soup(url)
+        url = f"{self.base_url}/years/{year}/#all_team_stats"
+        # Provide a raw_file_name for caching the main page content and force overwrite
+        soup = self._get_soup(url, raw_file_name=f"{year}_team_offense", overwrite=True)
 
         if not soup:
-            logger.error(f"Failed to get team stats for {year}")
-            return pd.DataFrame()
+            logger.error(f"Failed to get page content for team stats for {year} from {url}")
+            return {}
 
-        table = soup.find('table', id='team_stats')
-        if not table:
-            logger.error(f"Team stats table not found for {year}")
-            return pd.DataFrame()
+        table_ids_to_scrape = ['team_offense', 'passing_offense', 'rushing_offense']
+        all_dataframes: Dict[str, pd.DataFrame] = {}
 
-        columns = [th.get_text(strip=True) for th in table.find('thead').find_all('th')]
-
-        data = []
-        for tr in table.find('tbody').find_all('tr'):
-            # Skip column names
-            if 'class' in tr.attrs and 'thead' in tr.attrs['class']:
+        for table_id in table_ids_to_scrape:
+            table = soup.find('table', id=table_id)
+            if not table:
+                logger.warning(f"Table with id '{table_id}' not found on {url} for year {year}")
                 continue
-            row = [td.get_text(strip=True) for td in tr.find_all(['th', 'td'])]
-            data.append(row)
 
-        try:
-            # Adjust the set of columns to match whats in the data.
-            if data and len(columns) != len(data[0]):
-                if len(columns) > len(data[0]):
-                    columns = columns[-len(data[0]):]
-                else:
-                    # Add dummy column names for extra data columns
-                    extra_cols_needed = len(data[0]) - len(columns)
-                    for i in range(extra_cols_needed):
-                        columns.append(f"Unknown_Col_{i+1}")
+            columns_from_header = [th.get_text(strip=True) for th in table.find('thead').find_all('th')]
 
-            df = pd.DataFrame(data, columns=columns)
+            data_rows = []
+            for tr in table.find('tbody').find_all('tr'):
+                if 'class' in tr.attrs and 'thead' in tr.attrs['class']: # Skip any visually embedded header rows in tbody
+                    continue
+                row_data = [td.get_text(strip=True) for td in tr.find_all(['th', 'td'])]
+                if row_data: # Only append if row actually has data
+                    data_rows.append(row_data)
 
-            df['Season'] = year
-
-            output_path = os.path.join(self.processed_data_dir, f"team_stats_{year}.csv")
-            df.to_csv(output_path, index=False)
-            logger.info(f"Saved team stats for {year} to {output_path}")
-
-            return df
-        except Exception as e:
-            logger.error(f"Error processing team stats for {year}: {e}")
-            return pd.DataFrame()
-
-    def scrape_advanced_team_stats(self, year: int) -> pd.DataFrame:
-        """
-        Scrape advanced team stats for a specific season.
-
-        Args:
-            year: NFL season year
-
-        Returns:
-            DataFrame with advanced team stats
-        """
-        url = f"{self.base_url}/years/{year}/opp.htm"
-        soup = self._get_soup(url)
-
-        if not soup:
-            logger.error(f"Failed to get advanced team stats for {year}")
-            return pd.DataFrame()
-
-        table = soup.find('table', id='team_stats')
-        if not table:
-            logger.error(f"Advanced team stats table not found for {year}")
-            return pd.DataFrame()
-
-        columns = [th.get_text(strip=True) for th in table.find('thead').find_all('th')]
-
-        data = []
-        for tr in table.find('tbody').find_all('tr'):
-            # Skip column names
-            if 'class' in tr.attrs and 'thead' in tr.attrs['class']:
+            if not data_rows:
+                logger.warning(f"No data rows found in table with id '{table_id}' for year {year}")
                 continue
-            row = [td.get_text(strip=True) for td in tr.find_all(['th', 'td'])]
-            data.append(row)
 
-        try:
-            # Adjust the set of columns to match whats in the data.
-            if data and len(columns) != len(data[0]):
-                if len(columns) > len(data[0]):
-                    columns = columns[-len(data[0]):]
-                else:
-                    # Add dummy column names for extra data columns
-                    extra_cols_needed = len(data[0]) - len(columns)
-                    for i in range(extra_cols_needed):
-                        columns.append(f"Unknown_Col_{i+1}")
+            # Adjust columns based on the first data row, similar to scrape_season_fantasy_stats
+            adjusted_columns = list(columns_from_header)
+            actual_data_column_count = len(data_rows[0])
 
-            df = pd.DataFrame(data, columns=columns)
-            df['Season'] = year
+            if len(adjusted_columns) > actual_data_column_count:
+                original_header_count = len(adjusted_columns)
+                adjusted_columns = adjusted_columns[-actual_data_column_count:]
+                logger.info(f"For table '{table_id}', year {year}, header columns ({original_header_count}) were more than data columns ({actual_data_column_count}). Adjusted to last {actual_data_column_count} header columns.")
+            elif len(adjusted_columns) < actual_data_column_count:
+                extra_cols_needed = actual_data_column_count - len(adjusted_columns)
+                for i in range(extra_cols_needed):
+                    adjusted_columns.append(f"dummy_col_{i+1}")
+                logger.info(f"For table '{table_id}', year {year}, header columns ({len(columns_from_header)}) were fewer than data columns ({actual_data_column_count}). Added {extra_cols_needed} dummy columns.")
 
-            output_path = os.path.join(self.processed_data_dir, f"advanced_team_stats_{year}.csv")
-            df.to_csv(output_path, index=False)
-            logger.info(f"Saved advanced team stats for {year} to {output_path}")
+            try:
+                df = pd.DataFrame(data_rows, columns=adjusted_columns)
+                df['Season'] = year
 
-            return df
-        except Exception as e:
-            logger.error(f"Error processing advanced team stats for {year}: {e}")
-            return pd.DataFrame()
+                output_filename = f"{year}_{table_id}.csv"
+                output_path = os.path.join(self.processed_data_dir, output_filename)
+                df.to_csv(output_path, index=False)
+                logger.info(f"Saved {table_id} stats for {year} to {output_path}")
+                all_dataframes[table_id] = df
+            except Exception as e:
+                logger.error(f"Error processing table '{table_id}' for year {year}: {e}")
+        
+        return all_dataframes
 
-    def scrape_player_game_logs(self, player_id: str, year: int) -> pd.DataFrame:
+
+
+    def scrape_player_receiving_stats(self, year: int) -> pd.DataFrame:
         """
-        Scrape game logs for a specific player and season.
+        Scrape player receiving stats for a given year.
 
         Args:
-            player_id: Player ID from Pro Football Reference
             year: NFL season year
 
         Returns:
-            DataFrame with player game logs
+            DataFrame with receiving stats for all players in a given year.
         """
-        first_letter = player_id[0]
-        url = f"{self.base_url}/players/{first_letter}/{player_id}/gamelog/{year}/"
+        url = f"{self.base_url}/years/{year}/receiving_advanced.htm"
 
-        soup = self._get_soup(url)
+        soup = self._get_soup(url, raw_file_name=f"{year}_receiving_stats")
 
         if not soup:
-            logger.error(f"Failed to get game logs for player {player_id} in {year}")
+            logger.error(f"Failed to get receiving stats for {year}")
             return pd.DataFrame()
 
-        table = soup.find('table', id='gamelog')
+        table = soup.find('table', id='adv_receiving')
         if not table:
-            logger.warning(f"Game log table not found for player {player_id} in {year}")
+            logger.warning(f"Receiving stats table not found for {year}")
             return pd.DataFrame()
+        
+        # Extract columns from thead elements
+        columns = []
+        for th in table.find('thead').find_all('th'):
+            col_name = th.get_text(strip=True)
+            columns.append(col_name)
 
-        player_name = soup.find('h1', {'itemprop': 'name'})
-        if player_name:
-            player_name = player_name.text.strip()
-        else:
-            player_name = "Unknown"
-
-        headers = []
-        header_row = table.find('thead')
-        if header_row:
-            # Handle multi-level headers if present
-            header_rows = header_row.find_all('tr')
-            if len(header_rows) > 1:
-                # Multi-level headers
-                top_headers = [th.get_text(strip=True) for th in header_rows[0].find_all('th')]
-                bottom_headers = [th.get_text(strip=True) for th in header_rows[1].find_all('th')]
-
-                # Combine multi-level headers
-                current_top = ""
-                for i, header in enumerate(top_headers):
-                    if header:
-                        current_top = header
-                    if i < len(bottom_headers):
-                        if bottom_headers[i]:
-                            headers.append(f"{current_top}_{bottom_headers[i]}" if current_top else bottom_headers[i])
-                        else:
-                            headers.append(current_top)
-            else:
-                # Single level headers
-                headers = [th.get_text(strip=True) for th in header_rows[0].find_all('th')]
-
-        # Extract rows
+        # Extract data from tbody elements
         rows = []
         for tr in table.find('tbody').find_all('tr'):
-            # Skip header rows
-            if 'class' in tr.attrs and ('thead' in tr.attrs['class'] or 'divider' in tr.attrs['class']):
+            # Skip column names
+            if 'class' in tr.attrs and 'thead' in tr.attrs['class']:
                 continue
 
-            # Extract row data
             row = [td.get_text(strip=True) for td in tr.find_all(['th', 'td'])]
-            if row and len(row) > 1:  # Skip empty rows
-                rows.append(row)
+            rows.append(row)
 
-        # Create DataFrame
-        df = pd.DataFrame(rows, columns=headers)
+        if len(rows) > 0:
+            # Adjust columns to match whats in the data, this ignores category headers that precede the actual data.
+            actual_column_count = len(rows[0])
+            # If we have more headers than actual columns, take the last N headers
+            if len(columns) > actual_column_count:
+                original_count = len(columns)
+                columns = columns[-actual_column_count:]
+                logger.info(f"Adjusted headers from {original_count} to {actual_column_count}")
+            elif len(columns) < actual_column_count:
+                # Add dummy column names for extra data columns
+                extra_cols_needed = actual_column_count - len(columns)
+                for i in range(extra_cols_needed):
+                    columns.append(f"Unknown_Col_{i+1}")
+                logger.info(f"Added {extra_cols_needed} dummy columns")
+            else:
+                logger.info(f"Headers and data columns match for {year}")
+        else:
+            logger.warning(f"No data rows found for {year}")
+            return pd.DataFrame()
 
-        # Clean up DataFrame
-        # Remove rows that are headers or have NaN in date column
-        if 'Date' in df.columns:
-            df = df[df['Date'].notna()]
+        df = pd.DataFrame(rows, columns=columns)
 
-        # Add player information
-        df['Player_ID'] = player_id
-        df['Player_Name'] = player_name
-        df['Season'] = year
+        if not df.empty:
+            df['Season'] = year
 
-        # Save to CSV
-        output_path = os.path.join(self.data_dir, "processed", f"game_logs_{player_id}_{year}.csv")
-        df.to_csv(output_path, index=False)
-        logger.info(f"Saved game logs for {player_id} ({player_name}) in {year} to {output_path}")
+            output_path = os.path.join(self.processed_data_dir, f"{year}_receiving_stats.csv")
+            df.to_csv(output_path, index=False)
+            logger.info(f"Saved receiving stats for {year} to {output_path}")
 
         return df
+
 
     def get_player_ids_for_year(self, year: int, min_fantasy_points: float = 50.0) -> List[str]:
         """
@@ -402,9 +353,10 @@ class ProFootballReferenceScraper:
         for year in tqdm(years, desc="Scraping years"):
             logger.info(f"Scraping data from {year}")
 
-            self.scrape_season_fantasy_stats(year)
-            self.scrape_team_stats(year)
-            self.scrape_advanced_team_stats(year)
+            #self.scrape_season_fantasy_stats(year)
+            #self.scrape_team_stats(year)
+            self.scrape_player_receiving_stats(year)
+            #self.scrape_advanced_team_stats(year)
 
             if include_game_logs:
                 player_ids = self.get_player_ids_for_year(year)
