@@ -1,7 +1,9 @@
 import unittest
 from unittest.mock import patch
+
 from src.scraper import ProFootballReferenceScraper
-import pandas as pd
+
+from bs4 import BeautifulSoup
 
 class TestProFootballReferenceScraper(unittest.TestCase):
     def setUp(self):
@@ -17,7 +19,6 @@ class TestProFootballReferenceScraper(unittest.TestCase):
             </table>
         </html>
         '''
-        from bs4 import BeautifulSoup
         mock_get_soup.return_value = BeautifulSoup(html, 'lxml')
         df = self.scraper.scrape_html_table("fake_url", "fake_file", "fantasy", 2023)
         self.assertEqual(list(df.columns), ["Player", "Points"])
@@ -35,7 +36,6 @@ class TestProFootballReferenceScraper(unittest.TestCase):
             -->
         </html>
         '''
-        from bs4 import BeautifulSoup
         mock_get_soup.return_value = BeautifulSoup(html, 'lxml')
         df = self.scraper.scrape_html_table("fake_url", "fake_file", "fantasy", 2023)
         self.assertEqual(list(df.columns), ["Player", "Points"])
@@ -45,7 +45,6 @@ class TestProFootballReferenceScraper(unittest.TestCase):
     @patch.object(ProFootballReferenceScraper, '_get_soup')
     def test_table_not_found(self, mock_get_soup):
         html = '<html></html>'
-        from bs4 import BeautifulSoup
         mock_get_soup.return_value = BeautifulSoup(html, 'lxml')
         df = self.scraper.scrape_html_table("fake_url", "fake_file", "fantasy", 2023)
         self.assertTrue(df.empty)
@@ -60,7 +59,6 @@ class TestProFootballReferenceScraper(unittest.TestCase):
             </table>
         </html>
         '''
-        from bs4 import BeautifulSoup
         mock_get_soup.return_value = BeautifulSoup(html, 'lxml')
         df = self.scraper.scrape_html_table("fake_url", "fake_file", "fantasy", 2023)
 
@@ -77,7 +75,6 @@ class TestProFootballReferenceScraper(unittest.TestCase):
             </table>
         </html>
         '''
-        from bs4 import BeautifulSoup
         mock_get_soup.return_value = BeautifulSoup(html, 'lxml')
         df = self.scraper.scrape_html_table("fake_url", "fake_file", "fantasy", 2023)
 
