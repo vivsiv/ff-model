@@ -235,27 +235,40 @@ class ProFootballReferenceScraper:
 
 
 
-    def scrape_player_receiving_stats(self, year: int) -> pd.DataFrame:
+    def scrape_player_offensive_stats(self, year: int, category: str) -> pd.DataFrame:
         """
         Scrape player receiving stats for a given year.
 
         Args:
             year: NFL season year
+            category: The category of offensive stats to scrape, one of:
+                - "passing"
+                - "rushing"
+                - "receiving"
 
         Returns:
-            DataFrame with receiving stats for all players in a given year.
+            DataFrame with {category} stats for all players in a given year.
         """
-        url = f"{self.base_url}/years/{year}/receiving_advanced.htm"
+        assert category in ["passing", "rushing", "receiving"], "Invalid category"
 
-        soup = self._get_soup(url, raw_file_name=f"{year}_receiving_stats")
+        url = f"{self.base_url}/years/{year}/{category}_advanced.htm"
+
+        soup = self._get_soup(url, raw_file_name=f"{year}_{category}_stats")
 
         if not soup:
-            logger.error(f"Failed to get receiving stats for {year}")
+            logger.error(f"Failed to get {category} stats for {year}")
             return pd.DataFrame()
 
-        table = soup.find('table', id='adv_receiving')
+        if category == "passing":
+            table = soup.find('table', id='passing_advanced')
+        elif category == "rushing":
+            table = soup.find('table', id='adv_rushing')
+        elif category == "receiving":
+            table = soup.find('table', id='adv_receiving')
+        else:
+            logger.error(f"Invalid category: {category}")
+            return pd.DataFrame()
         if not table:
-            logger.warning(f"Receiving stats table not found for {year}")
             return pd.DataFrame()
         
         # Extract columns from thead elements
@@ -299,9 +312,9 @@ class ProFootballReferenceScraper:
         if not df.empty:
             df['Season'] = year
 
-            output_path = os.path.join(self.processed_data_dir, f"{year}_receiving_stats.csv")
+            output_path = os.path.join(self.processed_data_dir, f"{year}_{category}_stats.csv")
             df.to_csv(output_path, index=False)
-            logger.info(f"Saved receiving stats for {year} to {output_path}")
+            logger.info(f"Saved {category} stats for {year} to {output_path}")
 
         return df
 
@@ -355,7 +368,9 @@ class ProFootballReferenceScraper:
 
             #self.scrape_season_fantasy_stats(year)
             #self.scrape_team_stats(year)
-            self.scrape_player_receiving_stats(year)
+            self.scrape_player_offensive_stats(year, "passing")
+            self.scrape_player_offensive_stats(year, "rushing")
+            self.scrape_player_offensive_stats(year, "receiving")
             #self.scrape_advanced_team_stats(year)
 
             if include_game_logs:
