@@ -104,14 +104,20 @@ class ProFootballReferenceScraper:
         
         table = soup.find('table', id=table_id)
         if not table:
+            # Try to find the table inside HTML comments
+            for comment in soup.find_all(string=lambda text: isinstance(text, Comment)):
+                comment_soup = BeautifulSoup(comment, 'lxml')
+                table = comment_soup.find('table', id=table_id)
+                if table:
+                    logger.info(f"Found table '{table_id}' inside HTML comment for year {year}")
+                    break
+        
+        if not table:
             logger.error(f"Table with id '{table_id}' not found on {url}")
             return pd.DataFrame()
 
         # Extract columns from thead elements
-        columns = []
-        for th in table.find('thead').find_all('th'):
-            col_name = th.get_text(strip=True)
-            columns.append(col_name)
+        columns = [th.get_text(strip=True) for th in table.find('thead').find_all('th')]
         
         # Extract data from tbody elements
         rows = []
@@ -200,7 +206,7 @@ class ProFootballReferenceScraper:
         return df
 
 
-    def scrape_team_offensive_stats(self, year: int) -> Dict[str, pd.DataFrame]:
+    def scrape_team_offensive_stats(self, year: int) -> None:
         """
         Scrape multiple team offensive stats tables for a specific season.
         Tables scraped: team_offense, passing_offense, rushing_offense.
@@ -215,68 +221,12 @@ class ProFootballReferenceScraper:
         # Provide a raw_file_name for caching the main page content and force overwrite
         soup = self._get_soup(url, raw_file_name=f"{year}_team_offense", overwrite=True)
 
-        if not soup:
-            logger.error(f"Failed to get page content for team stats for {year} from {url}")
-            return {}
+        df = self.scrape_html_table(url, f"{year}_team_offense", "team_stats", year)
 
-        table_ids_to_scrape = ['team_stats']
-        all_dataframes: Dict[str, pd.DataFrame] = {}
-
-        for table_id in table_ids_to_scrape:
-            table = soup.find('table', id=table_id)
-            if not table:
-                # Try to find the table inside HTML comments
-                for comment in soup.find_all(string=lambda text: isinstance(text, Comment)):
-                    comment_soup = BeautifulSoup(comment, 'lxml')
-                    table = comment_soup.find('table', id=table_id)
-                    if table:
-                        logger.info(f"Found table '{table_id}' inside HTML comment for year {year}")
-                        break
-            if not table:
-                logger.warning(f"Table with id '{table_id}' not found on {url} for year {year}")
-                continue
-
-            columns_from_header = [th.get_text(strip=True) for th in table.find('thead').find_all('th')]
-
-            data_rows = []
-            for tr in table.find('tbody').find_all('tr'):
-                if 'class' in tr.attrs and 'thead' in tr.attrs['class']: # Skip any visually embedded header rows in tbody
-                    continue
-                row_data = [td.get_text(strip=True) for td in tr.find_all(['th', 'td'])]
-                if row_data: # Only append if row actually has data
-                    data_rows.append(row_data)
-
-            if not data_rows:
-                logger.warning(f"No data rows found in table with id '{table_id}' for year {year}")
-                continue
-
-            # Adjust columns based on the first data row, similar to scrape_season_fantasy_stats
-            adjusted_columns = list(columns_from_header)
-            actual_data_column_count = len(data_rows[0])
-
-            if len(adjusted_columns) > actual_data_column_count:
-                original_header_count = len(adjusted_columns)
-                adjusted_columns = adjusted_columns[-actual_data_column_count:]
-                logger.info(f"For table '{table_id}', year {year}, header columns ({original_header_count}) were more than data columns ({actual_data_column_count}). Adjusted to last {actual_data_column_count} header columns.")
-            elif len(adjusted_columns) < actual_data_column_count:
-                extra_cols_needed = actual_data_column_count - len(adjusted_columns)
-                for i in range(extra_cols_needed):
-                    adjusted_columns.append(f"dummy_col_{i+1}")
-                logger.info(f"For table '{table_id}', year {year}, header columns ({len(columns_from_header)}) were fewer than data columns ({actual_data_column_count}). Added {extra_cols_needed} dummy columns.")
-
-            try:
-                df = pd.DataFrame(data_rows, columns=adjusted_columns)
-                df['Season'] = year
-
-                output_filename = f"{year}_{table_id}.csv"
-                output_path = os.path.join(self.processed_data_dir, output_filename)
-                df.to_csv(output_path, index=False)
-                logger.info(f"Saved {table_id} stats for {year} to {output_path}")
-                all_dataframes[table_id] = df
-            except Exception as e:
-                logger.error(f"Error processing table '{table_id}' for year {year}: {e}")
-        
-        return all_dataframes
+        if not df.empty:
+            output_path = os.path.join(self.processed_data_dir, f"{year}_team_offense.csv")
+            df.to_csv(output_path, index=False)
+            logger.info(f"Saved team offense stats for {year} to {output_path}")
 
 
     def scrape_years(self, start_year: int, end_year: int):
@@ -293,11 +243,12 @@ class ProFootballReferenceScraper:
             logger.info(f"Scraping data from {year}")
 
             self.scrape_player_fantasy_stats(year)
+
             self.scrape_player_offensive_stats(year, "passing")
             self.scrape_player_offensive_stats(year, "rushing")
             self.scrape_player_offensive_stats(year, "receiving")
 
-            #self.scrape_team_offensive_stats(year)
+            self.scrape_team_offensive_stats(year)
 
             logger.info(f"Completed scraping data from {year}")
 
