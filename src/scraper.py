@@ -8,12 +8,10 @@ from Pro Football Reference for fantasy football analysis.
 
 import os
 import time
-import json
 import logging
 import random
 import argparse
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple, Union
 
 import requests
 from bs4 import BeautifulSoup, Comment

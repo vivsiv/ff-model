@@ -1,10 +1,5 @@
 requests
 beautifulsoup4
 pandas
-numpy
 lxml
 tqdm
-matplotlib
-seaborn
-scikit-learn
-jupyter
