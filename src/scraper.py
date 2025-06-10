@@ -43,8 +43,8 @@ class ProFootballReferenceScraper:
         """
         self.base_url = "https://www.pro-football-reference.com"
         self.data_dir = data_dir
-        self.raw_data_dir = os.path.join(data_dir, "raw")
-        self.processed_data_dir = os.path.join(data_dir, "processed")
+        self.html_dir = os.path.join(data_dir, "html")
+        self.bronze_data_dir = os.path.join(data_dir, "bronze")
         self.session = requests.Session()
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
@@ -52,27 +52,27 @@ class ProFootballReferenceScraper:
 
         # Create data directories if they don't exist
         os.makedirs(self.data_dir, exist_ok=True)
-        os.makedirs(self.raw_data_dir, exist_ok=True)
-        os.makedirs(self.processed_data_dir, exist_ok=True)
+        os.makedirs(self.html_dir, exist_ok=True)
+        os.makedirs(self.bronze_data_dir, exist_ok=True)
 
-    def _get_soup(self, url: str, raw_file_name: str, delay: float = 3.0, overwrite: bool = False) -> BeautifulSoup:
+    def _get_soup(self, url: str, html_file_path: str, delay: float = 3.0, overwrite: bool = False) -> BeautifulSoup:
         """
         Get BeautifulSoup object from URL with rate limiting.
 
         Args:
             url: URL to scrape
+            html_file_path: Path the html file exists at or will be saved to 
             delay: Time to wait between requests (seconds)
-            overwrite: Whether to overwrite the raw file if it already exists (default: False)
+            overwrite: Overwrite the existing html file (default: False)
 
         Returns:
             BeautifulSoup object
         """
-        raw_path = os.path.join(self.raw_data_dir, f"{raw_file_name}.html")
 
-        # Check if the raw file already exists
-        if os.path.exists(raw_path) and not overwrite:
-            logger.info(f"Using existing raw data file {raw_path}")
-            with open(raw_path, "r", encoding="utf-8") as f:
+        # Use the cached html file if it exists and overwrite is not set.
+        if os.path.exists(html_file_path) and not overwrite:
+            logger.info(f"Using existing html file {html_file_path}")
+            with open(html_file_path, "r", encoding="utf-8") as f:
                 html_content = f.read()
             return BeautifulSoup(html_content, 'lxml')
 
@@ -84,8 +84,7 @@ class ProFootballReferenceScraper:
             response = self.session.get(url)
             response.raise_for_status()
 
-            # Save raw HTML
-            with open(raw_path, "w", encoding="utf-8") as f:
+            with open(html_file_path, "w", encoding="utf-8") as f:
                 f.write(response.text)
 
             return BeautifulSoup(response.text, 'lxml')
@@ -93,11 +92,22 @@ class ProFootballReferenceScraper:
             logger.error(f"Error fetching {url}: {e}")
             return None
     
-    def scrape_html_table(self, url: str, raw_file_name: str, table_id: str, year: int, overwrite: bool = False) -> pd.DataFrame:
+    def scrape_html_table(self, url: str, html_file_name: str, table_id: str, year: int, overwrite: bool = False) -> pd.DataFrame:
         """
         Scrape an HTML table from a URL.
+
+        Args:
+            url: URL to scrape
+            html_file_name: Name of file to save the downloaded html to
+            table_id: ID of the table to scrape
+            year: Year of the data
+            overwrite: Overwrite the existing html file (default: False)
+
+        Returns:
+            DataFrame with the scraped table data
         """
-        soup = self._get_soup(url, raw_file_name, overwrite=overwrite)
+        html_file_path = os.path.join(self.html_dir, f"{html_file_name}.html")
+        soup = self._get_soup(url, html_file_path, overwrite=overwrite)
         if not soup:
             logger.error(f"Failed to get data for {url}")
             return pd.DataFrame()
@@ -159,7 +169,7 @@ class ProFootballReferenceScraper:
             year: NFL season year (e.g., 2023)
 
         Returns:
-            DataFrame with player fantasy stats
+            None (saves data to bronze layer)
         """
         url = f"{self.base_url}/years/{year}/fantasy.htm"
 
@@ -183,7 +193,7 @@ class ProFootballReferenceScraper:
                 - "receiving"
 
         Returns:
-            DataFrame with {category} stats for all players in a given year.
+            None (saves data to bronze layer)
         """
         assert category in ["passing", "rushing", "receiving"], "Invalid category"
 
@@ -215,11 +225,9 @@ class ProFootballReferenceScraper:
             year: NFL season year
 
         Returns:
-            Dictionary of DataFrames, keyed by table ID.
+            None (saves data to bronze layer)
         """
         url = f"{self.base_url}/years/{year}/#team_stats"
-        # Provide a raw_file_name for caching the main page content and force overwrite
-        soup = self._get_soup(url, raw_file_name=f"{year}_team_offense", overwrite=True)
 
         df = self.scrape_html_table(url, f"{year}_team_offense", "team_stats", year)
 
