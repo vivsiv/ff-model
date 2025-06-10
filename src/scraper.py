@@ -174,7 +174,7 @@ class ProFootballReferenceScraper:
         df = self.scrape_html_table(url, f"{year}_player_fantasy_stats", "fantasy", year)
 
         if not df.empty:
-            output_path = os.path.join(self.processed_data_dir, f"{year}_player_fantasy_stats.csv")
+            output_path = os.path.join(self.bronze_data_dir, f"{year}_player_fantasy_stats.csv")
             df.to_csv(output_path, index=False)
             logger.info(f"Saved fantasy stats for {year} to {output_path}")
 
@@ -207,7 +207,7 @@ class ProFootballReferenceScraper:
             logger.error(f"Invalid category: {category}")
                 
         if not df.empty:
-            output_path = os.path.join(self.processed_data_dir, f"{year}_{category}_stats.csv")
+            output_path = os.path.join(self.bronze_data_dir, f"{year}_{category}_stats.csv")
             df.to_csv(output_path, index=False)
             logger.info(f"Saved {category} stats for {year} to {output_path}")
 
@@ -230,7 +230,7 @@ class ProFootballReferenceScraper:
         df = self.scrape_html_table(url, f"{year}_team_offense", "team_stats", year)
 
         if not df.empty:
-            output_path = os.path.join(self.processed_data_dir, f"{year}_team_offense.csv")
+            output_path = os.path.join(self.bronze_data_dir, f"{year}_team_offense.csv")
             df.to_csv(output_path, index=False)
             logger.info(f"Saved team offense stats for {year} to {output_path}")
 
