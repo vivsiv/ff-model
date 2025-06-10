@@ -16,7 +16,7 @@ from datetime import datetime
 from typing import Dict, List, Optional, Tuple, Union
 
 import requests
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Comment
 import pandas as pd
 from tqdm import tqdm
 
@@ -93,7 +93,7 @@ class ProFootballReferenceScraper:
             logger.error(f"Error fetching {url}: {e}")
             return None
 
-    def scrape_season_fantasy_stats(self, year: int) -> pd.DataFrame:
+    def scrape_player_fantasy_stats(self, year: int) -> pd.DataFrame:
         """
         Scrape fantasy stats for a specific season.
 
@@ -162,77 +162,6 @@ class ProFootballReferenceScraper:
             logger.info(f"Saved fantasy stats for {year} to {output_path}")
 
         return df
-
-    def scrape_team_stats(self, year: int) -> Dict[str, pd.DataFrame]:
-        """
-        Scrape multiple team offensive stats tables for a specific season.
-        Tables scraped: team_offense, passing_offense, rushing_offense.
-
-        Args:
-            year: NFL season year
-
-        Returns:
-            Dictionary of DataFrames, keyed by table ID.
-        """
-        url = f"{self.base_url}/years/{year}/#all_team_stats"
-        # Provide a raw_file_name for caching the main page content and force overwrite
-        soup = self._get_soup(url, raw_file_name=f"{year}_team_offense", overwrite=True)
-
-        if not soup:
-            logger.error(f"Failed to get page content for team stats for {year} from {url}")
-            return {}
-
-        table_ids_to_scrape = ['team_offense', 'passing_offense', 'rushing_offense']
-        all_dataframes: Dict[str, pd.DataFrame] = {}
-
-        for table_id in table_ids_to_scrape:
-            table = soup.find('table', id=table_id)
-            if not table:
-                logger.warning(f"Table with id '{table_id}' not found on {url} for year {year}")
-                continue
-
-            columns_from_header = [th.get_text(strip=True) for th in table.find('thead').find_all('th')]
-
-            data_rows = []
-            for tr in table.find('tbody').find_all('tr'):
-                if 'class' in tr.attrs and 'thead' in tr.attrs['class']: # Skip any visually embedded header rows in tbody
-                    continue
-                row_data = [td.get_text(strip=True) for td in tr.find_all(['th', 'td'])]
-                if row_data: # Only append if row actually has data
-                    data_rows.append(row_data)
-
-            if not data_rows:
-                logger.warning(f"No data rows found in table with id '{table_id}' for year {year}")
-                continue
-
-            # Adjust columns based on the first data row, similar to scrape_season_fantasy_stats
-            adjusted_columns = list(columns_from_header)
-            actual_data_column_count = len(data_rows[0])
-
-            if len(adjusted_columns) > actual_data_column_count:
-                original_header_count = len(adjusted_columns)
-                adjusted_columns = adjusted_columns[-actual_data_column_count:]
-                logger.info(f"For table '{table_id}', year {year}, header columns ({original_header_count}) were more than data columns ({actual_data_column_count}). Adjusted to last {actual_data_column_count} header columns.")
-            elif len(adjusted_columns) < actual_data_column_count:
-                extra_cols_needed = actual_data_column_count - len(adjusted_columns)
-                for i in range(extra_cols_needed):
-                    adjusted_columns.append(f"dummy_col_{i+1}")
-                logger.info(f"For table '{table_id}', year {year}, header columns ({len(columns_from_header)}) were fewer than data columns ({actual_data_column_count}). Added {extra_cols_needed} dummy columns.")
-
-            try:
-                df = pd.DataFrame(data_rows, columns=adjusted_columns)
-                df['Season'] = year
-
-                output_filename = f"{year}_{table_id}.csv"
-                output_path = os.path.join(self.processed_data_dir, output_filename)
-                df.to_csv(output_path, index=False)
-                logger.info(f"Saved {table_id} stats for {year} to {output_path}")
-                all_dataframes[table_id] = df
-            except Exception as e:
-                logger.error(f"Error processing table '{table_id}' for year {year}: {e}")
-        
-        return all_dataframes
-
 
 
     def scrape_player_offensive_stats(self, year: int, category: str) -> pd.DataFrame:
@@ -319,66 +248,105 @@ class ProFootballReferenceScraper:
         return df
 
 
-    def get_player_ids_for_year(self, year: int, min_fantasy_points: float = 50.0) -> List[str]:
+    def scrape_team_offensive_stats(self, year: int) -> Dict[str, pd.DataFrame]:
         """
-        Get list of relevant player IDs for a specific season.
+        Scrape multiple team offensive stats tables for a specific season.
+        Tables scraped: team_offense, passing_offense, rushing_offense.
 
         Args:
             year: NFL season year
-            min_fantasy_points: Minimum fantasy points to consider a player relevant
 
         Returns:
-            List of player IDs
+            Dictionary of DataFrames, keyed by table ID.
         """
-        # First scrape the fantasy stats for the year if we don't have them
-        fantasy_file = os.path.join(self.data_dir, "processed", f"fantasy_stats_{year}.csv")
+        url = f"{self.base_url}/years/{year}/#team_stats"
+        # Provide a raw_file_name for caching the main page content and force overwrite
+        soup = self._get_soup(url, raw_file_name=f"{year}_team_offense", overwrite=True)
 
-        if not os.path.exists(fantasy_file):
-            self.scrape_season_fantasy_stats(year)
+        if not soup:
+            logger.error(f"Failed to get page content for team stats for {year} from {url}")
+            return {}
 
-        if not os.path.exists(fantasy_file):
-            logger.error(f"Could not get fantasy stats for {year}")
-            return []
+        table_ids_to_scrape = ['team_stats']
+        all_dataframes: Dict[str, pd.DataFrame] = {}
 
-        # Load fantasy stats
-        df = pd.read_csv(fantasy_file)
+        for table_id in table_ids_to_scrape:
+            table = soup.find('table', id=table_id)
+            if not table:
+                # Try to find the table inside HTML comments
+                for comment in soup.find_all(string=lambda text: isinstance(text, Comment)):
+                    comment_soup = BeautifulSoup(comment, 'lxml')
+                    table = comment_soup.find('table', id=table_id)
+                    if table:
+                        logger.info(f"Found table '{table_id}' inside HTML comment for year {year}")
+                        break
+            if not table:
+                logger.warning(f"Table with id '{table_id}' not found on {url} for year {year}")
+                continue
 
-        # Extract player IDs for relevant players
-        # This assumes the DataFrame has a FantPt column and player_id column
-        # Adjust column names as needed based on actual data
-        if 'FantPt' in df.columns and 'player_id' in df.columns:
-            return df[df['FantPt'] >= min_fantasy_points]['player_id'].tolist()
-        else:
-            logger.warning(f"Required columns not found in fantasy stats for {year}")
-            return []
+            columns_from_header = [th.get_text(strip=True) for th in table.find('thead').find_all('th')]
 
-    def scrape_years(self, start_year: int, end_year: int, include_game_logs: bool = True):
+            data_rows = []
+            for tr in table.find('tbody').find_all('tr'):
+                if 'class' in tr.attrs and 'thead' in tr.attrs['class']: # Skip any visually embedded header rows in tbody
+                    continue
+                row_data = [td.get_text(strip=True) for td in tr.find_all(['th', 'td'])]
+                if row_data: # Only append if row actually has data
+                    data_rows.append(row_data)
+
+            if not data_rows:
+                logger.warning(f"No data rows found in table with id '{table_id}' for year {year}")
+                continue
+
+            # Adjust columns based on the first data row, similar to scrape_season_fantasy_stats
+            adjusted_columns = list(columns_from_header)
+            actual_data_column_count = len(data_rows[0])
+
+            if len(adjusted_columns) > actual_data_column_count:
+                original_header_count = len(adjusted_columns)
+                adjusted_columns = adjusted_columns[-actual_data_column_count:]
+                logger.info(f"For table '{table_id}', year {year}, header columns ({original_header_count}) were more than data columns ({actual_data_column_count}). Adjusted to last {actual_data_column_count} header columns.")
+            elif len(adjusted_columns) < actual_data_column_count:
+                extra_cols_needed = actual_data_column_count - len(adjusted_columns)
+                for i in range(extra_cols_needed):
+                    adjusted_columns.append(f"dummy_col_{i+1}")
+                logger.info(f"For table '{table_id}', year {year}, header columns ({len(columns_from_header)}) were fewer than data columns ({actual_data_column_count}). Added {extra_cols_needed} dummy columns.")
+
+            try:
+                df = pd.DataFrame(data_rows, columns=adjusted_columns)
+                df['Season'] = year
+
+                output_filename = f"{year}_{table_id}.csv"
+                output_path = os.path.join(self.processed_data_dir, output_filename)
+                df.to_csv(output_path, index=False)
+                logger.info(f"Saved {table_id} stats for {year} to {output_path}")
+                all_dataframes[table_id] = df
+            except Exception as e:
+                logger.error(f"Error processing table '{table_id}' for year {year}: {e}")
+        
+        return all_dataframes
+
+
+    def scrape_years(self, start_year: int, end_year: int):
         """
         Scrape data for multiple years.
 
         Args:
             start_year: First year to scrape
             end_year: Last year to scrape
-            include_game_logs: Whether to scrape game logs for relevant players
         """
         years = range(start_year, end_year + 1)
 
         for year in tqdm(years, desc="Scraping years"):
             logger.info(f"Scraping data from {year}")
 
-            #self.scrape_season_fantasy_stats(year)
-            #self.scrape_team_stats(year)
+            self.scrape_season_fantasy_stats(year)
+
             self.scrape_player_offensive_stats(year, "passing")
             self.scrape_player_offensive_stats(year, "rushing")
             self.scrape_player_offensive_stats(year, "receiving")
-            #self.scrape_advanced_team_stats(year)
 
-            if include_game_logs:
-                player_ids = self.get_player_ids_for_year(year)
-                logger.info(f"Found {len(player_ids)} relevant players in {year}")
-
-                for player_id in tqdm(player_ids, desc=f"Scraping players data in {year}"):
-                    self.scrape_player_game_logs(player_id, year)
+            self.scrape_team_offensive_stats(year)
 
             logger.info(f"Completed scraping data from {year}")
 
