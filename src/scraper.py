@@ -92,28 +92,19 @@ class ProFootballReferenceScraper:
         except requests.exceptions.RequestException as e:
             logger.error(f"Error fetching {url}: {e}")
             return None
-
-    def scrape_player_fantasy_stats(self, year: int) -> pd.DataFrame:
+    
+    def scrape_html_table(self, url: str, raw_file_name: str, table_id: str, year: int, overwrite: bool = False) -> pd.DataFrame:
         """
-        Scrape fantasy stats for a specific season.
-
-        Args:
-            year: NFL season year (e.g., 2023)
-
-        Returns:
-            DataFrame with player fantasy stats
+        Scrape an HTML table from a URL.
         """
-        url = f"{self.base_url}/years/{year}/fantasy.htm"
-        soup = self._get_soup(url, f"{year}_player_fantasy_stats")
-
+        soup = self._get_soup(url, raw_file_name, overwrite=overwrite)
         if not soup:
-            logger.error(f"Failed to get data for {year}")
+            logger.error(f"Failed to get data for {url}")
             return pd.DataFrame()
-
-        # Find the fantasy stats table
-        table = soup.find('table', id='fantasy')
+        
+        table = soup.find('table', id=table_id)
         if not table:
-            logger.error(f"Fantasy table not found for {year}")
+            logger.error(f"Table with id '{table_id}' not found on {url}")
             return pd.DataFrame()
 
         # Extract columns from thead elements
@@ -121,14 +112,13 @@ class ProFootballReferenceScraper:
         for th in table.find('thead').find_all('th'):
             col_name = th.get_text(strip=True)
             columns.append(col_name)
-
+        
         # Extract data from tbody elements
         rows = []
         for tr in table.find('tbody').find_all('tr'):
             # Skip column names
             if 'class' in tr.attrs and 'thead' in tr.attrs['class']:
                 continue
-
             row = [td.get_text(strip=True) for td in tr.find_all(['th', 'td'])]
             rows.append(row)
 
@@ -152,19 +142,30 @@ class ProFootballReferenceScraper:
             logger.warning(f"No data rows found for {year}")
             return pd.DataFrame()
 
-        df = pd.DataFrame(rows, columns=columns)
+        return pd.DataFrame(rows, columns=columns)
+
+
+    def scrape_player_fantasy_stats(self, year: int) -> None:
+        """
+        Scrape fantasy stats for a specific season.
+
+        Args:
+            year: NFL season year (e.g., 2023)
+
+        Returns:
+            DataFrame with player fantasy stats
+        """
+        url = f"{self.base_url}/years/{year}/fantasy.htm"
+
+        df = self.scrape_html_table(url, f"{year}_player_fantasy_stats", "fantasy", year)
 
         if not df.empty:
-            df['Season'] = year
-
             output_path = os.path.join(self.processed_data_dir, f"{year}_player_fantasy_stats.csv")
             df.to_csv(output_path, index=False)
             logger.info(f"Saved fantasy stats for {year} to {output_path}")
 
-        return df
 
-
-    def scrape_player_offensive_stats(self, year: int, category: str) -> pd.DataFrame:
+    def scrape_player_offensive_stats(self, year: int, category: str) -> None:
         """
         Scrape player receiving stats for a given year.
 
@@ -182,65 +183,16 @@ class ProFootballReferenceScraper:
 
         url = f"{self.base_url}/years/{year}/{category}_advanced.htm"
 
-        soup = self._get_soup(url, raw_file_name=f"{year}_{category}_stats")
-
-        if not soup:
-            logger.error(f"Failed to get {category} stats for {year}")
-            return pd.DataFrame()
-
         if category == "passing":
-            table = soup.find('table', id='passing_advanced')
+            df = self.scrape_html_table(url, f"{year}_{category}_stats", "passing_advanced", year)
         elif category == "rushing":
-            table = soup.find('table', id='adv_rushing')
+            df = self.scrape_html_table(url, f"{year}_{category}_stats", "adv_rushing", year)
         elif category == "receiving":
-            table = soup.find('table', id='adv_receiving')
+            df = self.scrape_html_table(url, f"{year}_{category}_stats", "adv_receiving", year)
         else:
             logger.error(f"Invalid category: {category}")
-            return pd.DataFrame()
-        if not table:
-            return pd.DataFrame()
-        
-        # Extract columns from thead elements
-        columns = []
-        for th in table.find('thead').find_all('th'):
-            col_name = th.get_text(strip=True)
-            columns.append(col_name)
-
-        # Extract data from tbody elements
-        rows = []
-        for tr in table.find('tbody').find_all('tr'):
-            # Skip column names
-            if 'class' in tr.attrs and 'thead' in tr.attrs['class']:
-                continue
-
-            row = [td.get_text(strip=True) for td in tr.find_all(['th', 'td'])]
-            rows.append(row)
-
-        if len(rows) > 0:
-            # Adjust columns to match whats in the data, this ignores category headers that precede the actual data.
-            actual_column_count = len(rows[0])
-            # If we have more headers than actual columns, take the last N headers
-            if len(columns) > actual_column_count:
-                original_count = len(columns)
-                columns = columns[-actual_column_count:]
-                logger.info(f"Adjusted headers from {original_count} to {actual_column_count}")
-            elif len(columns) < actual_column_count:
-                # Add dummy column names for extra data columns
-                extra_cols_needed = actual_column_count - len(columns)
-                for i in range(extra_cols_needed):
-                    columns.append(f"Unknown_Col_{i+1}")
-                logger.info(f"Added {extra_cols_needed} dummy columns")
-            else:
-                logger.info(f"Headers and data columns match for {year}")
-        else:
-            logger.warning(f"No data rows found for {year}")
-            return pd.DataFrame()
-
-        df = pd.DataFrame(rows, columns=columns)
-
+                
         if not df.empty:
-            df['Season'] = year
-
             output_path = os.path.join(self.processed_data_dir, f"{year}_{category}_stats.csv")
             df.to_csv(output_path, index=False)
             logger.info(f"Saved {category} stats for {year} to {output_path}")
@@ -340,13 +292,12 @@ class ProFootballReferenceScraper:
         for year in tqdm(years, desc="Scraping years"):
             logger.info(f"Scraping data from {year}")
 
-            self.scrape_season_fantasy_stats(year)
-
+            self.scrape_player_fantasy_stats(year)
             self.scrape_player_offensive_stats(year, "passing")
             self.scrape_player_offensive_stats(year, "rushing")
             self.scrape_player_offensive_stats(year, "receiving")
 
-            self.scrape_team_offensive_stats(year)
+            #self.scrape_team_offensive_stats(year)
 
             logger.info(f"Completed scraping data from {year}")
 
