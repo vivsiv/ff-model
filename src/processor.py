@@ -13,6 +13,7 @@ from typing import Dict, List, Optional, Tuple, Callable
 
 import pandas as pd
 import numpy as np
+from tqdm import tqdm
 
 logging.basicConfig(
     level=logging.INFO,
@@ -59,12 +60,16 @@ class FantasyDataProcessor:
         name = name.strip()
         name = name.lower()
         name = name.replace('.', '')
+        name = name.replace('*', '')
+        name = name.replace('+', '')
+        name = name.replace('\'', '')
+        name = name.replace("-", "_")
 
-        suffixes = {"jr", "sr", "ii", "iii", "iv", "v", "junior", "senior", "*", "+"}
+        suffixes = {"jr", "sr", "ii", "iii", "iv", "v", "junior", "senior"}
         parts = name.split()
         while parts and parts[-1] in suffixes:
             parts.pop()
-        name = " ".join(parts)
+        name = "_".join(parts)
 
         return name
     
@@ -93,14 +98,15 @@ class FantasyDataProcessor:
             return pd.DataFrame()
         
         dfs = []
-        for file in files:
+        for file in tqdm(files, desc=f"Processing files matching: {file_pattern.split('/')[-1]}"):
             df = pd.read_csv(file)
             assert len(column_names) == len(df.columns), "New column names and dataframe columns must have the same length"
             df.columns = column_names 
+            df = df[select_columns]
+            df = df.fillna(0.0)
 
             df = df[df['team'] != 'League Average']
-            df['year'] = int(file.split('_')[0])
-            df = df.select(columns=select_columns)
+            df['year'] = int(file.split('/')[-1].split('_')[0])
 
             for column, func in transformations.items():
                 if column in df.columns:
