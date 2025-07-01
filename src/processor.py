@@ -25,23 +25,24 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
 class FantasyDataProcessor:
     """Generate silver and gold layer data from bronze layer data."""
-    
+
     def __init__(self, data_dir: str = "../data"):
         """
         Initialize the processor.
-        
+
         Args:
             data_dir: Directory containing the scraped data
         """
         self.bronze_data_dir = os.path.join(data_dir, "bronze")
         self.silver_data_dir = os.path.join(data_dir, "silver")
         self.gold_data_dir = os.path.join(data_dir, "gold")
-        
+
         os.makedirs(self.silver_data_dir, exist_ok=True)
         os.makedirs(self.gold_data_dir, exist_ok=True)
-    
+
     def standardize_name(self, name: str) -> str:
         """
         Standardizes the name of a player by:
@@ -50,10 +51,10 @@ class FantasyDataProcessor:
         - Removing any dots i.e. (A.J. Brown -> aj brown)
         - Removing any suffixes suggesting awards or honors (*, +)
         - Removing any suffixes i.e. (Kenneth Walker III -> kenneth walker) or (Odell Beckham Jr. -> odell beckham)
-        
+
         Args:
             name: The name of the player
-            
+
         Returns:
             Standardized name
         """
@@ -72,15 +73,43 @@ class FantasyDataProcessor:
         name = "_".join(parts)
 
         return name
-    
+
+    def standardize_team_name(self, team: str) -> str:
+        """
+        Team stats have full team names: "Philadelphia Eagles"
+        Player stats have abbreviated team names: "PHI"
+        Strategy:
+        - In general take the city and shorten it to the first 3 letters and capitalize it
+        - Use a hardcoded list of exceptions to handle cases like "New York Giants" -> "NYG"
+        """
+        team = team.strip()
+        exceptions = {
+            "Green Bay Packers": "GNB",
+            "Las Vegas Raiders": "LVR",
+            "Los Angeles Rams": "LAR",
+            "Los Angeles Chargers": "LAC",
+            "Jacksonville Jaguars": "JAX",
+            "New York Giants": "NYG",
+            "New York Jets": "NYJ",
+            "New England Patriots": "NWE",
+            "New Orleans Saints": "NOR",
+            "San Francisco 49ers": "SFO",
+        }
+        if team in exceptions:
+            team = exceptions[team]
+        else:
+            team = team.split()[0][:3].upper()
+
+        return team
+
     def parse_awards(self, awards: str) -> int:
         """
         Parses the awards column and returns the number of awards.
         """
         if pd.isna(awards):
-            return 0
+            return 0.0
         return len(awards.split(','))
-    
+
     def combine_year_data(self,
                           file_pattern: str,
                           column_names: List[str],
@@ -96,14 +125,13 @@ class FantasyDataProcessor:
         if not files:
             logger.error(f"No files found matching {file_pattern}")
             return pd.DataFrame()
-        
+
         dfs = []
         for file in tqdm(files, desc=f"Processing files matching: {file_pattern.split('/')[-1]}"):
             df = pd.read_csv(file)
             assert len(column_names) == len(df.columns), "New column names and dataframe columns must have the same length"
-            df.columns = column_names 
+            df.columns = column_names
             df = df[select_columns]
-            df = df.fillna(0.0)
 
             df = df[df['team'] != 'League Average']
             df['year'] = int(file.split('/')[-1].split('_')[0])
@@ -113,15 +141,16 @@ class FantasyDataProcessor:
                     df[column] = df[column].apply(func)
                 else:
                     logger.warning(f"Column '{column}' not found in dataframe, skipping transformation.")
-            
+
+            # TODO deal with nulls?
+            #df = df.fillna(0.0)
             dfs.append(df)
-        
+
         combined_df = pd.concat(dfs, ignore_index=True)
 
         table_path = os.path.join(self.silver_data_dir, output_file_name)
         combined_df.to_csv(table_path, index=False)
         logger.info(f"Saved {output_file_name} to {table_path}")
-
 
     def build_player_fantasy_stats(self) -> None:
         """
@@ -166,18 +195,26 @@ class FantasyDataProcessor:
             'position_rank',
             'overall_rank'
         ]
-        select_columns = ['player', 'team', 'position', 'age', 'games', 'games_started', 'standard_fantasy_points', 'ppr_fantasy_points', 'value_over_replacement'] 
-        transformations = {'player': self.standardize_name}
-        output_file_name = "player_fantasy_stats.csv"
+        select_columns = [
+            'player',
+            'team',
+            'position',
+            'age',
+            'games',
+            'games_started',
+            'standard_fantasy_points',
+            'ppr_fantasy_points',
+            'value_over_replacement'
+        ]
 
         self.combine_year_data(
             file_pattern="*_player_fantasy_stats.csv",
             column_names=column_names,
             select_columns=select_columns,
-            transformations=transformations,
-            output_file_name=output_file_name
+            transformations={'player': self.standardize_name},
+            output_file_name="player_fantasy_stats.csv"
         )
-    
+
     def build_player_receiving_stats(self) -> None:
         """
         Reads in all years of receiving stats from the bronze layer, cleans the data and merges them all into one dataframe.
@@ -208,18 +245,16 @@ class FantasyDataProcessor:
             'rec_passer_rating_when_targeted',
             'rec_awards'
         ]
-        select_columns = ['player', 'team', 'position', 'age' 'rec_receptions', 'rec_targets', 'rec_yards', 'rec_first_downs', 'rec_yards_before_catch', 'rec_yards_before_catch_per_reception', 'rec_yards_after_catch', 'rec_yards_after_catch_per_reception', 'rec_average_depth_of_target', 'rec_broken_tackles', 'rec_receptions_per_broken_tackle', 'rec_drops', 'rec_drop_percentage', 'rec_interceptions_when_targeted', 'rec_passer_rating_when_targeted', 'rec_awards']
-        transformations = {'player': self.standardize_name, 'rec_awards': self.parse_awards}
-        output_file_name = "player_receiving_stats.csv"
-        
+        excluded_columns = {'rank', 'games', 'games_started'}
+
         self.combine_year_data(
             file_pattern="*_player_receiving_stats.csv",
             column_names=column_names,
-            select_columns=select_columns,
-            transformations=transformations,
-            output_file_name=output_file_name
+            select_columns=[col for col in column_names if col not in excluded_columns],
+            transformations={'player': self.standardize_name, 'rec_awards': self.parse_awards},
+            output_file_name="player_receiving_stats.csv"
         )
-    
+
     def build_player_rushing_stats(self) -> None:
         """
         Reads in all years of rushing stats from the bronze layer, cleans the data and merges them all into one dataframe.
@@ -244,18 +279,16 @@ class FantasyDataProcessor:
             'rush_attempts_per_broken_tackle',
             'rush_awards'
         ]
-        select_columns = ['player', 'team', 'position', 'age' 'rush_attempts', 'rush_yards', 'rush_first_downs', 'rush_yards_before_contact', 'rush_yards_before_contact_per_attempt', 'rush_yards_after_contact', 'rush_yards_after_contact_per_attempt', 'rush_broken_tackles', 'rush_attempts_per_broken_tackle', 'rush_awards']
-        transformations = {'player': self.standardize_name, 'rush_awards': self.parse_awards}
-        output_file_name = "player_rushing_stats.csv"
-        
+        excluded_columns = {'rank', 'games', 'games_started'}
+
         self.combine_year_data(
             file_pattern="*_player_rushing_stats.csv",
             column_names=column_names,
-            select_columns=select_columns,
-            transformations=transformations,
-            output_file_name=output_file_name
+            select_columns=[col for col in column_names if col not in excluded_columns],
+            transformations={'player': self.standardize_name, 'rush_awards': self.parse_awards},
+            output_file_name="player_rushing_stats.csv"
         )
-    
+
     def build_player_passing_stats(self) -> None:
         """
         Reads in all years of passing stats from the bronze layer, cleans the data and merges them all into one dataframe.
@@ -284,7 +317,7 @@ class FantasyDataProcessor:
             'pass_drops',
             'pass_drop_percentage',
             'pass_bad_throws',
-            'pass_bad_throw_percentage'
+            'pass_bad_throw_percentage',
             'pass_on_target_throws',
             'pass_on_target_percentage',
             'pass_pocket_time',
@@ -305,18 +338,33 @@ class FantasyDataProcessor:
             'play_action_pass_yards',
             'awards'
         ]
-        select_columns = ['player', 'team', 'position', 'age', 'pass_incomplete_air_yards', 'pass_completed_air_yards', 'pass_yards_after_catch', 'pass_passes_thrown_away', 'pass_drops', 'pass_bad_throws', 'pass_on_target_throws', 'pass_pocket_time', 'pass_blitzes', 'pass_hurries', 'pass_hits', 'pass_pressures', 'awards']
-        transformations = {'player': self.standardize_name, 'awards': self.parse_awards}
-        output_file_name = "player_passing_stats.csv"
+        select_columns = [
+            'player',
+            'team',
+            'position',
+            'age',
+            'pass_incomplete_air_yards',
+            'pass_completed_air_yards',
+            'pass_yards_after_catch',
+            'pass_passes_thrown_away',
+            'pass_drops',
+            'pass_bad_throws',
+            'pass_on_target_throws',
+            'pass_pocket_time',
+            'pass_blitzes',
+            'pass_hurries',
+            'pass_hits',
+            'pass_pressures',
+            'awards'
+        ]
 
         self.combine_year_data(
             file_pattern="*_player_passing_stats.csv",
             column_names=column_names,
             select_columns=select_columns,
-            transformations=transformations,
-            output_file_name=output_file_name
+            transformations={'player': self.standardize_name, 'awards': self.parse_awards},
+            output_file_name="player_passing_stats.csv"
         )
-
 
     def build_team_stats(self) -> None:
         """
@@ -330,6 +378,8 @@ class FantasyDataProcessor:
             'rank',
             'team',
             'games',
+            'points_scored',
+            'yards',
             'plays',
             'team_yards_per_play',
             'team_turnovers',
@@ -354,25 +404,23 @@ class FantasyDataProcessor:
             'team_turnover_percent',
             'team_expected_points'
         ]
-        select_columns = ['team', 'plays', 'team_yards_per_play', 'team_turnovers', 'team_first_downs', 'team_pass_completions', 'team_pass_attempts', 'team_pass_yards', 'team_pass_touchdowns', 'team_pass_interceptions', 'team_pass_net_yards_per_attempt', 'team_pass_first_downs', 'team_rush_attempts', 'team_rush_yards', 'team_rush_touchdowns', 'team_rush_yards_per_attempt', 'team_rush_first_downs', 'team_scoring_percent', 'team_turnover_percent', 'team_expected_points']
-        output_file_name = "team_offense.csv"
+        excluded_columns = {'rank', 'games'}
 
         self.combine_year_data(
             file_pattern="*_team_offense.csv",
             column_names=column_names,
-            select_columns=select_columns,
-            transformations={},
-            output_file_name=output_file_name
+            select_columns=[col for col in column_names if col not in excluded_columns],
+            transformations={'team': self.standardize_team_name},
+            output_file_name="team_offense.csv"
         )
-
 
     def process_all_data(self) -> Dict[str, pd.DataFrame]:
         """
         Process all data and create combined datasets.
-        
+
         Args:
             years: List of years to process, or None for all available years
-            
+
         Returns:
             Dictionary of processed DataFrames
         """
