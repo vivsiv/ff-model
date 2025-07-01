@@ -434,6 +434,38 @@ class FantasyDataProcessor:
 
         joined_df.to_csv(os.path.join(self.silver_data_dir, "all_stats.csv"), index=False)
 
+    def create_rollup_stats(self, df: pd.DataFrame, stats_to_rollup: List[str]) -> pd.DataFrame:
+        """
+        Creates rolling average stats for teams over multiple years.
+        For example, 2-year average points scored for each team.
+        """
+        team_stats_df = pd.read_csv(os.path.join(self.silver_data_dir, "team_offense.csv"))
+        
+        # Sort by team and year to ensure proper rolling calculation
+        team_stats_df = team_stats_df.sort_values(['team', 'year'])
+        
+        # Create rolling averages for numeric columns
+        numeric_columns = team_stats_df.select_dtypes(include=[np.number]).columns
+        numeric_columns = [col for col in numeric_columns if col not in ['year']]  # Exclude year
+        
+        # Create 2-year rolling averages
+        for col in numeric_columns:
+            rollup_col = f"2_yr_avg_{col}"
+            team_stats_df[rollup_col] = team_stats_df.groupby('team')[col].rolling(
+                window=2, min_periods=1
+            ).mean().reset_index(0, drop=True)
+        
+        # Create 3-year rolling averages
+        for col in numeric_columns:
+            rollup_col = f"3_yr_avg_{col}"
+            team_stats_df[rollup_col] = team_stats_df.groupby('team')[col].rolling(
+                window=3, min_periods=1
+            ).mean().reset_index(0, drop=True)
+        
+        # Save the enhanced team stats
+        team_stats_df.to_csv(os.path.join(self.silver_data_dir, "team_offense_with_rollups.csv"), index=False)
+        logger.info("Created rollup stats for team offense data")
+
     def process_all_data(self) -> Dict[str, pd.DataFrame]:
         """
         Process all data and create combined datasets.
