@@ -133,7 +133,9 @@ class FantasyDataProcessor:
             df.columns = column_names
             df = df[select_columns]
 
-            df = df[df['team'] != 'League Average']
+            if 'player' in df.columns:
+                df = df[df['player'] != 'League Average']
+
             df['year'] = int(file.split('/')[-1].split('_')[0])
 
             for column, func in transformations.items():
@@ -142,11 +144,15 @@ class FantasyDataProcessor:
                 else:
                     logger.warning(f"Column '{column}' not found in dataframe, skipping transformation.")
 
-            # TODO deal with nulls?
-            #df = df.fillna(0.0)
             dfs.append(df)
 
         combined_df = pd.concat(dfs, ignore_index=True)
+
+        cols = combined_df.columns.tolist()
+        if 'year' in cols:
+            cols.remove('year')
+            cols.insert(1, 'year')
+            combined_df = combined_df[cols]
 
         table_path = os.path.join(self.silver_data_dir, output_file_name)
         combined_df.to_csv(table_path, index=False)
@@ -245,7 +251,7 @@ class FantasyDataProcessor:
             'rec_passer_rating_when_targeted',
             'rec_awards'
         ]
-        excluded_columns = {'rank', 'games', 'games_started'}
+        excluded_columns = {'rank', 'age', 'team', 'position', 'games', 'games_started'}
 
         self.combine_year_data(
             file_pattern="*_player_receiving_stats.csv",
@@ -279,7 +285,7 @@ class FantasyDataProcessor:
             'rush_attempts_per_broken_tackle',
             'rush_awards'
         ]
-        excluded_columns = {'rank', 'games', 'games_started'}
+        excluded_columns = {'rank', 'age', 'team', 'position', 'games', 'games_started'}
 
         self.combine_year_data(
             file_pattern="*_player_rushing_stats.csv",
@@ -340,9 +346,6 @@ class FantasyDataProcessor:
         ]
         select_columns = [
             'player',
-            'team',
-            'position',
-            'age',
             'pass_incomplete_air_yards',
             'pass_completed_air_yards',
             'pass_yards_after_catch',
@@ -414,6 +417,23 @@ class FantasyDataProcessor:
             output_file_name="team_offense.csv"
         )
 
+    def join_stats(self) -> None:
+        """
+        Joins the player stats into a single dataframe.
+        """
+        fantasy_stats_df = pd.read_csv(os.path.join(self.silver_data_dir, "player_fantasy_stats.csv"))
+        receiving_stats_df = pd.read_csv(os.path.join(self.silver_data_dir, "player_receiving_stats.csv"))
+        rushing_stats_df = pd.read_csv(os.path.join(self.silver_data_dir, "player_rushing_stats.csv"))
+        passing_stats_df = pd.read_csv(os.path.join(self.silver_data_dir, "player_passing_stats.csv"))
+        team_stats_df = pd.read_csv(os.path.join(self.silver_data_dir, "team_offense.csv"))
+
+        joined_df = pd.merge(fantasy_stats_df, receiving_stats_df, on=['player', 'year'], how='left')
+        joined_df = pd.merge(joined_df, rushing_stats_df, on=['player', 'year'], how='left')
+        joined_df = pd.merge(joined_df, passing_stats_df, on=['player', 'year'], how='left')
+        joined_df = pd.merge(joined_df, team_stats_df, on=['team', 'year'], how='left')
+
+        joined_df.to_csv(os.path.join(self.silver_data_dir, "all_stats.csv"), index=False)
+
     def process_all_data(self) -> Dict[str, pd.DataFrame]:
         """
         Process all data and create combined datasets.
@@ -430,16 +450,18 @@ class FantasyDataProcessor:
         self.build_player_passing_stats()
         self.build_team_stats()
 
+        self.join_stats()
+
 
 def main():
     script_dir = os.path.dirname(os.path.abspath(__file__))
     data_dir = os.path.join(os.path.dirname(script_dir), "data")
-    
+
     processor = FantasyDataProcessor(data_dir=data_dir)
-    
+
     processor.process_all_data()
     logger.info("Data processing complete")
 
 
 if __name__ == "__main__":
-    main() 
+    main()
