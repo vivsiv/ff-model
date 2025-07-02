@@ -114,8 +114,7 @@ class FantasyDataProcessor:
                           file_pattern: str,
                           column_names: List[str],
                           select_columns: List[str],
-                          transformations: Dict[str, Callable],
-                          output_file_name: str) -> pd.DataFrame:
+                          transformations: Dict[str, Callable]) -> pd.DataFrame:
         """
         Combines data from multiple years into a single dataframe.
         """
@@ -154,9 +153,49 @@ class FantasyDataProcessor:
             cols.insert(1, 'year')
             combined_df = combined_df[cols]
 
-        table_path = os.path.join(self.silver_data_dir, output_file_name)
-        combined_df.to_csv(table_path, index=False)
-        logger.info(f"Saved {output_file_name} to {table_path}")
+        return combined_df
+
+    def create_rollup_stats(self,
+                            stats_df: pd.DataFrame,
+                            grouping_columns: List[str],
+                            rollup_columns: List[str],
+                            max_rollup_window: int = 3) -> pd.DataFrame:
+        """
+        Creates columns that are rolling averages of existing stats over multiple years.
+
+        Args:
+            stats_df: The dataframe to create rollup stats for
+            grouping_columns: The columns to group by
+            rollup_columns: The columns to rollup
+            max_rollup_window: The maximum window size to rollup over
+
+        Returns:
+            The dataframe with the rollup stats added
+        """
+
+        numeric_cols = stats_df.select_dtypes(include=[np.number]).columns
+        assert all(col in numeric_cols for col in rollup_columns), "All columns to rollup must be in the input dataframe and numeric"
+
+        stats_df_sorted = stats_df.sort_values("year")
+
+        for window in range(2, max_rollup_window + 1):
+            for col in rollup_columns:
+                rollup_col = f"{col}_{window}_yr_avg"
+                stats_df_sorted[rollup_col] = (
+                    stats_df_sorted
+                    .groupby(grouping_columns)[col]
+                    .transform(lambda x: x.rolling(window=window, min_periods=1).mean())
+                )
+
+        return stats_df_sorted
+
+    def write_to_silver(self, df: pd.DataFrame, file_name: str) -> None:
+        """
+        Writes a dataframe to the silver layer.
+        """
+        table_path = os.path.join(self.silver_data_dir, file_name)
+        df.to_csv(table_path, index=False)
+        logger.info(f"Saved {file_name} to {table_path}")
 
     def build_player_fantasy_stats(self) -> None:
         """
@@ -204,22 +243,20 @@ class FantasyDataProcessor:
         select_columns = [
             'player',
             'team',
-            'position',
             'age',
-            'games',
-            'games_started',
             'standard_fantasy_points',
             'ppr_fantasy_points',
             'value_over_replacement'
         ]
 
-        self.combine_year_data(
+        fantasy_stats_df = self.combine_year_data(
             file_pattern="*_player_fantasy_stats.csv",
             column_names=column_names,
             select_columns=select_columns,
             transformations={'player': self.standardize_name},
-            output_file_name="player_fantasy_stats.csv"
         )
+
+        self.write_to_silver(fantasy_stats_df, "player_fantasy_stats.csv")
 
     def build_player_receiving_stats(self) -> None:
         """
@@ -253,13 +290,22 @@ class FantasyDataProcessor:
         ]
         excluded_columns = {'rank', 'age', 'team', 'position', 'games', 'games_started'}
 
-        self.combine_year_data(
+        receiving_stats_df = self.combine_year_data(
             file_pattern="*_player_receiving_stats.csv",
             column_names=column_names,
             select_columns=[col for col in column_names if col not in excluded_columns],
             transformations={'player': self.standardize_name, 'rec_awards': self.parse_awards},
-            output_file_name="player_receiving_stats.csv"
         )
+
+        rollup_columns = ['rec_yards', 'rec_yards_before_catch', 'rec_yards_after_catch']
+        receiving_stats_df = self.create_rollup_stats(
+            stats_df=receiving_stats_df,
+            grouping_columns=['player'],
+            rollup_columns=rollup_columns,
+            max_rollup_window=2
+        )
+
+        self.write_to_silver(receiving_stats_df, "player_receiving_stats.csv")
 
     def build_player_rushing_stats(self) -> None:
         """
@@ -287,13 +333,22 @@ class FantasyDataProcessor:
         ]
         excluded_columns = {'rank', 'age', 'team', 'position', 'games', 'games_started'}
 
-        self.combine_year_data(
+        rushing_stats_df = self.combine_year_data(
             file_pattern="*_player_rushing_stats.csv",
             column_names=column_names,
             select_columns=[col for col in column_names if col not in excluded_columns],
             transformations={'player': self.standardize_name, 'rush_awards': self.parse_awards},
-            output_file_name="player_rushing_stats.csv"
         )
+
+        rollup_columns = ['rush_yards', 'rush_yards_before_contact', 'rush_yards_after_contact']
+        rushing_stats_df = self.create_rollup_stats(
+            stats_df=rushing_stats_df,
+            grouping_columns=['player'],
+            rollup_columns=rollup_columns,
+            max_rollup_window=2
+        )
+
+        self.write_to_silver(rushing_stats_df, "player_rushing_stats.csv")
 
     def build_player_passing_stats(self) -> None:
         """
@@ -361,15 +416,24 @@ class FantasyDataProcessor:
             'awards'
         ]
 
-        self.combine_year_data(
+        passing_stats_df = self.combine_year_data(
             file_pattern="*_player_passing_stats.csv",
             column_names=column_names,
             select_columns=select_columns,
             transformations={'player': self.standardize_name, 'awards': self.parse_awards},
-            output_file_name="player_passing_stats.csv"
         )
 
-    def build_team_stats(self) -> None:
+        rollup_columns = ['pass_incomplete_air_yards', 'pass_completed_air_yards', 'pass_yards_after_catch']
+        passing_stats_df = self.create_rollup_stats(
+            stats_df=passing_stats_df,
+            grouping_columns=['player'],
+            rollup_columns=rollup_columns,
+            max_rollup_window=2
+        )
+
+        self.write_to_silver(passing_stats_df, "player_passing_stats.csv")
+
+    def build_team_stats(self, rollup_window: int = 2) -> None:
         """
         Reads in all years of team stats from the bronze layer, cleans the data and merges them all into one dataframe.
         Saves the dataframe to the silver layer.
@@ -381,9 +445,9 @@ class FantasyDataProcessor:
             'rank',
             'team',
             'games',
-            'points_scored',
-            'yards',
-            'plays',
+            'team_points',
+            'team_yards',
+            'team_plays',
             'team_yards_per_play',
             'team_turnovers',
             'team_fumbles_lost',
@@ -408,63 +472,52 @@ class FantasyDataProcessor:
             'team_expected_points'
         ]
         excluded_columns = {'rank', 'games'}
+        select_columns = [col for col in column_names if col not in excluded_columns]
 
-        self.combine_year_data(
+        team_offense_df = self.combine_year_data(
             file_pattern="*_team_offense.csv",
             column_names=column_names,
-            select_columns=[col for col in column_names if col not in excluded_columns],
+            select_columns=select_columns,
             transformations={'team': self.standardize_team_name},
-            output_file_name="team_offense.csv"
         )
+
+        rollup_columns = ['team_points', 'team_yards', 'team_plays', 'team_yards_per_play']
+        team_offense_df = self.create_rollup_stats(
+            stats_df=team_offense_df,
+            grouping_columns=['team'],
+            rollup_columns=rollup_columns,
+            max_rollup_window=rollup_window
+        )
+
+        self.write_to_silver(team_offense_df, "team_offense.csv")
 
     def join_stats(self) -> None:
         """
         Joins the player stats into a single dataframe.
+        The training set must use the previous years stats to predict the current years fantasy points
+        so the join needs to be: year N in fantasy stats with year N-1 in other stat tables.
         """
         fantasy_stats_df = pd.read_csv(os.path.join(self.silver_data_dir, "player_fantasy_stats.csv"))
+        fantasy_stats_df['join_year'] = fantasy_stats_df['year'] - 1
+
         receiving_stats_df = pd.read_csv(os.path.join(self.silver_data_dir, "player_receiving_stats.csv"))
         rushing_stats_df = pd.read_csv(os.path.join(self.silver_data_dir, "player_rushing_stats.csv"))
         passing_stats_df = pd.read_csv(os.path.join(self.silver_data_dir, "player_passing_stats.csv"))
         team_stats_df = pd.read_csv(os.path.join(self.silver_data_dir, "team_offense.csv"))
 
-        joined_df = pd.merge(fantasy_stats_df, receiving_stats_df, on=['player', 'year'], how='left')
-        joined_df = pd.merge(joined_df, rushing_stats_df, on=['player', 'year'], how='left')
-        joined_df = pd.merge(joined_df, passing_stats_df, on=['player', 'year'], how='left')
-        joined_df = pd.merge(joined_df, team_stats_df, on=['team', 'year'], how='left')
+        receiving_stats_df = receiving_stats_df.rename(columns={'year': 'join_year'})
+        rushing_stats_df = rushing_stats_df.rename(columns={'year': 'join_year'})
+        passing_stats_df = passing_stats_df.rename(columns={'year': 'join_year'})
+        team_stats_df = team_stats_df.rename(columns={'year': 'join_year'})
+
+        joined_df = pd.merge(fantasy_stats_df, receiving_stats_df, on=['player', 'join_year'], how='left')
+        joined_df = pd.merge(joined_df, rushing_stats_df, on=['player', 'join_year'], how='left')
+        joined_df = pd.merge(joined_df, passing_stats_df, on=['player', 'join_year'], how='left')
+        joined_df = pd.merge(joined_df, team_stats_df, on=['team', 'join_year'], how='left')
+
+        joined_df = joined_df.drop(columns=['join_year'])
 
         joined_df.to_csv(os.path.join(self.silver_data_dir, "all_stats.csv"), index=False)
-
-    def create_rollup_stats(self, df: pd.DataFrame, stats_to_rollup: List[str]) -> pd.DataFrame:
-        """
-        Creates rolling average stats for teams over multiple years.
-        For example, 2-year average points scored for each team.
-        """
-        team_stats_df = pd.read_csv(os.path.join(self.silver_data_dir, "team_offense.csv"))
-        
-        # Sort by team and year to ensure proper rolling calculation
-        team_stats_df = team_stats_df.sort_values(['team', 'year'])
-        
-        # Create rolling averages for numeric columns
-        numeric_columns = team_stats_df.select_dtypes(include=[np.number]).columns
-        numeric_columns = [col for col in numeric_columns if col not in ['year']]  # Exclude year
-        
-        # Create 2-year rolling averages
-        for col in numeric_columns:
-            rollup_col = f"2_yr_avg_{col}"
-            team_stats_df[rollup_col] = team_stats_df.groupby('team')[col].rolling(
-                window=2, min_periods=1
-            ).mean().reset_index(0, drop=True)
-        
-        # Create 3-year rolling averages
-        for col in numeric_columns:
-            rollup_col = f"3_yr_avg_{col}"
-            team_stats_df[rollup_col] = team_stats_df.groupby('team')[col].rolling(
-                window=3, min_periods=1
-            ).mean().reset_index(0, drop=True)
-        
-        # Save the enhanced team stats
-        team_stats_df.to_csv(os.path.join(self.silver_data_dir, "team_offense_with_rollups.csv"), index=False)
-        logger.info("Created rollup stats for team offense data")
 
     def process_all_data(self) -> Dict[str, pd.DataFrame]:
         """

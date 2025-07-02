@@ -193,16 +193,40 @@ class ProFootballReferenceScraper:
         Returns:
             None (saves data to bronze layer)
         """
-        assert category in ["passing", "rushing", "receiving"], "Invalid category"
+        assert category in ["passing", "rushing", "receiving", "rushing_advanced", "receiving_advanced"], "Invalid category"
 
-        url = f"{self.base_url}/years/{year}/{category}_advanced.htm"
+        basic_url = f"{self.base_url}/years/{year}/{category}.htm"
+        advanced_url = f"{self.base_url}/years/{year}/{category}_advanced.htm"
 
         if category == "passing":
-            df = self.scrape_html_table(url, f"{year}_{category}_stats", "passing_advanced", year)
+            df = self.scrape_html_table(
+                url=basic_url,
+                html_file_name=f"{year}_{category}_stats",
+                table_id="passing",
+                year=year)
         elif category == "rushing":
-            df = self.scrape_html_table(url, f"{year}_{category}_stats", "adv_rushing", year)
+            df = self.scrape_html_table(
+                url=basic_url,
+                html_file_name=f"{year}_{category}_stats",
+                table_id="rushing",
+                year=year)
+        elif category == "rushing_advanced":
+            df = self.scrape_html_table(
+                url=advanced_url,
+                html_file_name=f"{year}_{category}_advanced_stats",
+                table_id="adv_rushing",
+                year=year)
         elif category == "receiving":
-            df = self.scrape_html_table(url, f"{year}_{category}_stats", "adv_receiving", year)
+            df = self.scrape_html_table(
+                url=basic_url,
+                html_file_name=f"{year}_{category}_stats",
+                table_id="receiving",
+                year=year)
+        elif category == "receiving_advanced":
+            df = self.scrape_html_table(
+                url=advanced_url,
+                html_file_name=f"{year}_{category}_advanced_stats",
+                table_id="adv_receiving", year=year)
         else:
             logger.error(f"Invalid category: {category}")
 
