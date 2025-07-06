@@ -28,6 +28,10 @@ logger = logging.getLogger(__name__)
 
 class FantasyDataProcessor:
     """Generate silver and gold layer data from bronze layer data."""
+    # TODO: Handle '2TM' seasons
+    # TODO: Handle having tons of rows with zero fantasy points, we don't want this heavily biasing the training set.
+    # TODO: Decide on columns to rollup
+    # TODO: Rename column_names to normalized_column_names in combine_year_data
 
     def __init__(self, data_dir: str = "../data"):
         """
@@ -203,8 +207,6 @@ class FantasyDataProcessor:
         """
         Reads in all years of fantasy stats from the bronze layer, cleans the data and merges them all into one dataframe.
         Saves the dataframe to the silver layer.
-        TODO: Handle '2TM' seasons
-        TODO: Handle having tons of rows with zero fantasy points, we don't want this heavily biasing the training set.
 
         Returns:
             None (saves data to silver layer)
