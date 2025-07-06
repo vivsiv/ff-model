@@ -108,6 +108,8 @@ class FantasyDataProcessor:
         """
         if pd.isna(awards):
             return 0.0
+        if awards == "":
+            return 0.0
         return len(awards.split(','))
 
     def combine_year_data(self,
@@ -201,6 +203,8 @@ class FantasyDataProcessor:
         """
         Reads in all years of fantasy stats from the bronze layer, cleans the data and merges them all into one dataframe.
         Saves the dataframe to the silver layer.
+        TODO: Handle '2TM' seasons
+        TODO: Handle having tons of rows with zero fantasy points, we don't want this heavily biasing the training set.
 
         Returns:
             None (saves data to silver layer)
@@ -517,7 +521,7 @@ class FantasyDataProcessor:
 
         joined_df = joined_df.drop(columns=['join_year'])
 
-        joined_df.to_csv(os.path.join(self.silver_data_dir, "all_stats.csv"), index=False)
+        self.write_to_silver(joined_df, "final_stats.csv")
 
     def process_all_data(self) -> Dict[str, pd.DataFrame]:
         """
