@@ -174,7 +174,7 @@ class ProFootballReferenceScraper:
         df = self.scrape_html_table(url, f"{year}_player_fantasy_stats", "fantasy", year)
 
         if not df.empty:
-            output_path = os.path.join(self.processed_data_dir, f"{year}_player_fantasy_stats.csv")
+            output_path = os.path.join(self.bronze_data_dir, f"{year}_player_fantasy_stats.csv")
             df.to_csv(output_path, index=False)
             logger.info(f"Saved fantasy stats for {year} to {output_path}")
 
@@ -193,21 +193,45 @@ class ProFootballReferenceScraper:
         Returns:
             None (saves data to bronze layer)
         """
-        assert category in ["passing", "rushing", "receiving"], "Invalid category"
+        assert category in ["passing", "rushing", "receiving", "rushing_advanced", "receiving_advanced"], "Invalid category"
 
-        url = f"{self.base_url}/years/{year}/{category}_advanced.htm"
+        basic_url = f"{self.base_url}/years/{year}/{category}.htm"
+        advanced_url = f"{self.base_url}/years/{year}/{category}_advanced.htm"
 
         if category == "passing":
-            df = self.scrape_html_table(url, f"{year}_{category}_stats", "passing_advanced", year)
+            df = self.scrape_html_table(
+                url=basic_url,
+                html_file_name=f"{year}_{category}_stats",
+                table_id="passing",
+                year=year)
         elif category == "rushing":
-            df = self.scrape_html_table(url, f"{year}_{category}_stats", "adv_rushing", year)
+            df = self.scrape_html_table(
+                url=basic_url,
+                html_file_name=f"{year}_{category}_stats",
+                table_id="rushing",
+                year=year)
+        elif category == "rushing_advanced":
+            df = self.scrape_html_table(
+                url=advanced_url,
+                html_file_name=f"{year}_{category}_advanced_stats",
+                table_id="adv_rushing",
+                year=year)
         elif category == "receiving":
-            df = self.scrape_html_table(url, f"{year}_{category}_stats", "adv_receiving", year)
+            df = self.scrape_html_table(
+                url=basic_url,
+                html_file_name=f"{year}_{category}_stats",
+                table_id="receiving",
+                year=year)
+        elif category == "receiving_advanced":
+            df = self.scrape_html_table(
+                url=advanced_url,
+                html_file_name=f"{year}_{category}_advanced_stats",
+                table_id="adv_receiving", year=year)
         else:
             logger.error(f"Invalid category: {category}")
-                
+
         if not df.empty:
-            output_path = os.path.join(self.processed_data_dir, f"{year}_{category}_stats.csv")
+            output_path = os.path.join(self.bronze_data_dir, f"{year}_player_{category}_stats.csv")
             df.to_csv(output_path, index=False)
             logger.info(f"Saved {category} stats for {year} to {output_path}")
 
@@ -230,7 +254,7 @@ class ProFootballReferenceScraper:
         df = self.scrape_html_table(url, f"{year}_team_offense", "team_stats", year)
 
         if not df.empty:
-            output_path = os.path.join(self.processed_data_dir, f"{year}_team_offense.csv")
+            output_path = os.path.join(self.bronze_data_dir, f"{year}_team_offense.csv")
             df.to_csv(output_path, index=False)
             logger.info(f"Saved team offense stats for {year} to {output_path}")
 
