@@ -28,10 +28,8 @@ logger = logging.getLogger(__name__)
 
 class FantasyDataProcessor:
     """Generate silver and gold layer data from bronze layer data."""
-    # TODO: Handle '2TM' seasons
-    # TODO: Handle having tons of rows with zero fantasy points, we don't want this heavily biasing the training set.
+    #TODO: Players with two teams have multiple rows in passing, rushing, receving stats dataframes resulting in multiple rows in the joined dataframe. We need to select the row with the team '2TM'
     # TODO: Decide on columns to rollup
-    # TODO: Rename column_names to normalized_column_names in combine_year_data
 
     def __init__(self, data_dir: str = "../data"):
         """
@@ -118,7 +116,7 @@ class FantasyDataProcessor:
 
     def combine_year_data(self,
                           file_pattern: str,
-                          column_names: List[str],
+                          normalized_column_names: List[str],
                           select_columns: List[str],
                           transformations: Dict[str, Callable]) -> pd.DataFrame:
         """
@@ -134,8 +132,8 @@ class FantasyDataProcessor:
         dfs = []
         for file in tqdm(files, desc=f"Processing files matching: {file_pattern.split('/')[-1]}"):
             df = pd.read_csv(file)
-            assert len(column_names) == len(df.columns), "New column names and dataframe columns must have the same length"
-            df.columns = column_names
+            assert len(normalized_column_names) == len(df.columns), "Normalized column names and dataframe columns must have the same length"
+            df.columns = normalized_column_names
             df = df[select_columns]
 
             if 'player' in df.columns:
@@ -211,7 +209,7 @@ class FantasyDataProcessor:
         Returns:
             None (saves data to silver layer)
         """
-        column_names = [
+        normalized_column_names = [
             'rank',
             'player',
             'team',
@@ -257,10 +255,13 @@ class FantasyDataProcessor:
 
         fantasy_stats_df = self.combine_year_data(
             file_pattern="*_player_fantasy_stats.csv",
-            column_names=column_names,
+            normalized_column_names=normalized_column_names,
             select_columns=select_columns,
             transformations={'player': self.standardize_name},
         )
+
+        fantasy_stats_df = fantasy_stats_df[fantasy_stats_df['ppr_fantasy_points'].notna()]
+        fantasy_stats_df = fantasy_stats_df.fillna(0)
 
         self.write_to_silver(fantasy_stats_df, "player_fantasy_stats.csv")
 
@@ -269,7 +270,7 @@ class FantasyDataProcessor:
         Reads in all years of receiving stats from the bronze layer, cleans the data and merges them all into one dataframe.
         Saves the dataframe to the silver layer.
         """
-        column_names = [
+        normalized_column_names = [
             'rank',
             'player',
             'age',
@@ -298,8 +299,8 @@ class FantasyDataProcessor:
 
         receiving_stats_df = self.combine_year_data(
             file_pattern="*_player_receiving_stats.csv",
-            column_names=column_names,
-            select_columns=[col for col in column_names if col not in excluded_columns],
+            normalized_column_names=normalized_column_names,
+            select_columns=[col for col in normalized_column_names if col not in excluded_columns],
             transformations={'player': self.standardize_name, 'rec_awards': self.parse_awards},
         )
 
@@ -318,7 +319,7 @@ class FantasyDataProcessor:
         Reads in all years of rushing stats from the bronze layer, cleans the data and merges them all into one dataframe.
         Saves the dataframe to the silver layer.
         """
-        column_names = [
+        normalized_column_names = [
             'rank',
             'player',
             'age',
@@ -341,8 +342,8 @@ class FantasyDataProcessor:
 
         rushing_stats_df = self.combine_year_data(
             file_pattern="*_player_rushing_stats.csv",
-            column_names=column_names,
-            select_columns=[col for col in column_names if col not in excluded_columns],
+            normalized_column_names=normalized_column_names,
+            select_columns=[col for col in normalized_column_names if col not in excluded_columns],
             transformations={'player': self.standardize_name, 'rush_awards': self.parse_awards},
         )
 
@@ -361,7 +362,7 @@ class FantasyDataProcessor:
         Reads in all years of passing stats from the bronze layer, cleans the data and merges them all into one dataframe.
         Saves the dataframe to the silver layer.
         """
-        column_names = [
+        normalized_column_names = [
             'rank',
             'player',
             'age',
@@ -424,7 +425,7 @@ class FantasyDataProcessor:
 
         passing_stats_df = self.combine_year_data(
             file_pattern="*_player_passing_stats.csv",
-            column_names=column_names,
+            normalized_column_names=normalized_column_names,
             select_columns=select_columns,
             transformations={'player': self.standardize_name, 'awards': self.parse_awards},
         )
@@ -439,6 +440,18 @@ class FantasyDataProcessor:
 
         self.write_to_silver(passing_stats_df, "player_passing_stats.csv")
 
+    def add_league_average_rows(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Adds rows with the per year league average of each stat to the team stats dataframe.
+        Note: This is only for the team stats dataframe, and must be done after the rollup stats are created.
+        Players with multiple teams in a season are joined with the league average stats.
+        """
+        stats_columns = [col for col in df.columns if col not in ['team', 'year']]
+        league_average_row = df[stats_columns + ['year']].groupby('year').mean().reset_index()
+        league_average_row[stats_columns] = league_average_row[stats_columns].round(2)
+        league_average_row['team'] = '2TM'
+        return pd.concat([df, league_average_row], ignore_index=True).sort_values(['year', 'team']).reset_index(drop=True)
+
     def build_team_stats(self, rollup_window: int = 2) -> None:
         """
         Reads in all years of team stats from the bronze layer, cleans the data and merges them all into one dataframe.
@@ -447,7 +460,7 @@ class FantasyDataProcessor:
         Returns:
             None (saves data to silver layer)
         """
-        column_names = [
+        normalized_column_names = [
             'rank',
             'team',
             'games',
@@ -478,11 +491,11 @@ class FantasyDataProcessor:
             'team_expected_points'
         ]
         excluded_columns = {'rank', 'games'}
-        select_columns = [col for col in column_names if col not in excluded_columns]
+        select_columns = [col for col in normalized_column_names if col not in excluded_columns]
 
         team_offense_df = self.combine_year_data(
             file_pattern="*_team_offense.csv",
-            column_names=column_names,
+            normalized_column_names=normalized_column_names,
             select_columns=select_columns,
             transformations={'team': self.standardize_team_name},
         )
@@ -494,6 +507,7 @@ class FantasyDataProcessor:
             rollup_columns=rollup_columns,
             max_rollup_window=rollup_window
         )
+        team_offense_df = self.add_league_average_rows(team_offense_df)
 
         self.write_to_silver(team_offense_df, "team_offense.csv")
 
@@ -522,6 +536,7 @@ class FantasyDataProcessor:
         joined_df = pd.merge(joined_df, team_stats_df, on=['team', 'join_year'], how='left')
 
         joined_df = joined_df.drop(columns=['join_year'])
+        joined_df = joined_df.fillna(0)
 
         self.write_to_silver(joined_df, "final_stats.csv")
 

@@ -16,11 +16,11 @@ class TestFantasyDataProcessor(unittest.TestCase):
         self.bronze_dir = os.path.join(self.test_dir, "bronze")
         self.silver_dir = os.path.join(self.test_dir, "silver")
         self.gold_dir = os.path.join(self.test_dir, "gold")
-        
+
         os.makedirs(self.bronze_dir)
         os.makedirs(self.silver_dir)
         os.makedirs(self.gold_dir)
-        
+
         self.processor = FantasyDataProcessor(data_dir=self.test_dir)
 
     def tearDown(self):
@@ -64,7 +64,6 @@ class TestFantasyDataProcessor(unittest.TestCase):
         self.assertEqual(self.processor.parse_awards(None), 0.0)
         self.assertEqual(self.processor.parse_awards(""), 0.0)
 
-
     def test_combine_year_data_success(self):
         """Test successful combination of year data."""
         # Create test CSV files
@@ -86,7 +85,7 @@ class TestFantasyDataProcessor(unittest.TestCase):
         # Combine data
         result = self.processor.combine_year_data(
             file_pattern="*_test_stats.csv",
-            column_names=['rank', 'player', 'team', 'points'],
+            normalized_column_names=['rank', 'player', 'team', 'points'],
             select_columns=['player', 'team', 'points'],
             transformations={'player': self.processor.standardize_name}
         )
@@ -101,7 +100,6 @@ class TestFantasyDataProcessor(unittest.TestCase):
 
         pd.testing.assert_frame_equal(result, expected_df)
 
-
     def test_combine_year_data_column_mismatch(self):
         """Test combine_year_data with column count mismatch."""
         # Create test CSV with wrong number of columns
@@ -114,7 +112,7 @@ class TestFantasyDataProcessor(unittest.TestCase):
         with self.assertRaises(AssertionError):
             self.processor.combine_year_data(
                 file_pattern="*_mismatch.csv",
-                column_names=['col1', 'col2', 'col3'],
+                normalized_column_names=['col1', 'col2', 'col3'],
                 select_columns=['col1'],
                 transformations={}
             )
@@ -164,7 +162,26 @@ class TestFantasyDataProcessor(unittest.TestCase):
                 max_rollup_window=2
             )
 
-  
+    def test_add_league_average_rows(self):
+        """Test adding league average rows to the team stats dataframe."""
+        test_df = pd.DataFrame({
+            'year': [2023, 2023, 2022, 2022],
+            'team': ['PHI', 'DAL', 'PHI', 'DAL'],
+            'points': [100, 90, 120, 110],
+            'yards': [5000, 4000, 6000, 5000]
+        })
+
+        result = self.processor.add_league_average_rows(test_df)
+
+        expected_df = pd.DataFrame({
+            'year': [2023, 2023, 2023, 2022, 2022, 2022],
+            'team': ['PHI', 'DAL', '2TM', 'PHI', 'DAL', '2TM'],
+            'points': [100.0, 90.0, 95.0, 120.0, 110.0, 115.0],
+            'yards': [5000.0, 4000.0, 4500.0, 6000.0, 5000.0, 5500.0]
+        }).sort_values(['year', 'team']).reset_index(drop=True)
+
+        pd.testing.assert_frame_equal(result, expected_df)
+
     @patch('pandas.read_csv')
     @patch('src.processor.FantasyDataProcessor.write_to_silver')
     def test_join_stats(self, mock_write, mock_read_csv):
@@ -202,7 +219,7 @@ class TestFantasyDataProcessor(unittest.TestCase):
 
         # Have each call to pd.read_csv return each of the test dataframes
         mock_read_csv.side_effect = [fantasy_df, receiving_df, rushing_df, passing_df, team_df]
-        
+
         self.processor.join_stats()
 
         expected_df = pd.DataFrame({
@@ -211,8 +228,8 @@ class TestFantasyDataProcessor(unittest.TestCase):
             'team': ['PHI', 'DAL'],
             'fantasy_points': [100, 90],
             'rec_yards': [1000, 800],
-            'rush_yards': [600, np.nan],
-            'pass_yards': [3500, np.nan],
+            'rush_yards': [600, 0.0],
+            'pass_yards': [3500, 0.0],
             'team_points': [350, 300]
         })
 
