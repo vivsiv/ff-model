@@ -68,10 +68,10 @@ class TestFantasyDataProcessor(unittest.TestCase):
         """Test successful combination of year data."""
         # Create test CSV files
         test_data_2023 = pd.DataFrame({
-            'Rank': [1, 2, None],
-            'Player': ['John Doe', 'Jane Smith', "League Average"],
-            'Team': ['PHI', 'DAL', ""],
-            'Points': [100, 90, 95]
+            'Rank': [1, 2, None, 3, 4, 5],
+            'Player': ['John Doe', 'Jane Smith', "League Average", "Alice Brown", "Alice Brown", "Alice Brown"],
+            'Team': ['PHI', 'DAL', "", "2TM", "NYJ", "NYG"],
+            'Points': [100, 90, 95, 80, 30, 50],
         })
         test_data_2024 = pd.DataFrame({
             'Rank': [1, 3, 2],
@@ -92,10 +92,10 @@ class TestFantasyDataProcessor(unittest.TestCase):
 
         # Verify comined dataframe
         expected_df = pd.DataFrame({
-            'player': ['john_doe', 'jane_smith', 'bob_johnson', 'alice_brown', 'john_doe'],
-            'year': [2023, 2023, 2024, 2024, 2024],
-            'team': ['PHI', 'DAL', 'MIA', 'NYG', 'PHI'],
-            'points': [100, 90, 110, 95, 105],
+            'player': ['john_doe', 'jane_smith', 'alice_brown', 'bob_johnson', 'alice_brown', 'john_doe'],
+            'year': [2023, 2023, 2023, 2024, 2024, 2024],
+            'team': ['PHI', 'DAL', '2TM', 'MIA', 'NYG', 'PHI'],
+            'points': [100, 90, 80, 110, 95, 105],
         })
 
         pd.testing.assert_frame_equal(result, expected_df)

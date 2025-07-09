@@ -28,7 +28,6 @@ logger = logging.getLogger(__name__)
 
 class FantasyDataProcessor:
     """Generate silver and gold layer data from bronze layer data."""
-    #TODO: Players with two teams have multiple rows in passing, rushing, receving stats dataframes resulting in multiple rows in the joined dataframe. We need to select the row with the team '2TM'
     # TODO: Decide on columns to rollup
 
     def __init__(self, data_dir: str = "../data"):
@@ -134,13 +133,32 @@ class FantasyDataProcessor:
             df = pd.read_csv(file)
             assert len(normalized_column_names) == len(df.columns), "Normalized column names and dataframe columns must have the same length"
             df.columns = normalized_column_names
-            df = df[select_columns]
 
+            # Handle player stat edge cases
             if 'player' in df.columns:
+                # Keep only one row for players that were on multiple teams in a season
+                player_counts = df.groupby('player').size().reset_index(name='count')
+                multi_team_players = player_counts[player_counts['count'] > 1]['player'].tolist()
+
+                for multi_team_player in multi_team_players:
+                    multi_team_player_rows = df[df['player'] == multi_team_player]
+
+                    df = df[~((df['player'] == multi_team_player) & (df['team'] != '2TM'))]
+
+                # Remove the league average row
                 df = df[df['player'] != 'League Average']
 
-            df['year'] = int(file.split('/')[-1].split('_')[0])
+            # Select only the columns we want to keep
+            df = df[select_columns]
 
+            # Add a year column as the second column
+            year_value = int(file.split('/')[-1].split('_')[0])
+            cols = df.columns.tolist()
+            cols.insert(1, 'year')
+            df = df.reindex(columns=cols)
+            df['year'] = year_value
+
+            # Apply any transformations to the columns
             for column, func in transformations.items():
                 if column in df.columns:
                     df[column] = df[column].apply(func)
@@ -150,12 +168,6 @@ class FantasyDataProcessor:
             dfs.append(df)
 
         combined_df = pd.concat(dfs, ignore_index=True)
-
-        cols = combined_df.columns.tolist()
-        if 'year' in cols:
-            cols.remove('year')
-            cols.insert(1, 'year')
-            combined_df = combined_df[cols]
 
         return combined_df
 
