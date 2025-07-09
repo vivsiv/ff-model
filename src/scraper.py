@@ -53,13 +53,13 @@ class ProFootballReferenceScraper:
         os.makedirs(self.html_dir, exist_ok=True)
         os.makedirs(self.bronze_data_dir, exist_ok=True)
 
-    def _get_soup(self, url: str, html_file_path: str, delay: float = 3.0, overwrite: bool = False) -> BeautifulSoup:
+    def _get_soup(self, url: str, html_table_path: str, delay: float = 3.0, overwrite: bool = False) -> BeautifulSoup:
         """
         Get BeautifulSoup object from URL with rate limiting.
 
         Args:
             url: URL to scrape
-            html_file_path: Path the html file exists at or will be saved to 
+            html_table_path: Fully qualified path that the html table exists at or will be saved to.
             delay: Time to wait between requests (seconds)
             overwrite: Overwrite the existing html file (default: False)
 
@@ -67,10 +67,11 @@ class ProFootballReferenceScraper:
             BeautifulSoup object
         """
 
-        # Use the cached html file if it exists and overwrite is not set.
-        if os.path.exists(html_file_path) and not overwrite:
-            logger.info(f"Using existing html file {html_file_path}")
-            with open(html_file_path, "r", encoding="utf-8") as f:
+        # If the file specified by html_table_path exsists, use it. 
+        # Otherwise scrape the web and save to this location.
+        if os.path.exists(html_table_path) and not overwrite:
+            logger.info(f"Using existing html file {html_table_path}")
+            with open(html_table_path, "r", encoding="utf-8") as f:
                 html_content = f.read()
             return BeautifulSoup(html_content, 'lxml')
 
@@ -82,21 +83,21 @@ class ProFootballReferenceScraper:
             response = self.session.get(url)
             response.raise_for_status()
 
-            with open(html_file_path, "w", encoding="utf-8") as f:
+            with open(html_table_path, "w", encoding="utf-8") as f:
                 f.write(response.text)
 
             return BeautifulSoup(response.text, 'lxml')
         except requests.exceptions.RequestException as e:
             logger.error(f"Error fetching {url}: {e}")
             return None
-    
-    def scrape_html_table(self, url: str, html_file_name: str, table_id: str, year: int, overwrite: bool = False) -> pd.DataFrame:
+
+    def scrape_html_table(self, url: str, html_table_file: str, table_id: str, year: int, overwrite: bool = False) -> pd.DataFrame:
         """
         Scrape an HTML table from a URL.
 
         Args:
             url: URL to scrape
-            html_file_name: Name of file to save the downloaded html to
+            html_table_file: File the html table is in or will be saved to
             table_id: ID of the table to scrape
             year: Year of the data
             overwrite: Overwrite the existing html file (default: False)
@@ -104,12 +105,12 @@ class ProFootballReferenceScraper:
         Returns:
             DataFrame with the scraped table data
         """
-        html_file_path = os.path.join(self.html_dir, f"{html_file_name}.html")
-        soup = self._get_soup(url, html_file_path, overwrite=overwrite)
+        html_table_path = os.path.join(self.html_dir, f"{html_table_file}.html")
+        soup = self._get_soup(url, html_table_path, overwrite=overwrite)
         if not soup:
             logger.error(f"Failed to get data for {url}")
             return pd.DataFrame()
-        
+
         table = soup.find('table', id=table_id)
         if not table:
             # Try to find the table inside HTML comments
@@ -119,14 +120,14 @@ class ProFootballReferenceScraper:
                 if table:
                     logger.info(f"Found table '{table_id}' inside HTML comment for year {year}")
                     break
-        
+
         if not table:
             logger.error(f"Table with id '{table_id}' not found on {url}")
             return pd.DataFrame()
 
         # Extract columns from thead elements
         columns = [th.get_text(strip=True) for th in table.find('thead').find_all('th')]
-        
+
         # Extract data from tbody elements
         rows = []
         for tr in table.find('tbody').find_all('tr'):
@@ -158,7 +159,6 @@ class ProFootballReferenceScraper:
 
         return pd.DataFrame(rows, columns=columns)
 
-
     def scrape_player_fantasy_stats(self, year: int) -> None:
         """
         Scrape fantasy stats for a specific season.
@@ -178,7 +178,6 @@ class ProFootballReferenceScraper:
             df.to_csv(output_path, index=False)
             logger.info(f"Saved fantasy stats for {year} to {output_path}")
 
-
     def scrape_player_offensive_stats(self, year: int, category: str) -> None:
         """
         Scrape player receiving stats for a given year.
@@ -188,44 +187,46 @@ class ProFootballReferenceScraper:
             category: The category of offensive stats to scrape, one of:
                 - "passing"
                 - "rushing"
+                - "rushing_advanced"
                 - "receiving"
+                - "receiving_advanced"
 
         Returns:
             None (saves data to bronze layer)
         """
         assert category in ["passing", "rushing", "receiving", "rushing_advanced", "receiving_advanced"], "Invalid category"
 
-        basic_url = f"{self.base_url}/years/{year}/{category}.htm"
-        advanced_url = f"{self.base_url}/years/{year}/{category}_advanced.htm"
+        url = f"{self.base_url}/years/{year}/{category}.htm"
+        html_table_file = f"{year}_{category}_stats"
 
         if category == "passing":
             df = self.scrape_html_table(
-                url=basic_url,
-                html_file_name=f"{year}_{category}_stats",
+                url=url,
+                html_table_file=html_table_file,
                 table_id="passing",
                 year=year)
         elif category == "rushing":
             df = self.scrape_html_table(
-                url=basic_url,
-                html_file_name=f"{year}_{category}_stats",
+                url=url,
+                html_table_file=html_table_file,
                 table_id="rushing",
                 year=year)
         elif category == "rushing_advanced":
             df = self.scrape_html_table(
-                url=advanced_url,
-                html_file_name=f"{year}_{category}_advanced_stats",
+                url=url,
+                html_table_file=html_table_file,
                 table_id="adv_rushing",
                 year=year)
         elif category == "receiving":
             df = self.scrape_html_table(
-                url=basic_url,
-                html_file_name=f"{year}_{category}_stats",
+                url=url,
+                html_table_file=html_table_file,
                 table_id="receiving",
                 year=year)
         elif category == "receiving_advanced":
             df = self.scrape_html_table(
-                url=advanced_url,
-                html_file_name=f"{year}_{category}_advanced_stats",
+                url=url,
+                html_table_file=html_table_file,
                 table_id="adv_receiving", year=year)
         else:
             logger.error(f"Invalid category: {category}")
@@ -236,7 +237,6 @@ class ProFootballReferenceScraper:
             logger.info(f"Saved {category} stats for {year} to {output_path}")
 
         return df
-
 
     def scrape_team_offensive_stats(self, year: int) -> None:
         """
@@ -258,7 +258,6 @@ class ProFootballReferenceScraper:
             df.to_csv(output_path, index=False)
             logger.info(f"Saved team offense stats for {year} to {output_path}")
 
-
     def scrape_years(self, start_year: int, end_year: int):
         """
         Scrape data for multiple years.
@@ -276,7 +275,9 @@ class ProFootballReferenceScraper:
 
             self.scrape_player_offensive_stats(year, "passing")
             self.scrape_player_offensive_stats(year, "rushing")
+            self.scrape_player_offensive_stats(year, "rushing_advanced")
             self.scrape_player_offensive_stats(year, "receiving")
+            self.scrape_player_offensive_stats(year, "receiving_advanced")
 
             self.scrape_team_offensive_stats(year)
 
