@@ -290,6 +290,54 @@ class FantasyDataProcessor:
             'position',
             'games',
             'games_started',
+            'rec_targets',
+            'rec_receptions',
+            'rec_yards',
+            'rec_yards_per_reception',
+            'rec_touchdowns',
+            'rec_first_downs',
+            'rec_success_rate',
+            'rec_longest_reception',
+            'rec_receptions_per_game',
+            'rec_yards_per_game',
+            'rec_reception_percent',
+            'rec_yards_per_target',
+            'rec_fumbles',
+            'rec_awards',
+        ]
+        excluded_columns = {'rank', 'age', 'team', 'position', 'games', 'games_started', 'rec_longest_reception', 'rec_fumbles'}
+        select_columns = [col for col in normalized_column_names if col not in excluded_columns]
+
+        receiving_stats_df = self.combine_year_data(
+            file_pattern="*_player_receiving_stats.csv",
+            normalized_column_names=normalized_column_names,
+            select_columns=select_columns,
+            transformations={'player': self.standardize_name, 'rec_awards': self.parse_awards},
+        )
+
+        rollup_columns = [col for col in select_columns if col not in ['player', 'rec_awards']]
+        receiving_stats_df = self.create_rollup_stats(
+            stats_df=receiving_stats_df,
+            grouping_columns=['player'],
+            rollup_columns=rollup_columns,
+            max_rollup_window=2
+        )
+
+        self.write_to_silver(receiving_stats_df, "player_receiving_stats.csv")
+
+    def build_player_receiving_advanced_stats(self) -> None:
+        """
+        Reads in all years of advanced receiving stats from the bronze layer, cleans the data and merges them all into one dataframe.
+        Saves the dataframe to the silver layer.
+        """
+        normalized_column_names = [
+            'rank',
+            'player',
+            'age',
+            'team',
+            'position',
+            'games',
+            'games_started',
             'rec_receptions',
             'rec_targets',
             'rec_yards',
@@ -307,16 +355,28 @@ class FantasyDataProcessor:
             'rec_passer_rating_when_targeted',
             'rec_awards'
         ]
-        excluded_columns = {'rank', 'age', 'team', 'position', 'games', 'games_started'}
+        select_columns = [
+            'player',
+            'rec_yards_before_catch',
+            'rec_yards_before_catch_per_reception',
+            'rec_yards_after_catch',
+            'rec_yards_after_catch_per_reception',
+            'rec_average_depth_of_target',
+            'rec_broken_tackles',
+            'rec_receptions_per_broken_tackle',
+            'rec_drops',
+            'rec_drop_percentage',
+            'rec_passer_rating_when_targeted',
+        ]
 
         receiving_stats_df = self.combine_year_data(
-            file_pattern="*_player_receiving_stats.csv",
+            file_pattern="*_player_receiving_advanced_stats.csv",
             normalized_column_names=normalized_column_names,
-            select_columns=[col for col in normalized_column_names if col not in excluded_columns],
-            transformations={'player': self.standardize_name, 'rec_awards': self.parse_awards},
+            select_columns=select_columns,
+            transformations={'player': self.standardize_name},
         )
 
-        rollup_columns = ['rec_yards', 'rec_yards_before_catch', 'rec_yards_after_catch']
+        rollup_columns = [col for col in select_columns if col != 'player']
         receiving_stats_df = self.create_rollup_stats(
             stats_df=receiving_stats_df,
             grouping_columns=['player'],
@@ -324,11 +384,54 @@ class FantasyDataProcessor:
             max_rollup_window=2
         )
 
-        self.write_to_silver(receiving_stats_df, "player_receiving_stats.csv")
+        self.write_to_silver(receiving_stats_df, "player_receiving_advanced_stats.csv")
 
     def build_player_rushing_stats(self) -> None:
         """
         Reads in all years of rushing stats from the bronze layer, cleans the data and merges them all into one dataframe.
+        Saves the dataframe to the silver layer.
+        """
+        normalized_column_names = [
+            'rank',
+            'player',
+            'age',
+            'team',
+            'position',
+            'games',
+            'games_started',
+            'rush_attempts',
+            'rush_yards',
+            'rush_touchdowns',
+            'rush_first_downs',
+            'rush_success_rate',
+            'rush_longest_rush',
+            'rush_yards_per_attempt',
+            'rush_yards_per_game',
+            'rush_attempts_per_game',
+            'rush_fumbles',
+            'rush_awards'
+        ]
+        excluded_columns = {'rank', 'age', 'team', 'position', 'games', 'games_started', 'rush_longest_rush', 'rush_fumbles'}
+        select_columns = [col for col in normalized_column_names if col not in excluded_columns]
+        rushing_stats_df = self.combine_year_data(
+            file_pattern="*_player_rushing_stats.csv",
+            normalized_column_names=normalized_column_names,
+            select_columns=select_columns,
+            transformations={'player': self.standardize_name, 'rush_awards': self.parse_awards},
+        )
+
+        rollup_columns = [col for col in select_columns if col not in ['player', 'rush_awards']]
+        rushing_stats_df = self.create_rollup_stats(
+            stats_df=rushing_stats_df,
+            grouping_columns=['player'],
+            rollup_columns=rollup_columns,
+            max_rollup_window=2
+        )
+        self.write_to_silver(rushing_stats_df, "player_rushing_stats.csv")
+
+    def build_player_rushing_advanced_stats(self) -> None:
+        """
+        Reads in all years of advanced rushing stats from the bronze layer, cleans the data and merges them all into one dataframe.
         Saves the dataframe to the silver layer.
         """
         normalized_column_names = [
@@ -350,16 +453,24 @@ class FantasyDataProcessor:
             'rush_attempts_per_broken_tackle',
             'rush_awards'
         ]
-        excluded_columns = {'rank', 'age', 'team', 'position', 'games', 'games_started'}
+        select_columns = [
+            'player',
+            'rush_yards_before_contact',
+            'rush_yards_before_contact_per_attempt',
+            'rush_yards_after_contact',
+            'rush_yards_after_contact_per_attempt',
+            'rush_broken_tackles',
+            'rush_attempts_per_broken_tackle',
+        ]
 
         rushing_stats_df = self.combine_year_data(
-            file_pattern="*_player_rushing_stats.csv",
+            file_pattern="*_player_rushing_advanced_stats.csv",
             normalized_column_names=normalized_column_names,
-            select_columns=[col for col in normalized_column_names if col not in excluded_columns],
-            transformations={'player': self.standardize_name, 'rush_awards': self.parse_awards},
+            select_columns=select_columns,
+            transformations={'player': self.standardize_name},
         )
 
-        rollup_columns = ['rush_yards', 'rush_yards_before_contact', 'rush_yards_after_contact']
+        rollup_columns = [col for col in select_columns if col != 'player']
         rushing_stats_df = self.create_rollup_stats(
             stats_df=rushing_stats_df,
             grouping_columns=['player'],
@@ -367,7 +478,7 @@ class FantasyDataProcessor:
             max_rollup_window=2
         )
 
-        self.write_to_silver(rushing_stats_df, "player_rushing_stats.csv")
+        self.write_to_silver(rushing_stats_df, "player_rushing_advanced_stats.csv")
 
     def build_player_passing_stats(self) -> None:
         """
@@ -382,59 +493,35 @@ class FantasyDataProcessor:
             'position',
             'games',
             'games_started',
+            'pass_record',
             'pass_completions',
             'pass_attempts',
-            'pass_incomplete_air_yards',
-            'pass_incomplete_air_yards_per_attempt',
-            'pass_completed_air_yards',
-            'pass_completed_air_yards_per_completion',
-            'pass_completed_air_yards_per_attempt',
-            'pass_yards_after_catch',
-            'pass_yards_after_catch_per_completion',
-            'pass_passes_batted',
-            'pass_passes_thrown_away',
-            'pass_spikes',
-            'pass_drops',
-            'pass_drop_percentage',
-            'pass_bad_throws',
-            'pass_bad_throw_percentage',
-            'pass_on_target_throws',
-            'pass_on_target_percentage',
-            'pass_pocket_time',
-            'pass_blitzes',
-            'pass_hurries',
-            'pass_hits',
-            'pass_pressures',
-            'pass_pressure_percentage',
-            'pass_scrambles',
-            'pass_yards_per_scramble',
-            'rpo_plays',
-            'rpo_yards',
-            'rpo_pass_attemps',
-            'rpo_pass_yards',
-            'rpo_rush_attempts',
-            'rpo_rush_yards',
-            'play_action_pass_attempts',
-            'play_action_pass_yards',
-            'awards'
+            'pass_completion_percentage',
+            'pass_yards',
+            'pass_touchdowns',
+            'pass_touchdown_percent',
+            'pass_interceptions',
+            'pass_interception_percent',
+            'pass_first_downs',
+            'pass_success_rate',
+            'pass_longest_pass',
+            'pass_yards_per_attempt',
+            'pass_adjusted_yards_per_attempt',
+            'pass_yards_per_completion',
+            'pass_yards_per_game',
+            'pass_rating',
+            'pass_qbr',
+            'pass_sacks',
+            'pass_sack_yards',
+            'pass_sack_percent',
+            'pass_net_yards_per_attempt',
+            'pass_adjusted_net_yards_per_attempt',
+            'pass_fourth_quarter_comebacks',
+            'pass_game_winning_drives',
+            'pass_awards'
         ]
-        select_columns = [
-            'player',
-            'pass_incomplete_air_yards',
-            'pass_completed_air_yards',
-            'pass_yards_after_catch',
-            'pass_passes_thrown_away',
-            'pass_drops',
-            'pass_bad_throws',
-            'pass_on_target_throws',
-            'pass_pocket_time',
-            'pass_blitzes',
-            'pass_hurries',
-            'pass_hits',
-            'pass_pressures',
-            'awards'
-        ]
-
+        excluded_columns = {'rank', 'age', 'team', 'position', 'games', 'games_started', 'pass_record', 'pass_longest_pass', 'pass_fourth_quarter_comebacks', 'pass_game_winning_drives'}
+        select_columns = [col for col in normalized_column_names if col not in excluded_columns]
         passing_stats_df = self.combine_year_data(
             file_pattern="*_player_passing_stats.csv",
             normalized_column_names=normalized_column_names,
@@ -442,7 +529,8 @@ class FantasyDataProcessor:
             transformations={'player': self.standardize_name, 'awards': self.parse_awards},
         )
 
-        rollup_columns = ['pass_incomplete_air_yards', 'pass_completed_air_yards', 'pass_yards_after_catch']
+        rollup_columns = [col for col in select_columns if col not in ['player', 'pass_awards']]
+
         passing_stats_df = self.create_rollup_stats(
             stats_df=passing_stats_df,
             grouping_columns=['player'],
@@ -533,17 +621,23 @@ class FantasyDataProcessor:
         fantasy_stats_df['join_year'] = fantasy_stats_df['year'] - 1
 
         receiving_stats_df = pd.read_csv(os.path.join(self.silver_data_dir, "player_receiving_stats.csv"))
+        receiving_advanced_stats_df = pd.read_csv(os.path.join(self.silver_data_dir, "player_receiving_advanced_stats.csv"))
         rushing_stats_df = pd.read_csv(os.path.join(self.silver_data_dir, "player_rushing_stats.csv"))
+        rushing_advanced_stats_df = pd.read_csv(os.path.join(self.silver_data_dir, "player_rushing_advanced_stats.csv"))
         passing_stats_df = pd.read_csv(os.path.join(self.silver_data_dir, "player_passing_stats.csv"))
         team_stats_df = pd.read_csv(os.path.join(self.silver_data_dir, "team_offense.csv"))
 
         receiving_stats_df = receiving_stats_df.rename(columns={'year': 'join_year'})
+        receiving_advanced_stats_df = receiving_advanced_stats_df.rename(columns={'year': 'join_year'})
         rushing_stats_df = rushing_stats_df.rename(columns={'year': 'join_year'})
+        rushing_advanced_stats_df = rushing_advanced_stats_df.rename(columns={'year': 'join_year'})
         passing_stats_df = passing_stats_df.rename(columns={'year': 'join_year'})
         team_stats_df = team_stats_df.rename(columns={'year': 'join_year'})
 
         joined_df = pd.merge(fantasy_stats_df, receiving_stats_df, on=['player', 'join_year'], how='left')
+        joined_df = pd.merge(joined_df, receiving_advanced_stats_df, on=['player', 'join_year'], how='left')
         joined_df = pd.merge(joined_df, rushing_stats_df, on=['player', 'join_year'], how='left')
+        joined_df = pd.merge(joined_df, rushing_advanced_stats_df, on=['player', 'join_year'], how='left')
         joined_df = pd.merge(joined_df, passing_stats_df, on=['player', 'join_year'], how='left')
         joined_df = pd.merge(joined_df, team_stats_df, on=['team', 'join_year'], how='left')
 
@@ -564,7 +658,9 @@ class FantasyDataProcessor:
         """
         self.build_player_fantasy_stats()
         self.build_player_receiving_stats()
+        self.build_player_receiving_advanced_stats()
         self.build_player_rushing_stats()
+        self.build_player_rushing_advanced_stats()
         self.build_player_passing_stats()
         self.build_team_stats()
 
