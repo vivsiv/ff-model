@@ -28,7 +28,6 @@ logger = logging.getLogger(__name__)
 
 class FantasyDataProcessor:
     """Generate silver and gold layer data from bronze layer data."""
-    # TODO: Decide on columns to rollup
 
     def __init__(self, data_dir: str = "../data"):
         """
@@ -139,10 +138,7 @@ class FantasyDataProcessor:
                 # Keep only one row for players that were on multiple teams in a season
                 player_counts = df.groupby('player').size().reset_index(name='count')
                 multi_team_players = player_counts[player_counts['count'] > 1]['player'].tolist()
-
                 for multi_team_player in multi_team_players:
-                    multi_team_player_rows = df[df['player'] == multi_team_player]
-
                     df = df[~((df['player'] == multi_team_player) & (df['team'] != '2TM'))]
 
                 # Remove the league average row
@@ -273,7 +269,6 @@ class FantasyDataProcessor:
         )
 
         fantasy_stats_df = fantasy_stats_df[fantasy_stats_df['ppr_fantasy_points'].notna()]
-        fantasy_stats_df = fantasy_stats_df.fillna(0)
 
         self.write_to_silver(fantasy_stats_df, "player_fantasy_stats.csv")
 
@@ -526,7 +521,7 @@ class FantasyDataProcessor:
             file_pattern="*_player_passing_stats.csv",
             normalized_column_names=normalized_column_names,
             select_columns=select_columns,
-            transformations={'player': self.standardize_name, 'awards': self.parse_awards},
+            transformations={'player': self.standardize_name, 'pass_awards': self.parse_awards},
         )
 
         rollup_columns = [col for col in select_columns if col not in ['player', 'pass_awards']]
@@ -642,9 +637,27 @@ class FantasyDataProcessor:
         joined_df = pd.merge(joined_df, team_stats_df, on=['team', 'join_year'], how='left')
 
         joined_df = joined_df.drop(columns=['join_year'])
-        joined_df = joined_df.fillna(0)
 
-        self.write_to_silver(joined_df, "final_stats.csv")
+        return joined_df
+
+    def clean_final_stats(self, joined_df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Cleans the final stats dataframe.
+        """
+        # Drop any rows where the player is null or an empty string
+        joined_df = joined_df[joined_df['player'].notna() & (joined_df['player'] != '')]
+
+        # Fill any numeric columns with null values with 0, and round to 2 decimal places
+        numeric_columns = joined_df.select_dtypes(include=[np.number]).columns
+        fill_columns = [col for col in numeric_columns if col != 'year']
+        joined_df[fill_columns] = joined_df[fill_columns].fillna(0).round(2)
+
+        # Combine awards columns into a single awards column
+        awards_columns = ['pass_awards', 'rush_awards', 'rec_awards']
+        joined_df['awards'] = joined_df[awards_columns].max(axis=1)
+        joined_df = joined_df.drop(columns=awards_columns)
+
+        return joined_df
 
     def process_all_data(self) -> Dict[str, pd.DataFrame]:
         """
@@ -664,8 +677,9 @@ class FantasyDataProcessor:
         self.build_player_passing_stats()
         self.build_team_stats()
 
-        self.join_stats()
-
+        joined_df = self.join_stats()
+        cleaned_df = self.clean_final_stats(joined_df)
+        self.write_to_silver(cleaned_df, "final_stats.csv")
 
 def main():
     script_dir = os.path.dirname(os.path.abspath(__file__))
