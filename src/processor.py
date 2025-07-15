@@ -93,6 +93,8 @@ class FantasyDataProcessor:
             "New York Jets": "NYJ",
             "New England Patriots": "NWE",
             "New Orleans Saints": "NOR",
+            "Saint Louis Rams": "STL",
+            "San Diego Chargers": "SDG",
             "San Francisco 49ers": "SFO",
         }
         if team in exceptions:
@@ -130,8 +132,19 @@ class FantasyDataProcessor:
         dfs = []
         for file in tqdm(files, desc=f"Processing files matching: {file_pattern.split('/')[-1]}"):
             df = pd.read_csv(file)
-            assert len(normalized_column_names) == len(df.columns), "Normalized column names and dataframe columns must have the same length"
-            df.columns = normalized_column_names
+
+            try:
+                assert len(normalized_column_names) == len(df.columns), f"{file} columns must be the same length as provided normalized_column_names"
+                df.columns = normalized_column_names
+            except (AssertionError, ValueError) as e:
+                if file.endswith('_player_passing_stats.csv') and 'QBR' not in df.columns and len(normalized_column_names) == len(df.columns) + 1:
+                    no_qbr_columns = [col for col in normalized_column_names if col != 'pass_qbr']
+                    df.columns = no_qbr_columns
+                    df['pass_qbr'] = 50.0
+                    logger.info(f"Added missing QBR column to {file}")
+                else:
+                    logger.error(f"{file} columns must be the same length as provided normalized_column_names")
+                    raise e
 
             # Handle player stat edge cases
             if 'player' in df.columns:
@@ -300,7 +313,7 @@ class FantasyDataProcessor:
             'rec_fumbles',
             'rec_awards',
         ]
-        excluded_columns = {'rank', 'age', 'team', 'position', 'games', 'games_started', 'rec_longest_reception', 'rec_fumbles'}
+        excluded_columns = {'rank', 'team', 'position', 'games', 'games_started', 'rec_longest_reception', 'rec_fumbles'}
         select_columns = [col for col in normalized_column_names if col not in excluded_columns]
 
         receiving_stats_df = self.combine_year_data(
@@ -352,6 +365,7 @@ class FantasyDataProcessor:
         ]
         select_columns = [
             'player',
+            'age',
             'rec_yards_before_catch',
             'rec_yards_before_catch_per_reception',
             'rec_yards_after_catch',
@@ -406,7 +420,7 @@ class FantasyDataProcessor:
             'rush_fumbles',
             'rush_awards'
         ]
-        excluded_columns = {'rank', 'age', 'team', 'position', 'games', 'games_started', 'rush_longest_rush', 'rush_fumbles'}
+        excluded_columns = {'rank', 'team', 'position', 'games', 'games_started', 'rush_longest_rush', 'rush_fumbles'}
         select_columns = [col for col in normalized_column_names if col not in excluded_columns]
         rushing_stats_df = self.combine_year_data(
             file_pattern="*_player_rushing_stats.csv",
@@ -450,6 +464,7 @@ class FantasyDataProcessor:
         ]
         select_columns = [
             'player',
+            'age',
             'rush_yards_before_contact',
             'rush_yards_before_contact_per_attempt',
             'rush_yards_after_contact',
@@ -515,7 +530,7 @@ class FantasyDataProcessor:
             'pass_game_winning_drives',
             'pass_awards'
         ]
-        excluded_columns = {'rank', 'age', 'team', 'position', 'games', 'games_started', 'pass_record', 'pass_longest_pass', 'pass_fourth_quarter_comebacks', 'pass_game_winning_drives'}
+        excluded_columns = {'rank', 'team', 'position', 'games', 'games_started', 'pass_record', 'pass_longest_pass', 'pass_fourth_quarter_comebacks', 'pass_game_winning_drives'}
         select_columns = [col for col in normalized_column_names if col not in excluded_columns]
         passing_stats_df = self.combine_year_data(
             file_pattern="*_player_passing_stats.csv",
@@ -606,7 +621,7 @@ class FantasyDataProcessor:
 
         self.write_to_silver(team_offense_df, "team_offense.csv")
 
-    def join_stats(self) -> None:
+    def join_stats(self, add_advanced_stats: bool = False) -> None:
         """
         Joins the player stats into a single dataframe.
         The training set must use the previous years stats to predict the current years fantasy points
@@ -614,29 +629,48 @@ class FantasyDataProcessor:
         """
         fantasy_stats_df = pd.read_csv(os.path.join(self.silver_data_dir, "player_fantasy_stats.csv"))
         fantasy_stats_df['join_year'] = fantasy_stats_df['year'] - 1
+        fantasy_stats_df['join_age'] = fantasy_stats_df['age'] - 1
 
-        receiving_stats_df = pd.read_csv(os.path.join(self.silver_data_dir, "player_receiving_stats.csv"))
-        receiving_advanced_stats_df = pd.read_csv(os.path.join(self.silver_data_dir, "player_receiving_advanced_stats.csv"))
-        rushing_stats_df = pd.read_csv(os.path.join(self.silver_data_dir, "player_rushing_stats.csv"))
-        rushing_advanced_stats_df = pd.read_csv(os.path.join(self.silver_data_dir, "player_rushing_advanced_stats.csv"))
-        passing_stats_df = pd.read_csv(os.path.join(self.silver_data_dir, "player_passing_stats.csv"))
-        team_stats_df = pd.read_csv(os.path.join(self.silver_data_dir, "team_offense.csv"))
+        receiving_stats_df = (
+            pd.read_csv(os.path.join(self.silver_data_dir, "player_receiving_stats.csv"))
+            .rename(columns={'year': 'join_year', 'age': 'join_age'})
+        )
+        rushing_stats_df = (
+            pd.read_csv(os.path.join(self.silver_data_dir, "player_rushing_stats.csv"))
+            .rename(columns={'year': 'join_year', 'age': 'join_age'})
+        )
+        passing_stats_df = (
+            pd.read_csv(os.path.join(self.silver_data_dir, "player_passing_stats.csv"))
+            .rename(columns={'year': 'join_year', 'age': 'join_age'})
+        )
+        team_stats_df = (
+            pd.read_csv(os.path.join(self.silver_data_dir, "team_offense.csv"))
+            .rename(columns={'year': 'join_year'})
+        )
 
-        receiving_stats_df = receiving_stats_df.rename(columns={'year': 'join_year'})
-        receiving_advanced_stats_df = receiving_advanced_stats_df.rename(columns={'year': 'join_year'})
-        rushing_stats_df = rushing_stats_df.rename(columns={'year': 'join_year'})
-        rushing_advanced_stats_df = rushing_advanced_stats_df.rename(columns={'year': 'join_year'})
-        passing_stats_df = passing_stats_df.rename(columns={'year': 'join_year'})
-        team_stats_df = team_stats_df.rename(columns={'year': 'join_year'})
+        joined_df = (
+            pd.merge(fantasy_stats_df, receiving_stats_df, on=['player', 'join_year', 'join_age'], how='left')
+            .merge(rushing_stats_df, on=['player', 'join_year', 'join_age'], how='left')
+            .merge(passing_stats_df, on=['player', 'join_year', 'join_age'], how='left')
+            .merge(team_stats_df, on=['team', 'join_year'], how='left')
+        )
 
-        joined_df = pd.merge(fantasy_stats_df, receiving_stats_df, on=['player', 'join_year'], how='left')
-        joined_df = pd.merge(joined_df, receiving_advanced_stats_df, on=['player', 'join_year'], how='left')
-        joined_df = pd.merge(joined_df, rushing_stats_df, on=['player', 'join_year'], how='left')
-        joined_df = pd.merge(joined_df, rushing_advanced_stats_df, on=['player', 'join_year'], how='left')
-        joined_df = pd.merge(joined_df, passing_stats_df, on=['player', 'join_year'], how='left')
-        joined_df = pd.merge(joined_df, team_stats_df, on=['team', 'join_year'], how='left')
+        if add_advanced_stats:
+            receiving_advanced_stats_df = (
+                pd.read_csv(os.path.join(self.silver_data_dir, "player_receiving_advanced_stats.csv"))
+                .rename(columns={'year': 'join_year', 'age': 'join_age'})
+            )
+            rushing_advanced_stats_df = (
+                pd.read_csv(os.path.join(self.silver_data_dir, "player_rushing_advanced_stats.csv"))
+                .rename(columns={'year': 'join_year', 'age': 'join_age'})
+            )
+            joined_df = (
+                joined_df
+                .merge(receiving_advanced_stats_df, on=['player', 'join_year', 'join_age'], how='left')
+                .merge(rushing_advanced_stats_df, on=['player', 'join_year', 'join_age'], how='left')
+            )
 
-        joined_df = joined_df.drop(columns=['join_year'])
+        joined_df = joined_df.drop(columns=['join_year', 'join_age'])
 
         return joined_df
 
