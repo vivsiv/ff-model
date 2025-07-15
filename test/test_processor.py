@@ -190,71 +190,77 @@ class TestFantasyDataProcessor(unittest.TestCase):
     def test_join_stats(self, mock_read_csv):
         """Test joining all stats into a single dataframe."""
         fantasy_df = pd.DataFrame({
-            'player': ['john_doe', 'jane_smith'],
-            'year': [2023, 2023],
-            'team': ['PHI', 'DAL'],
-            'fantasy_points': [100, 90]
+            'player': ['john_doe', 'jane_smith', 'jane_smith'],
+            'year': [2023, 2023, 2023],
+            'age': [25, 23, 35],
+            'team': ['PHI', 'DAL', 'WAS'],
+            'fantasy_points': [100, 90, 10]
         })
 
         receiving_df = pd.DataFrame({
             'player': ['john_doe', 'john_doe', 'john_doe', 'jane_smith'],
             'year': [2021, 2022, 2023, 2022],
+            'age': [23.0, 24.0, 25.0, 22.0],
             'rec_yards': [600, 1000, 1200, 800]
         })
 
         receiving_advanced_df = pd.DataFrame({
             'player': ['john_doe', 'john_doe', 'john_doe', 'jane_smith'],
             'year': [2021, 2022, 2023, 2022],
+            'age': [23.0, 24.0, 25.0, 22.0],
             'adot': [6, 10, 12, 8]
         })
 
         rushing_df = pd.DataFrame({
             'player': ['john_doe', 'john_doe', 'john_doe'],
             'year': [2021, 2022, 2023],
+            'age': [23.0, 24.0, 25.0],
             'rush_yards': [500, 600, 700]
         })
 
         rushing_advanced_df = pd.DataFrame({
             'player': ['john_doe', 'john_doe', 'john_doe'],
             'year': [2021, 2022, 2023],
+            'age': [23.0, 24.0, 25.0],
             'yac': [5, 6, 7]
         })
 
         passing_df = pd.DataFrame({
-            'player': ['john_doe', 'john_doe', 'john_doe', 'jane_smith'],
-            'year': [2021, 2022, 2023, 2021],
-            'pass_yards': [3000, 3500, 4000, 3200]
+            'player': ['john_doe', 'john_doe', 'john_doe', 'jane_smith', 'jane_smith'],
+            'year': [2021, 2022, 2023, 2021, 2022],
+            'age': [23.0, 24.0, 25.0, 21.0, 34.0],
+            'pass_yards': [3000, 3500, 4000, 3200, 700]
         })
 
         team_df = pd.DataFrame({
-            'team': ['PHI', 'PHI', 'PHI', 'DAL'],
-            'year': [2021, 2022, 2023, 2022],
-            'team_points': [400, 350, 450, 300]
+            'team': ['PHI', 'PHI', 'PHI', 'DAL', 'WAS'],
+            'year': [2021, 2022, 2023, 2022, 2022],
+            'team_points': [400, 350, 450, 300, 250]
         })
 
         # Have each call to pd.read_csv return each of the test dataframes
         mock_read_csv.side_effect = [
-            fantasy_df, receiving_df, receiving_advanced_df,
-            rushing_df, rushing_advanced_df, passing_df, team_df
+            fantasy_df, receiving_df, rushing_df, passing_df, team_df, receiving_advanced_df, rushing_advanced_df
         ]
 
         joined_df = (
-            self.processor.join_stats()
+            self.processor.join_stats(add_advanced_stats=True)
             .sort_values(['player', 'year'])
             .reset_index(drop=True)
         )
 
         expected_df = pd.DataFrame({
-            'player': ['john_doe', 'jane_smith'],
-            'year': [2023, 2023],
-            'team': ['PHI', 'DAL'],
-            'fantasy_points': [100, 90],
-            'rec_yards': [1000, 800],
-            'adot': [10, 8],
-            'rush_yards': [600, np.nan],
-            'yac': [6, np.nan],
-            'pass_yards': [3500, np.nan],
-            'team_points': [350, 300]
+            'player': ['john_doe', 'jane_smith', 'jane_smith'],
+            'year': [2023, 2023, 2023],
+            'age': [25, 23, 35],
+            'team': ['PHI', 'DAL', 'WAS'],
+            'fantasy_points': [100, 90, 10],
+            'rec_yards': [1000, 800, np.nan],
+            'rush_yards': [600, np.nan, np.nan],
+            'pass_yards': [3500, np.nan, 700],
+            'team_points': [350, 300, 250],
+            'adot': [10, 8, np.nan],
+            'yac': [6, np.nan, np.nan],
         }).sort_values(['player', 'year']).reset_index(drop=True)
 
         pd.testing.assert_frame_equal(joined_df, expected_df)
