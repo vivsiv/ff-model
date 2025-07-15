@@ -5,6 +5,7 @@ from src.scraper import ProFootballReferenceScraper
 
 from bs4 import BeautifulSoup
 
+
 class TestProFootballReferenceScraper(unittest.TestCase):
     def setUp(self):
         self.scraper = ProFootballReferenceScraper(data_dir="test_data")
@@ -82,5 +83,6 @@ class TestProFootballReferenceScraper(unittest.TestCase):
         self.assertEqual(df.iloc[0]["Player"], "John Doe")
         self.assertEqual(df.iloc[0]["Unknown_Col_1"], "100")
 
+
 if __name__ == '__main__':
-    unittest.main() 
+    unittest.main()

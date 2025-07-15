@@ -681,6 +681,7 @@ class FantasyDataProcessor:
         cleaned_df = self.clean_final_stats(joined_df)
         self.write_to_silver(cleaned_df, "final_stats.csv")
 
+
 def main():
     script_dir = os.path.dirname(os.path.abspath(__file__))
     data_dir = os.path.join(os.path.dirname(script_dir), "data")

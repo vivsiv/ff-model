@@ -287,5 +287,6 @@ class TestFantasyDataProcessor(unittest.TestCase):
 
         pd.testing.assert_frame_equal(cleaned_df, expected_df)
 
+
 if __name__ == '__main__':
     unittest.main()
