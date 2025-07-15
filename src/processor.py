@@ -650,11 +650,11 @@ class FantasyDataProcessor:
         # Fill any numeric columns with null values with 0, and round to 2 decimal places
         numeric_columns = joined_df.select_dtypes(include=[np.number]).columns
         fill_columns = [col for col in numeric_columns if col != 'year']
-        joined_df[fill_columns] = joined_df[fill_columns].fillna(0).round(2)
+        joined_df.loc[:, fill_columns] = joined_df[fill_columns].fillna(0).round(2)
 
         # Combine awards columns into a single awards column
         awards_columns = ['pass_awards', 'rush_awards', 'rec_awards']
-        joined_df['awards'] = joined_df[awards_columns].max(axis=1)
+        joined_df.loc[:, 'awards'] = joined_df[awards_columns].max(axis=1)
         joined_df = joined_df.drop(columns=awards_columns)
 
         return joined_df
