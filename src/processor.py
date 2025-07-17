@@ -9,7 +9,7 @@ the raw data scraped from Pro Football Reference.
 import os
 import glob
 import logging
-from typing import Dict, List, Optional, Tuple, Callable
+from typing import Dict, List, Tuple, Callable
 
 import pandas as pd
 import numpy as np
@@ -36,12 +36,11 @@ class FantasyDataProcessor:
         Args:
             data_dir: Directory containing the scraped data
         """
+        self.data_dir = data_dir
         self.bronze_data_dir = os.path.join(data_dir, "bronze")
         self.silver_data_dir = os.path.join(data_dir, "silver")
-        self.gold_data_dir = os.path.join(data_dir, "gold")
 
         os.makedirs(self.silver_data_dir, exist_ok=True)
-        os.makedirs(self.gold_data_dir, exist_ok=True)
 
     def standardize_name(self, name: str) -> str:
         """
@@ -180,6 +179,26 @@ class FantasyDataProcessor:
 
         return combined_df
 
+    def add_ratio_stats(self, stats_df: pd.DataFrame, ratio_column_pairs: List[Tuple[str, str]]) -> Tuple[pd.DataFrame, List[str]]:
+        """
+        Creates creates "ratio" columns that are the result of dividing the two columns in a tuple.
+
+        Args:
+            stats_df: The dataframe to add ratio stats to
+            ratio_column_pairs: A list of tuples of the numerator and denominator columns to divide
+
+        Returns:
+            The dataframe with the ratio stats added, the list of ratio columns added
+        """
+        assert all(n in stats_df.columns and d in stats_df.columns for (n, d) in ratio_column_pairs), "All ratio columns must be in the input dataframe"
+
+        ratio_columns = []
+        for (n, d) in ratio_column_pairs:
+            ratio_col = f"{n}_per_{d.rstrip('s')}"
+            stats_df[ratio_col] = stats_df[n] / stats_df[d]
+            ratio_columns.append(ratio_col)
+        return stats_df, ratio_columns
+
     def create_rollup_stats(self,
                             stats_df: pd.DataFrame,
                             grouping_columns: List[str],
@@ -269,6 +288,7 @@ class FantasyDataProcessor:
             'player',
             'team',
             'age',
+            'games',
             'standard_fantasy_points',
             'ppr_fantasy_points',
             'value_over_replacement'
@@ -278,10 +298,22 @@ class FantasyDataProcessor:
             file_pattern="*_player_fantasy_stats.csv",
             normalized_column_names=normalized_column_names,
             select_columns=select_columns,
-            transformations={'player': self.standardize_name},
+            transformations={'player': self.standardize_name, },
         )
 
         fantasy_stats_df = fantasy_stats_df[fantasy_stats_df['ppr_fantasy_points'].notna()]
+
+        ratio_column_pairs = [('standard_fantasy_points', 'games'), ('ppr_fantasy_points', 'games')]
+        fantasy_stats_df, ratio_columns = self.add_ratio_stats(fantasy_stats_df, ratio_column_pairs)
+
+        rollup_columns = ['games']
+        fantasy_stats_df = self.create_rollup_stats(
+            stats_df=fantasy_stats_df,
+            grouping_columns=['player'],
+            rollup_columns=rollup_columns,
+        )
+
+        fantasy_stats_df = fantasy_stats_df.drop(columns=['games'])
 
         self.write_to_silver(fantasy_stats_df, "player_fantasy_stats.csv")
 
@@ -313,7 +345,7 @@ class FantasyDataProcessor:
             'rec_fumbles',
             'rec_awards',
         ]
-        excluded_columns = {'rank', 'team', 'position', 'games', 'games_started', 'rec_longest_reception', 'rec_fumbles'}
+        excluded_columns = {'rank', 'team', 'position', 'games_started', 'rec_longest_reception', 'rec_fumbles'}
         select_columns = [col for col in normalized_column_names if col not in excluded_columns]
 
         receiving_stats_df = self.combine_year_data(
@@ -323,12 +355,15 @@ class FantasyDataProcessor:
             transformations={'player': self.standardize_name, 'rec_awards': self.parse_awards},
         )
 
-        rollup_columns = [col for col in select_columns if col not in ['player', 'rec_awards']]
+        ratio_column_pairs = [('rec_targets', 'games'), ('rec_touchdowns', 'games'), ('rec_first_downs', 'games')]
+        receiving_stats_df, ratio_columns = self.add_ratio_stats(receiving_stats_df, ratio_column_pairs)
+        receiving_stats_df = receiving_stats_df.drop(columns=['games'])
+
+        rollup_columns = [col for col in select_columns if col not in ['player', 'age', 'rec_awards', 'games']] + ratio_columns
         receiving_stats_df = self.create_rollup_stats(
             stats_df=receiving_stats_df,
             grouping_columns=['player'],
             rollup_columns=rollup_columns,
-            max_rollup_window=2
         )
 
         self.write_to_silver(receiving_stats_df, "player_receiving_stats.csv")
@@ -385,12 +420,11 @@ class FantasyDataProcessor:
             transformations={'player': self.standardize_name},
         )
 
-        rollup_columns = [col for col in select_columns if col != 'player']
+        rollup_columns = [col for col in select_columns if col not in ['player', 'age']]
         receiving_stats_df = self.create_rollup_stats(
             stats_df=receiving_stats_df,
             grouping_columns=['player'],
             rollup_columns=rollup_columns,
-            max_rollup_window=2
         )
 
         self.write_to_silver(receiving_stats_df, "player_receiving_advanced_stats.csv")
@@ -420,7 +454,7 @@ class FantasyDataProcessor:
             'rush_fumbles',
             'rush_awards'
         ]
-        excluded_columns = {'rank', 'team', 'position', 'games', 'games_started', 'rush_longest_rush', 'rush_fumbles'}
+        excluded_columns = {'rank', 'team', 'position', 'games_started', 'rush_longest_rush', 'rush_fumbles'}
         select_columns = [col for col in normalized_column_names if col not in excluded_columns]
         rushing_stats_df = self.combine_year_data(
             file_pattern="*_player_rushing_stats.csv",
@@ -429,12 +463,15 @@ class FantasyDataProcessor:
             transformations={'player': self.standardize_name, 'rush_awards': self.parse_awards},
         )
 
-        rollup_columns = [col for col in select_columns if col not in ['player', 'rush_awards']]
+        ratio_column_pairs = [('rush_touchdowns', 'games'), ('rush_first_downs', 'games')]
+        rushing_stats_df, ratio_columns = self.add_ratio_stats(rushing_stats_df, ratio_column_pairs)
+        rushing_stats_df = rushing_stats_df.drop(columns=['games'])
+
+        rollup_columns = [col for col in select_columns if col not in ['player', 'age', 'rush_awards', 'games']] + ratio_columns
         rushing_stats_df = self.create_rollup_stats(
             stats_df=rushing_stats_df,
             grouping_columns=['player'],
             rollup_columns=rollup_columns,
-            max_rollup_window=2
         )
         self.write_to_silver(rushing_stats_df, "player_rushing_stats.csv")
 
@@ -480,12 +517,11 @@ class FantasyDataProcessor:
             transformations={'player': self.standardize_name},
         )
 
-        rollup_columns = [col for col in select_columns if col != 'player']
+        rollup_columns = [col for col in select_columns if col not in ['player', 'age']]
         rushing_stats_df = self.create_rollup_stats(
             stats_df=rushing_stats_df,
             grouping_columns=['player'],
             rollup_columns=rollup_columns,
-            max_rollup_window=2
         )
 
         self.write_to_silver(rushing_stats_df, "player_rushing_advanced_stats.csv")
@@ -530,7 +566,7 @@ class FantasyDataProcessor:
             'pass_game_winning_drives',
             'pass_awards'
         ]
-        excluded_columns = {'rank', 'team', 'position', 'games', 'games_started', 'pass_record', 'pass_longest_pass', 'pass_fourth_quarter_comebacks', 'pass_game_winning_drives'}
+        excluded_columns = {'rank', 'team', 'position', 'games_started', 'pass_record', 'pass_longest_pass', 'pass_fourth_quarter_comebacks', 'pass_game_winning_drives'}
         select_columns = [col for col in normalized_column_names if col not in excluded_columns]
         passing_stats_df = self.combine_year_data(
             file_pattern="*_player_passing_stats.csv",
@@ -539,13 +575,15 @@ class FantasyDataProcessor:
             transformations={'player': self.standardize_name, 'pass_awards': self.parse_awards},
         )
 
-        rollup_columns = [col for col in select_columns if col not in ['player', 'pass_awards']]
+        ratio_column_pairs = [('pass_touchdowns', 'games'), ('pass_interceptions', 'games'), ('pass_first_downs', 'games'), ('pass_sacks', 'games'), ('pass_sack_yards', 'games')]
+        passing_stats_df, ratio_columns = self.add_ratio_stats(passing_stats_df, ratio_column_pairs)
+        passing_stats_df = passing_stats_df.drop(columns=['games'])
 
+        rollup_columns = [col for col in select_columns if col not in ['player', 'age', 'pass_awards', 'games']]
         passing_stats_df = self.create_rollup_stats(
             stats_df=passing_stats_df,
             grouping_columns=['player'],
             rollup_columns=rollup_columns,
-            max_rollup_window=2
         )
 
         self.write_to_silver(passing_stats_df, "player_passing_stats.csv")
@@ -562,7 +600,7 @@ class FantasyDataProcessor:
         league_average_row['team'] = '2TM'
         return pd.concat([df, league_average_row], ignore_index=True).sort_values(['year', 'team']).reset_index(drop=True)
 
-    def build_team_stats(self, rollup_window: int = 2) -> None:
+    def build_team_stats(self) -> None:
         """
         Reads in all years of team stats from the bronze layer, cleans the data and merges them all into one dataframe.
         Saves the dataframe to the silver layer.
@@ -615,7 +653,6 @@ class FantasyDataProcessor:
             stats_df=team_offense_df,
             grouping_columns=['team'],
             rollup_columns=rollup_columns,
-            max_rollup_window=rollup_window
         )
         team_offense_df = self.add_league_average_rows(team_offense_df)
 

@@ -117,6 +117,32 @@ class TestFantasyDataProcessor(unittest.TestCase):
                 transformations={}
             )
 
+    def test_add_ratio_stats(self):
+        """Test addition of ratio stats."""
+        test_df = pd.DataFrame({
+            'player': ['john_doe', 'jane_smith', 'frank_west', 'eric_east', "nolan_north"],
+            'yards': [100, 150, 200, 250, 300],
+            'touchdowns': [10, 15, 20, 25, 30],
+            'games': [5, 10, 10, 10, 5]
+        })
+
+        result_df, ratio_columns = self.processor.add_ratio_stats(
+            test_df,
+            [('yards', 'games'), ('touchdowns', 'games')]
+        )
+        result_df = result_df.sort_values(['player']).reset_index(drop=True)
+
+        expected_df = pd.DataFrame({
+            'player': ['john_doe', 'jane_smith', 'frank_west', 'eric_east', "nolan_north"],
+            'yards': [100, 150, 200, 250, 300],
+            'touchdowns': [10, 15, 20, 25, 30],
+            'games': [5, 10, 10, 10, 5],
+            'yards_per_game': [20.0, 15.0, 20.0, 25.0, 60.0],
+            'touchdowns_per_game': [2.0, 1.5, 2.0, 2.5, 6.0]
+        }).sort_values(['player']).reset_index(drop=True)
+
+        pd.testing.assert_frame_equal(result_df, expected_df)
+
     def test_create_rollup_stats(self):
         """Test creation of rollup statistics."""
         test_df = pd.DataFrame({
