@@ -3,3 +3,8 @@ beautifulsoup4
 pandas
 lxml
 tqdm
+numpy
+pytest
+matplotlib
+scikit-learn
+seaborn
