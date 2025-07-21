@@ -716,17 +716,20 @@ class FantasyDataProcessor:
         Cleans the final stats dataframe.
         """
         # Drop any rows where the player is null or an empty string
-        joined_df = joined_df[joined_df['player'].notna() & (joined_df['player'] != '')]
+        mask = joined_df['player'].notna() & (joined_df['player'] != '')
+        joined_df = joined_df.loc[mask].copy()
 
         # Fill any numeric columns with null values with 0, and round to 2 decimal places
         numeric_columns = joined_df.select_dtypes(include=[np.number]).columns
         fill_columns = [col for col in numeric_columns if col != 'year']
-        joined_df.loc[:, fill_columns] = joined_df[fill_columns].fillna(0).round(2)
+        joined_df.loc[:, fill_columns] = joined_df.loc[:, fill_columns].fillna(0).round(2)
 
         # Combine awards columns into a single awards column
         awards_columns = ['pass_awards', 'rush_awards', 'rec_awards']
-        joined_df.loc[:, 'awards'] = joined_df[awards_columns].max(axis=1)
+        joined_df.loc[:, 'awards'] = joined_df.loc[:, awards_columns].max(axis=1)
         joined_df = joined_df.drop(columns=awards_columns)
+
+        # TODO: drop the any rows with the lowest year in the set because all stats will be 0
 
         return joined_df
 

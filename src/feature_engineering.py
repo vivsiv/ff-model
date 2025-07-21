@@ -16,6 +16,7 @@ from sklearn.feature_selection import mutual_info_regression
 from sklearn.preprocessing import StandardScaler
 from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
+from tqdm import tqdm
 from typing import Dict, List, Set
 
 # Configure logging
@@ -91,12 +92,15 @@ class FantasyFeatureEngineer:
         df_with_target[target] = df[target]
 
         corr_matrix = df_with_target.corr()
+
         # Double brackets returns a dataframe as opposed to a series
         # The .drop() call drops the row with index label exam_score (axis is set to 0 by default)
         corr_matrix = corr_matrix[[target]].drop(axis=0, labels=[target])
-        # format should be feature_name, p_corr
-        corr_matrix = corr_matrix.sort_values(by=target, ascending=False).round(2)
-        corr_matrix.to_csv(os.path.join(self.discovery_data_dir, output_file_name))
+        corr_matrix = corr_matrix.reset_index().rename(columns={'index': 'feature', target: 'p_corr'})
+        corr_matrix['p_corr'] = corr_matrix['p_corr'].round(2)
+        corr_matrix = corr_matrix.sort_values(by='p_corr', ascending=False)
+
+        corr_matrix.to_csv(os.path.join(self.discovery_data_dir, output_file_name), index=False)
 
         return corr_matrix
 
@@ -104,11 +108,14 @@ class FantasyFeatureEngineer:
         """
         Runs a mutual information analysis on the features and target.
         """
-        mutual_info = mutual_info_regression(df[features], df[target], random_state=68)
-        mutual_info = pd.Series(mutual_info, index=features)
-        mutual_info = mutual_info.sort_values(ascending=False).round(2)
-        # format should be feature_name, mi
-        mutual_info.to_csv(os.path.join(self.discovery_data_dir, output_file_name))
+        mutual_info_values = mutual_info_regression(df[features], df[target], random_state=68)
+        mutual_info = pd.DataFrame({
+            'feature': features,
+            'mi': [round(mi, 2) for mi in mutual_info_values]
+        })
+        mutual_info = mutual_info.sort_values(by="mi", ascending=False)
+
+        mutual_info.to_csv(os.path.join(self.discovery_data_dir, output_file_name), index=False)
         return mutual_info
 
     def plot_correlation_matrix(
@@ -176,53 +183,49 @@ class FantasyFeatureEngineer:
 
         return redundant_features
 
-    def select_features_for_target(self, target_relevance_df: pd.DataFrame, redundant_features: Dict[str, Set[str]]) -> Set[str]:
+    def select_features_for_target(self, target_score_df: pd.DataFrame, redundant_features: Dict[str, Set[str]], auto_add_top_10: bool = False) -> Set[str]:
+
         """
         Selects the most relevant features for a given target.
-        Given
-        - The correlation and mutual information of all candidate features with the target
-        - All pairs of features that are redudant as defined by applying the redundancy threshold to the inter-feature correlation matrix
-        Does:
-        - Drops all features that are not in the top half of both the correlation and mutual information rankings
-        - Drops all remaining redundant features starting from the least relevant (avg rank) going to the most relevant.
-            - Stops cutting features once 75% of features are dropped or all features are processed.
         """
 
-        target_relevance_df['pcorr_rank'] = target_relevance_df['p_corr'].rank(ascending=False)
-        target_relevance_df['mi_rank'] = target_relevance_df['mi'].rank(ascending=False)
-        target_relevance_df['avg_rank'] = (target_relevance_df['pcorr_rank'] + target_relevance_df['mi_rank']) / 2
-        target_relevance_df = target_relevance_df.drop(columns=['pcorr_rank', 'mi_rank'])
+        p50_features_scores = target_score_df.sort_values(by="score", ascending=False).head(len(target_score_df) // 2)
 
-        target_relevance_df = target_relevance_df.sort_values(by="avg_rank", ascending=True).head(len(target_relevance_df) // 2)
-
-        candidate_features = target_relevance_df['feature'].tolist()
-        selected_features = set()
+        candidate_features = p50_features_scores['feature'].tolist()
+        selection_round = set(candidate_features[:10]) if auto_add_top_10 else set()
         for feature in candidate_features:
-            if feature not in redundant_features or all(redundancy not in selected_features for redundancy in redundant_features[feature]):
-                selected_features.add(feature)
+            if feature not in redundant_features or all(redundancy not in selection_round for redundancy in redundant_features[feature]):
+                selection_round.add(feature)
 
-        # TODO: eliminate no more than 75% of features, if selectd feature is < 25% of the original set. Go back through the top features and add them back until we get to 25%
-
-        return selected_features
+        return selection_round
 
     def select_all_features(self, targets: List[str], features: List[str], silver_df: pd.DataFrame, redundant_features: Dict[str, Set[str]]) -> Set[str]:
         """
         Selects the most relevant features for all targets.
         """
         selected_features = set()
-        for target in targets:
+        for target in tqdm(targets, desc=f"Selecting features for targets {targets}"):
             corr = self.pearsons_correlation_with_target(silver_df, features, target, f"{target}_corr.csv")
             mi = self.mutual_information_with_target(silver_df, features, target, f"{target}_mi.csv")
 
-            mi_df = mi.reset_index().rename(columns={'index': 'feature'})
-            corr_df = corr.reset_index().rename(columns={'index': 'feature'})
+            target_score_dfs = [corr.rename(columns={'p_corr': 'score'}), mi.rename(columns={'mi': 'score'})]
+            for target_score_df in target_score_dfs:
+                selection_round = self.select_features_for_target(target_score_df, redundant_features, auto_add_top_10=True)
+                selected_features.update(selection_round)
 
-            target_relevance_df = pd.merge(corr_df, mi_df, on="feature", how="inner")
-
-            selection_round = self.select_features_for_target(target_relevance_df, redundant_features)
-            selected_features.update(selection_round)
+        selected_features_df = pd.DataFrame(list(selected_features), columns=["feature"])
+        selected_features_df.sort_values(by="feature").to_csv(os.path.join(self.gold_data_dir, "selected_features.csv"), index=False)
 
         return selected_features
+
+    def create_gold_table(self, silver_data: pd.DataFrame, metadata_cols: List[str], select_cols: List[str], target_cols: List[str]):
+        """
+        Creates a gold table from the silver table.
+        """
+        gold_data = silver_data[metadata_cols + select_cols + target_cols]
+        gold_data.to_csv(os.path.join(self.gold_data_dir, "final_data.csv"), index=False)
+
+        return gold_data
 
 
 def main():
@@ -242,7 +245,8 @@ def main():
     redundant_features = feature_eng.get_redundant_features(feature_corr, 0.95)
 
     selected_features = feature_eng.select_all_features(target_cols, features, silver_data, redundant_features)
-    print(selected_features)
+
+    feature_eng.create_gold_table(metadata_cols, list(selected_features), target_cols, silver_data)
 
 
 if __name__ == "__main__":
