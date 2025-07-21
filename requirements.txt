@@ -5,3 +5,6 @@ lxml
 tqdm
 numpy
 pytest
+matplotlib
+scikit-learn
+seaborn
