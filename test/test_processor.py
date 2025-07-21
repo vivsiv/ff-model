@@ -1,68 +1,70 @@
-import unittest
 import os
 import tempfile
 import shutil
 from unittest.mock import patch, MagicMock
 import pandas as pd
 import numpy as np
+import pytest
 
 from src.processor import FantasyDataProcessor
 
 
-class TestFantasyDataProcessor(unittest.TestCase):
-    def setUp(self):
+class TestFantasyDataProcessor():
+    @classmethod
+    def setup_class(cls):
         """Set up test fixtures with temporary directories."""
-        self.test_dir = tempfile.mkdtemp()
-        self.bronze_dir = os.path.join(self.test_dir, "bronze")
-        self.silver_dir = os.path.join(self.test_dir, "silver")
-        self.gold_dir = os.path.join(self.test_dir, "gold")
+        cls.test_dir = tempfile.mkdtemp()
+        cls.bronze_dir = os.path.join(cls.test_dir, "bronze")
+        cls.silver_dir = os.path.join(cls.test_dir, "silver")
+        cls.gold_dir = os.path.join(cls.test_dir, "gold")
 
-        os.makedirs(self.bronze_dir)
-        os.makedirs(self.silver_dir)
-        os.makedirs(self.gold_dir)
+        os.makedirs(cls.bronze_dir)
+        os.makedirs(cls.silver_dir)
+        os.makedirs(cls.gold_dir)
 
-        self.processor = FantasyDataProcessor(data_dir=self.test_dir)
+        cls.processor = FantasyDataProcessor(data_dir=cls.test_dir)
 
-    def tearDown(self):
+    @classmethod
+    def teardown_class(cls):
         """Clean up temporary directories."""
-        shutil.rmtree(self.test_dir)
+        shutil.rmtree(cls.test_dir)
 
     def test_standardize_name(self):
         """Test name standardization functionality."""
-        self.assertEqual(self.processor.standardize_name("A.J. Brown"), "aj_brown")
-        self.assertEqual(self.processor.standardize_name("Kenneth Walker III"), "kenneth_walker")
-        self.assertEqual(self.processor.standardize_name("Odell Beckham Jr."), "odell_beckham")
-        self.assertEqual(self.processor.standardize_name("Calvin Ridley*"), "calvin_ridley")
-        self.assertEqual(self.processor.standardize_name("DeAndre Hopkins+"), "deandre_hopkins")
-        self.assertEqual(self.processor.standardize_name("D'Andre Swift"), "dandre_swift")
-        self.assertEqual(self.processor.standardize_name("Ja'Marr Chase"), "jamarr_chase")
+        assert self.processor.standardize_name("A.J. Brown") == "aj_brown"
+        assert self.processor.standardize_name("Kenneth Walker III") == "kenneth_walker"
+        assert self.processor.standardize_name("Odell Beckham Jr.") == "odell_beckham"
+        assert self.processor.standardize_name("Calvin Ridley*") == "calvin_ridley"
+        assert self.processor.standardize_name("DeAndre Hopkins+") == "deandre_hopkins"
+        assert self.processor.standardize_name("D'Andre Swift") == "dandre_swift"
+        assert self.processor.standardize_name("Ja'Marr Chase") == "jamarr_chase"
 
-        self.assertEqual(self.processor.standardize_name("  Extra Spaces  "), "extra_spaces")
-        self.assertEqual(self.processor.standardize_name("UPPERCASE NAME"), "uppercase_name")
-        self.assertEqual(self.processor.standardize_name("Multi-Hyphen Name"), "multi_hyphen_name")
+        assert self.processor.standardize_name("  Extra Spaces  ") == "extra_spaces"
+        assert self.processor.standardize_name("UPPERCASE NAME") == "uppercase_name"
+        assert self.processor.standardize_name("Multi-Hyphen Name") == "multi_hyphen_name"
 
     def test_standardize_team_name(self):
         """Test team name standardization."""
-        self.assertEqual(self.processor.standardize_team_name("Green Bay Packers"), "GNB")
-        self.assertEqual(self.processor.standardize_team_name("Las Vegas Raiders"), "LVR")
-        self.assertEqual(self.processor.standardize_team_name("New York Giants"), "NYG")
-        self.assertEqual(self.processor.standardize_team_name("San Francisco 49ers"), "SFO")
+        assert self.processor.standardize_team_name("Green Bay Packers") == "GNB"
+        assert self.processor.standardize_team_name("Las Vegas Raiders") == "LVR"
+        assert self.processor.standardize_team_name("New York Giants") == "NYG"
+        assert self.processor.standardize_team_name("San Francisco 49ers") == "SFO"
 
-        self.assertEqual(self.processor.standardize_team_name("Philadelphia Eagles"), "PHI")
-        self.assertEqual(self.processor.standardize_team_name("Dallas Cowboys"), "DAL")
-        self.assertEqual(self.processor.standardize_team_name("Kansas City Chiefs"), "KAN")
+        assert self.processor.standardize_team_name("Philadelphia Eagles") == "PHI"
+        assert self.processor.standardize_team_name("Dallas Cowboys") == "DAL"
+        assert self.processor.standardize_team_name("Kansas City Chiefs") == "KAN"
 
-        self.assertEqual(self.processor.standardize_team_name("  Chicago Bears  "), "CHI")
+        assert self.processor.standardize_team_name("  Chicago Bears  ") == "CHI"
 
     def test_parse_awards(self):
         """Test awards parsing functionality."""
-        self.assertEqual(self.processor.parse_awards("PB,AP-1,AP MVP-3"), 3)
-        self.assertEqual(self.processor.parse_awards("PB"), 1)
-        self.assertEqual(self.processor.parse_awards("AP-1,AP-2"), 2)
+        assert self.processor.parse_awards("PB,AP-1,AP MVP-3") == 3
+        assert self.processor.parse_awards("PB") == 1
+        assert self.processor.parse_awards("AP-1,AP-2") == 2
 
-        self.assertEqual(self.processor.parse_awards(np.nan), 0.0)
-        self.assertEqual(self.processor.parse_awards(None), 0.0)
-        self.assertEqual(self.processor.parse_awards(""), 0.0)
+        assert self.processor.parse_awards(np.nan) == 0.0
+        assert self.processor.parse_awards(None) == 0.0
+        assert self.processor.parse_awards("") == 0.0
 
     def test_combine_year_data_success(self):
         """Test successful combination of year data."""
@@ -109,7 +111,7 @@ class TestFantasyDataProcessor(unittest.TestCase):
         })
         test_data.to_csv(os.path.join(self.bronze_dir, "2023_mismatch.csv"), index=False)
 
-        with self.assertRaises(AssertionError):
+        with pytest.raises(AssertionError):
             self.processor.combine_year_data(
                 file_pattern="*_mismatch.csv",
                 normalized_column_names=['col1', 'col2', 'col3'],
@@ -180,7 +182,7 @@ class TestFantasyDataProcessor(unittest.TestCase):
             'team': ['PHI', 'DAL']
         })
 
-        with self.assertRaises(AssertionError):
+        with pytest.raises(AssertionError):
             self.processor.create_rollup_stats(
                 stats_df=test_df,
                 grouping_columns=['player'],
@@ -330,7 +332,3 @@ class TestFantasyDataProcessor(unittest.TestCase):
         }).sort_values(['player', 'year']).reset_index(drop=True)
 
         pd.testing.assert_frame_equal(cleaned_df, expected_df)
-
-
-if __name__ == '__main__':
-    unittest.main()
