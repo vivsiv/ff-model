@@ -729,7 +729,7 @@ class FantasyDataProcessor:
         joined_df.loc[:, 'awards'] = joined_df.loc[:, awards_columns].max(axis=1)
         joined_df = joined_df.drop(columns=awards_columns)
 
-        # TODO: drop the any rows with the lowest year in the set because all stats will be 0
+        joined_df = joined_df[joined_df['year'] != joined_df['year'].min()]
 
         return joined_df
 

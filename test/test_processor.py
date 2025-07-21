@@ -294,19 +294,19 @@ class TestFantasyDataProcessor(unittest.TestCase):
     def test_clean_final_stats(self):
         """Test cleaning of final stats dataframe."""
         test_df = pd.DataFrame({
-            'player': ['john_doe', 'jane_smith', ''],
-            'year': [2023, 2023, 1970],
-            'team': ['PHI', 'DAL', 'HUH'],
-            'fantasy_points': [100, 90, np.nan],
-            'rec_yards': [1000.0, 800.233, np.nan],
-            'adot': [10, 8, np.nan],
-            'rush_yards': [600, 0, np.nan],
-            'yac': [6, 0, np.nan],
-            'pass_yards': [3500, 0, np.nan],
-            'team_points': [350, 300, np.nan],
-            'rec_awards': [1, 0, 0],
-            'rush_awards': [1, 0, 0],
-            'pass_awards': [0, 2, 0],
+            'player': ['john_doe', 'jane_smith', '', 'arch_manning'],
+            'year': [2023, 2023, 1970, 1970],
+            'team': ['PHI', 'DAL', 'HUH', 'NYG'],
+            'fantasy_points': [100, 90, np.nan, 50],
+            'rec_yards': [1000.0, 800.233, np.nan, 0],
+            'adot': [10, 8, np.nan, 0],
+            'rush_yards': [600, 0, np.nan, 0],
+            'yac': [6, 0, np.nan, 0],
+            'pass_yards': [3500, 0, np.nan, 1000],
+            'team_points': [350, 300, np.nan, 100],
+            'rec_awards': [1, 0, 0, 0],
+            'rush_awards': [1, 0, 0, 0],
+            'pass_awards': [0, 2, 0, 0],
         })
 
         cleaned_df = (
