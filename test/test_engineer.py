@@ -9,11 +9,12 @@ class TestFantasyFeatureEngineer:
 
     @pytest.fixture
     def feature_eng(self):
-        return FantasyFeatureEngineer()
-    
+        return FantasyFeatureEngineer(metadata_cols=['id'], target_cols=['target'])
+
     @pytest.fixture
-    def feature_df(self):
+    def silver_data(self):
         return pd.DataFrame({
+            'id': ['x', 'y', 'z'],
             'f1': [1, 2, 3],
             'f2': [100, 50, 0],
             'f3': [12, 0, 8],
@@ -88,18 +89,16 @@ class TestFantasyFeatureEngineer:
 
         assert redundant_features == expected_redundant_features
 
-    def test_pearsons_correlation_with_target(self, feature_eng, feature_df):
-        corr_matrix = feature_eng.pearsons_correlation_with_target(feature_df, ['f1', 'f2', 'f3'], 'target')
+    def test_pearsons_correlation_with_target(self, feature_eng, silver_data):
+        corr_matrix = feature_eng.pearsons_correlation_with_target(silver_data, 'target', 'target_corr.csv')
         assert corr_matrix.columns.tolist() == ['feature', 'p_corr']
         assert sorted(corr_matrix['feature'].tolist()) == ['f1', 'f2', 'f3']
 
-    def test_mutual_information_with_target(self, feature_eng, feature_df):
+    def test_mutual_information_with_target(self, feature_eng, silver_data):
         with patch('src.feature_engineering.mutual_info_regression') as mock_mi:
             mock_mi.return_value = [0.8, 0.3, 0.9]
 
-            mi_df = feature_eng.mutual_information_with_target(
-                feature_df, ['f1', 'f2', 'f3'], 'target'
-            ).sort_values(by='feature')
+            mi_df = feature_eng.mutual_information_with_target(silver_data, 'target', 'target_mi.csv').sort_values(by='feature')
 
             expected_df = pd.DataFrame({
                 'feature': ['f1', 'f2', 'f3'],
@@ -111,5 +110,5 @@ class TestFantasyFeatureEngineer:
     def test_select_features_for_target(self, feature_eng, target_score_df, feature_corr_matrix):
         redundant_features = feature_eng.get_redundant_features(feature_corr_matrix, 0.5)
 
-        selected_features = feature_eng.select_features_for_target(target_score_df, redundant_features)
+        selected_features = feature_eng.select_features_for_target(target_score_df, redundant_features, max_features=2)
         assert selected_features == {'f3', 'f5'}

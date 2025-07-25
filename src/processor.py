@@ -306,6 +306,7 @@ class FantasyDataProcessor:
         ratio_column_pairs = [('standard_fantasy_points', 'games'), ('ppr_fantasy_points', 'games')]
         fantasy_stats_df, ratio_columns = self.add_ratio_stats(fantasy_stats_df, ratio_column_pairs)
 
+        # TODO: this is a bug it is including this years games not last years.
         rollup_columns = ['games']
         fantasy_stats_df = self.create_rollup_stats(
             stats_df=fantasy_stats_df,
