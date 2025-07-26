@@ -1,3 +1,6 @@
+import os
+import tempfile
+import shutil
 import pytest
 import pandas as pd
 from unittest.mock import patch
@@ -6,20 +9,31 @@ from src.feature_engineering import FantasyFeatureEngineer
 
 
 class TestFantasyFeatureEngineer:
+    @classmethod
+    def setup_class(cls):
+        cls.test_dir = tempfile.mkdtemp()
+        cls.silver_dir = os.path.join(cls.test_dir, "silver")
 
-    @pytest.fixture
-    def feature_eng(self):
-        return FantasyFeatureEngineer(metadata_cols=['id'], target_cols=['target'])
+        os.makedirs(cls.silver_dir)
 
-    @pytest.fixture
-    def silver_data(self):
-        return pd.DataFrame({
+        silver_data = pd.DataFrame({
             'id': ['x', 'y', 'z'],
             'f1': [1, 2, 3],
             'f2': [100, 50, 0],
             'f3': [12, 0, 8],
             'target': [10, 11, 12]
         })
+        silver_data.to_csv(os.path.join(cls.silver_dir, "final_stats.csv"), index=False)
+
+        cls.feature_eng = FantasyFeatureEngineer(
+            data_dir=cls.test_dir,
+            metadata_cols=['id'],
+            target_cols=['target'],
+            redundancy_threshold=0.5)
+
+    @classmethod
+    def teardown_class(cls):
+        shutil.rmtree(cls.test_dir)
 
     @pytest.fixture
     def feature_corr_matrix(self):
@@ -82,23 +96,24 @@ class TestFantasyFeatureEngineer:
             'score': [0.80, 0.10, 0.95, 0.90, 0.95, 0.05],
         })
 
-    def test_get_redundant_features(self, feature_eng, feature_corr_matrix):
-        redundant_features = feature_eng.get_redundant_features(feature_corr_matrix, 0.5)
+    def test_get_redundant_features(self, feature_corr_matrix):
+        with patch.object(self.feature_eng, 'pearsons_correlation_between_features', return_value=feature_corr_matrix):
+            redundant_features = self.feature_eng.get_redundant_features()
 
         expected_redundant_features = {'f1': {'f4', 'f5'}, 'f2': {'f3'}, 'f3': {'f2'}, 'f4': {'f1', 'f5'}, 'f5': {'f1', 'f4'}}
 
         assert redundant_features == expected_redundant_features
 
-    def test_pearsons_correlation_with_target(self, feature_eng, silver_data):
-        corr_matrix = feature_eng.pearsons_correlation_with_target(silver_data, 'target', 'target_corr.csv')
+    def test_pearsons_correlation_with_target(self):
+        corr_matrix = self.feature_eng.pearsons_correlation_with_target('target')
         assert corr_matrix.columns.tolist() == ['feature', 'p_corr']
         assert sorted(corr_matrix['feature'].tolist()) == ['f1', 'f2', 'f3']
 
-    def test_mutual_information_with_target(self, feature_eng, silver_data):
+    def test_mutual_information_with_target(self):
         with patch('src.feature_engineering.mutual_info_regression') as mock_mi:
             mock_mi.return_value = [0.8, 0.3, 0.9]
 
-            mi_df = feature_eng.mutual_information_with_target(silver_data, 'target', 'target_mi.csv').sort_values(by='feature')
+            mi_df = self.feature_eng.mutual_information_with_target('target').sort_values(by='feature')
 
             expected_df = pd.DataFrame({
                 'feature': ['f1', 'f2', 'f3'],
@@ -107,8 +122,9 @@ class TestFantasyFeatureEngineer:
 
             pd.testing.assert_frame_equal(mi_df, expected_df)
 
-    def test_select_features_for_target(self, feature_eng, target_score_df, feature_corr_matrix):
-        redundant_features = feature_eng.get_redundant_features(feature_corr_matrix, 0.5)
+    def test_select_features_for_target(self, target_score_df, feature_corr_matrix):
+        with patch.object(self.feature_eng, 'pearsons_correlation_between_features', return_value=feature_corr_matrix):
+            redundant_features = self.feature_eng.get_redundant_features()
 
-        selected_features = feature_eng.select_features_for_target(target_score_df, redundant_features, max_features=2)
+        selected_features = self.feature_eng.select_features_for_target(target_score_df, redundant_features, max_features=2)
         assert selected_features == {'f3', 'f5'}

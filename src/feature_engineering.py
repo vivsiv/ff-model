@@ -33,9 +33,11 @@ class FantasyFeatureEngineer:
 
     def __init__(
         self,
-        metadata_cols: List[str],
-        target_cols: List[str],
         data_dir: str = "../data",
+        metadata_cols: List[str] = [],
+        target_cols: List[str] = [],
+        must_include_features: List[str] = [],
+        redundancy_threshold: float = 0.75,
     ):
         """
         Initialize the feature engineer.
@@ -44,16 +46,25 @@ class FantasyFeatureEngineer:
             data_dir: Directory containing the processed data
         """
         self.data_dir = data_dir
-        self.silver_data_dir = os.path.join(data_dir, "silver")
-        self.gold_data_dir = os.path.join(data_dir, "gold")
-        self.discovery_data_dir = os.path.join(data_dir, "discovery")
+        try:
+            # We assume the silver table already exists.
+            self.silver_data_dir = os.path.join(data_dir, "silver")
+            self.silver_data = self.load_silver_table()
+        except Exception as e:
+            logger.error(f"Silver table not found at {self.silver_data_dir}")
+            raise e
 
-        os.makedirs(self.discovery_data_dir, exist_ok=True)
+        self.gold_data_dir = os.path.join(data_dir, "gold")
         os.makedirs(self.gold_data_dir, exist_ok=True)
+
+        self.discovery_data_dir = os.path.join(data_dir, "discovery")
+        os.makedirs(self.discovery_data_dir, exist_ok=True)
 
         self.metadata_cols = metadata_cols
         self.target_cols = target_cols
         self.feature_cols = [col for col in self.silver_data.columns if col not in self.metadata_cols + self.target_cols]
+        self.must_include_features = must_include_features
+        self.redundancy_threshold = redundancy_threshold
 
     def load_silver_table(self) -> Dict[str, pd.DataFrame]:
         """
@@ -71,21 +82,21 @@ class FantasyFeatureEngineer:
 
         return data
 
-    def pearsons_correlation_between_features(self, silver_data: pd.DataFrame, output_file_name: str = "feature_corr_matrix.csv") -> pd.DataFrame:
+    def pearsons_correlation_between_features(self, output_file_name: str = "feature_corr_matrix.csv") -> pd.DataFrame:
         """
         Runs a Pearson correlation analysis between all features.
         """
-        corr_matrix = silver_data[self.feature_cols].corr(method='pearson')
+        corr_matrix = self.silver_data[self.feature_cols].corr(method='pearson')
         corr_matrix = corr_matrix.round(2)
         corr_matrix.to_csv(os.path.join(self.discovery_data_dir, output_file_name))
         return corr_matrix
 
-    def pearsons_correlation_with_target(self, silver_data: pd.DataFrame, target: str, output_file_name: str) -> pd.DataFrame:
+    def pearsons_correlation_with_target(self, target: str, output_file_name: str = "target_corr.csv") -> pd.DataFrame:
         """
         Runs a Pearson correlation analysis between all features and a single target.
         """
 
-        silver_data_single_target = silver_data[self.feature_cols].copy()
+        silver_data_single_target = self.silver_data[self.feature_cols].copy()
         silver_data_single_target[target] = self.silver_data[target]
 
         corr_matrix = silver_data_single_target.corr(method='pearson')
@@ -101,11 +112,11 @@ class FantasyFeatureEngineer:
 
         return corr_matrix
 
-    def mutual_information_with_target(self, silver_data: pd.DataFrame, target: str, output_file_name: str) -> pd.DataFrame:
+    def mutual_information_with_target(self, target: str, output_file_name: str = "target_mi.csv") -> pd.DataFrame:
         """
         Runs a mutual information analysis between all features and a single target.
         """
-        mutual_info_values = mutual_info_regression(silver_data[self.feature_cols], silver_data[target], random_state=68)
+        mutual_info_values = mutual_info_regression(self.silver_data[self.feature_cols], self.silver_data[target], random_state=68)
         mutual_info = pd.DataFrame({
             'feature': self.feature_cols,
             'mi': [round(mi, 2) for mi in mutual_info_values]
@@ -164,17 +175,16 @@ class FantasyFeatureEngineer:
                    dpi=300, bbox_inches='tight')
         plt.close()
 
-    def get_redundant_features(self, feature_corr_matrix: pd.DataFrame, redundancy_threshold: float = 0.75) -> Dict[str, Set[str]]:
+    def get_redundant_features(self) -> Dict[str, Set[str]]:
         """
         Returns a dictionary of features to the set of features it is redundant with.
         """
-
-        corr_matrix = feature_corr_matrix.copy()
-        np.fill_diagonal(corr_matrix.values, 0)
+        feature_corr_matrix = self.pearsons_correlation_between_features()
+        np.fill_diagonal(feature_corr_matrix.values, 0)
 
         redundant_features = {}
-        for feature in corr_matrix.columns:
-            correlated = corr_matrix.loc[corr_matrix[feature].abs() > redundancy_threshold].index.tolist()
+        for feature in feature_corr_matrix.columns:
+            correlated = feature_corr_matrix.loc[feature_corr_matrix[feature].abs() > self.redundancy_threshold].index.tolist()
             if correlated:
                 redundant_features[feature] = set(correlated)
 
@@ -207,7 +217,6 @@ class FantasyFeatureEngineer:
 
     def select_features(
         self,
-        silver_data: pd.DataFrame,
         redundant_features: Dict[str, Set[str]],
         must_include_features: List[str] = []
     ) -> Set[str]:
@@ -217,8 +226,8 @@ class FantasyFeatureEngineer:
         selected_features = set(must_include_features)
 
         for target in tqdm(self.target_cols, desc=f"Selecting features for all targets"):
-            corr = self.pearsons_correlation_with_target(silver_data, target, f"{target}_corr.csv")
-            mi = self.mutual_information_with_target(silver_data, target, f"{target}_mi.csv")
+            corr = self.pearsons_correlation_with_target(target, f"{target}_corr.csv")
+            mi = self.mutual_information_with_target(target, f"{target}_mi.csv")
 
             feature_target_score_dfs = [corr.rename(columns={'p_corr': 'score'}), mi.rename(columns={'mi': 'score'})]
             for score_df in tqdm(feature_target_score_dfs, desc=f"Selecting features for {target}"):
@@ -234,20 +243,15 @@ class FantasyFeatureEngineer:
 
         return selected_features
 
-    def build_gold_table(
-        self,
-        must_include_features: List[str] = []
-    ):
+    def build_gold_table(self):
         """
         Creates a gold table from the silver table.
         """
-        silver_data = self.load_silver_table()
 
-        feature_corr = self.pearsons_correlation_between_features(silver_data)
-        redundant_features = self.get_redundant_features(feature_corr)
-        selected_features = self.select_features(silver_data, redundant_features, must_include_features)
+        redundant_features = self.get_redundant_features(self.redundancy_threshold)
+        selected_features = self.select_features(redundant_features, self.must_include_features)
 
-        gold_data = silver_data.copy()
+        gold_data = self.silver_data.copy()
         gold_data = gold_data[self.metadata_cols + list(selected_features) + self.target_cols]
 
         gold_data['id'] = gold_data['player'] + '_' + gold_data['year'].astype(str)
@@ -261,10 +265,17 @@ def main():
     data_dir = os.path.join(os.path.dirname(script_dir), "data")
     metadata_cols = ["player", "year"]
     target_cols = ["standard_fantasy_points", "standard_fantasy_points_per_game", "ppr_fantasy_points", "ppr_fantasy_points_per_game", "value_over_replacement"]
+    must_include_features = ['age']
+    redundancy_threshold = 0.75
 
-    feature_eng = FantasyFeatureEngineer(metadata_cols=metadata_cols, target_cols=target_cols, data_dir=data_dir)
+    feature_eng = FantasyFeatureEngineer(
+        data_dir=data_dir,
+        metadata_cols=metadata_cols,
+        target_cols=target_cols,
+        must_include_features=must_include_features,
+        redundancy_threshold=redundancy_threshold)
 
-    feature_eng.build_gold_table(must_include_features=['age'])
+    feature_eng.build_gold_table()
 
 
 if __name__ == "__main__":
