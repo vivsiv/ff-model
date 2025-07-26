@@ -248,14 +248,14 @@ class FantasyFeatureEngineer:
         Creates a gold table from the silver table.
         """
 
-        redundant_features = self.get_redundant_features(self.redundancy_threshold)
+        redundant_features = self.get_redundant_features()
         selected_features = self.select_features(redundant_features, self.must_include_features)
 
         gold_data = self.silver_data.copy()
         gold_data = gold_data[self.metadata_cols + list(selected_features) + self.target_cols]
 
-        gold_data['id'] = gold_data['player'] + '_' + gold_data['year'].astype(str)
-        gold_data = gold_data.drop(columns=['player', 'year'])
+        gold_data.insert(0, 'id', gold_data[self.metadata_cols].apply(lambda x: '_'.join(x.astype(str)), axis=1))
+        gold_data = gold_data.drop(columns=self.metadata_cols)
 
         gold_data.to_csv(os.path.join(self.gold_data_dir, "final_data.csv"), index=False)
 

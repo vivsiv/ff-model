@@ -137,10 +137,15 @@ class FantasyDataProcessor:
                 df.columns = normalized_column_names
             except (AssertionError, ValueError) as e:
                 if file.endswith('_player_passing_stats.csv') and 'QBR' not in df.columns and len(normalized_column_names) == len(df.columns) + 1:
-                    no_qbr_columns = [col for col in normalized_column_names if col != 'pass_qbr']
-                    df.columns = no_qbr_columns
+                    no_qbr_normalized_columns = [col for col in normalized_column_names if col != 'pass_qbr']
+                    df.columns = no_qbr_normalized_columns
                     df['pass_qbr'] = 50.0
-                    logger.info(f"Added missing QBR column to {file}")
+                    logger.info(f"Added missing pass_qbr column to {file}")
+                elif file.endswith('_team_offense.csv') and 'EXP' not in df.columns and len(normalized_column_names) == len(df.columns) + 1:
+                    no_exp_normalized_columns = [col for col in normalized_column_names if col != 'team_expected_points']
+                    df.columns = no_exp_normalized_columns
+                    df['team_expected_points'] = 0.0
+                    logger.info(f"Added missing team_expected_points column to {file}")
                 else:
                     logger.error(f"{file} columns must be the same length as provided normalized_column_names")
                     raise e
