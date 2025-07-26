@@ -123,24 +123,24 @@ class TestFantasyDataProcessor():
         """Test addition of ratio stats."""
         test_df = pd.DataFrame({
             'player': ['john_doe', 'jane_smith', 'frank_west', 'eric_east', "nolan_north"],
-            'yards': [100, 150, 200, 250, 300],
-            'touchdowns': [10, 15, 20, 25, 30],
-            'games': [5, 10, 10, 10, 5]
+            'rec_yards': [100, 150, 200, 250, 300],
+            'rec_touchdowns': [10, 15, 20, 25, 30],
+            'rec_games': [5, 10, 10, 10, 5]
         })
 
-        result_df, ratio_columns = self.processor.add_ratio_stats(
+        result_df, _ = self.processor.add_ratio_stats(
             test_df,
-            [('yards', 'games'), ('touchdowns', 'games')]
+            [('rec_yards', 'rec_games'), ('rec_touchdowns', 'rec_games')]
         )
         result_df = result_df.sort_values(['player']).reset_index(drop=True)
 
         expected_df = pd.DataFrame({
             'player': ['john_doe', 'jane_smith', 'frank_west', 'eric_east', "nolan_north"],
-            'yards': [100, 150, 200, 250, 300],
-            'touchdowns': [10, 15, 20, 25, 30],
-            'games': [5, 10, 10, 10, 5],
-            'yards_per_game': [20.0, 15.0, 20.0, 25.0, 60.0],
-            'touchdowns_per_game': [2.0, 1.5, 2.0, 2.5, 6.0]
+            'rec_yards': [100, 150, 200, 250, 300],
+            'rec_touchdowns': [10, 15, 20, 25, 30],
+            'rec_games': [5, 10, 10, 10, 5],
+            'rec_yards_per_game': [20.0, 15.0, 20.0, 25.0, 60.0],
+            'rec_touchdowns_per_game': [2.0, 1.5, 2.0, 2.5, 6.0]
         }).sort_values(['player']).reset_index(drop=True)
 
         pd.testing.assert_frame_equal(result_df, expected_df)
@@ -309,6 +309,9 @@ class TestFantasyDataProcessor():
             'rec_awards': [1, 0, 0, 0],
             'rush_awards': [1, 0, 0, 0],
             'pass_awards': [0, 2, 0, 0],
+            'rec_games': [15, 15, 0, 0],
+            'rush_games': [16, 0, 0, 0],
+            'pass_games': [16, 0, 0, 16],
         })
 
         cleaned_df = (
@@ -328,7 +331,8 @@ class TestFantasyDataProcessor():
             'yac': [6.0, 0.0],
             'pass_yards': [3500.0, 0.0],
             'team_points': [350.0, 300.0],
-            'awards': [1, 2]
+            'awards': [1, 2],
+            'games': [16, 15],
         }).sort_values(['player', 'year']).reset_index(drop=True)
 
         pd.testing.assert_frame_equal(cleaned_df, expected_df)
