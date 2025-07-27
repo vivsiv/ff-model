@@ -66,7 +66,7 @@ class FantasyFeatureEngineer:
         self.must_include_features = must_include_features
         self.redundancy_threshold = redundancy_threshold
 
-    def load_silver_table(self) -> Dict[str, pd.DataFrame]:
+    def load_silver_table(self) -> pd.DataFrame:
         """
         Loads the silver table(s).
 
