@@ -36,28 +36,34 @@ def main():
     model = FantasyModel()
     gold_table = model.load_gold_table()
 
-    metadata_cols = ["player", "year", "team"]
-    target_cols = ["ppr_fantasy_points", "standard_fantasy_points", "ppr_fantasy_points_per_game", "standard_fantasy_points_per_game", "value_over_replacement"]
+    metadata_cols = ["id"]
+    target_cols = [
+        "ppr_fantasy_points",
+        "standard_fantasy_points",
+        "ppr_fantasy_points_per_game",
+        "standard_fantasy_points_per_game",
+        "value_over_replacement"
+    ]
     feature_cols = [col for col in gold_table.columns if col not in metadata_cols + target_cols]
 
     metadata = gold_table[metadata_cols]
     X = gold_table[feature_cols]
     y = gold_table["ppr_fantasy_points"]
 
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    X_train, X_test, y_train, y_test, metadata_train, metadata_test = train_test_split(
+        X, y, metadata, test_size=0.2, random_state=42
+    )
 
     pipeline = model.create_pipeline(LinearRegression())
 
     pipeline.fit(X_train, y_train)
+
+    score = pipeline.score(X_test, y_test)
+    print(f"R^2 Score: {score}")
+
     y_pred = pipeline.predict(X_test)
-
-    score = pipeline.score(y_pred, y_test)
-    print(f"Score: {score}")
-
     preds = pd.DataFrame({
-        "player": metadata["player"],
-        "year": metadata["year"],
-        "team": metadata["team"],
+        "id": metadata_test["id"],
         "ppr_fantasy_points": y_pred,
     })
 
