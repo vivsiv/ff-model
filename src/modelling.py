@@ -1,7 +1,7 @@
 import os
 import pandas as pd
-# import mlflow
-# from mlflow.models import infer_signature
+import mlflow
+from mlflow.models import infer_signature
 from sklearn.preprocessing import StandardScaler
 from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
@@ -12,6 +12,7 @@ from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.model_selection import train_test_split, GridSearchCV
 from sklearn.feature_selection import SelectKBest, f_regression, mutual_info_regression
 from typing import Any
+from datetime import datetime
 
 
 class FantasyModel:
@@ -31,6 +32,10 @@ class FantasyModel:
         self.data_dir = data_dir
         self.gold_data_dir = os.path.join(data_dir, "gold")
         self.gold_data = self.load_gold_table()
+
+        self.tracking_dir = os.path.join(data_dir, "mlruns")
+        os.makedirs(self.tracking_dir, exist_ok=True)
+        mlflow.set_tracking_uri(self.tracking_dir)
 
         self.predictions_dir = os.path.join(data_dir, "predictions")
         os.makedirs(self.predictions_dir, exist_ok=True)
@@ -74,7 +79,9 @@ class FantasyModel:
 
         return pipeline
 
-    def create_grid_search(self, pipeline: Pipeline, data: dict[str, pd.DataFrame]) -> GridSearchCV:
+    def run_model_eval(self, data: dict[str, pd.DataFrame]) -> GridSearchCV:
+        eval_pipeline = self.create_pipeline()
+
         # TODO: incorporate hyper parameters for the better models.
         param_grid = {
             # 'select__k': [100, 150, 'all'], # Lower feature counts perform worse, skew higher
@@ -83,18 +90,59 @@ class FantasyModel:
                 Ridge(),
                 Lasso(),
                 RandomForestRegressor(),
-                SVR(), # Performs poorly compared to other models, no further tuning needed.
+                SVR(),
                 HistGradientBoostingRegressor(),
             ]
         }
         grid_search = GridSearchCV(
-            pipeline,
+            eval_pipeline,
             param_grid,
             cv=5,
-            scoring='r2',
-            n_jobs=-1, # Uses all available cores.
+            scoring={
+                'r2': 'r2',
+                'rmse': 'neg_root_mean_squared_error',
+            },
+            refit='r2',  # Use R2 for selecting best model
+            n_jobs=-1,  # Uses all available cores.
         )
         grid_search.fit(data["X_train"], data["y_train"])
+
+        mlflow.set_experiment(self.target_col)
+        run_name = f"eval_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+
+        with mlflow.start_run(run_name=run_name):
+            mlflow.set_tag("phase", "eval")
+
+            # TODO: if feature selection is used, log the features used
+            mlflow.log_param("features", self.feature_cols)
+            mlflow.log_param("param_grid", grid_search.param_grid)
+
+            mlflow.log_metric("r2", grid_search.best_score_)
+            best_rmse = -grid_search.cv_results_['mean_test_rmse'][grid_search.best_index_]
+            mlflow.log_metric("rmse", best_rmse)
+
+            mlflow.log_param("best_params", str(grid_search.best_params_))
+
+            cv_results_df = pd.DataFrame(grid_search.cv_results_)
+            cv_results_df['mean_test_rmse'] = -cv_results_df['mean_test_rmse']
+            cv_results_log = (
+                cv_results_df[['param_model', 'mean_test_r2', 'mean_test_rmse', 'std_test_r2']]
+                .sort_values(by=['mean_test_r2', 'mean_test_rmse'], ascending=[False, True])
+                .to_dict(orient='records')
+            )
+            mlflow.log_param("cv_results", cv_results_log)
+
+            signature = infer_signature(data["X_train"], data["y_train"])
+            best_model = grid_search.best_estimator_.named_steps['model']
+            model_name = type(best_model).__name__.lower()
+
+            mlflow.sklearn.log_model(
+                sk_model=grid_search.best_estimator_,
+                registered_model_name=f"{self.target_col}_{model_name}",
+                name=model_name,
+                input_example=data["X_train"],
+                signature=signature)
+
         return grid_search
 
     def make_test_predictions(self, model: Any, data: dict[str, pd.DataFrame]) -> tuple[float, pd.DataFrame]:
@@ -122,48 +170,17 @@ class FantasyModel:
 
 
 def main():
-    ff_model = FantasyModel()
+    ppr_model = FantasyModel(target_col="ppr_fantasy_points")
+    data = ppr_model.split_data()
 
-    # mlflow.set_tracking_uri("http://localhost:8000")
-    # mlflow.set_experiment("ppr_total_linear_regression")
-    # mlflow.autolog()
+    ppr_model.run_model_eval(data)
 
-    data = ff_model.split_data()
+    # score, preds = ppr_model.make_test_predictions(data)
+    # print(f"Test set R^2 Score: {score}")
 
-    eval_pipeline = ff_model.create_pipeline()
-    grid_search = ff_model.create_grid_search(eval_pipeline)
-
-    print(f"Best params: {grid_search.best_params_}")
-    print(f"Best score: {grid_search.best_score_}")
-    print(f"Best estimator: {grid_search.best_estimator_}")
-
-    best_model = grid_search.best_estimator_
-    best_model_pipeline = ff_model.create_pipeline(best_model)
-    score, preds = ff_model.make_test_predictions(best_model_pipeline, data)
-
-    print(f"Best Model R^2 Score: {score}")
-
-    # with mlflow.start_run():
-    #     mlflow.log_param("target", model.target_col)
-    #     mlflow.log_param("features", model.feature_cols)
-    #     mlflow.log_param("r2_score", score)
-    #     # log the model type and params?
-    #     mlflow.log_params(estimator.get_params())
-
-    #     signature = infer_signature(data["X_train"], preds)
-    #     mlflow.sklearn.log_model(
-    #         sk_model=estimator,
-    #         registered_model_name="ppr_total_linear_regression",
-    #         artifact_path="model",
-    #         signature=signature,
-    #         input_example=data["X_train"],
-    #     )
-
-    view_year = 2024
-    print(f"Predictions for {ff_model.target_col} in {view_year}:")
-    print(ff_model.view_year_test_predictions(preds, view_year))
-
-    preds.to_csv(os.path.join(ff_model.data_dir, "predictions.csv"), index=False)
+    # view_year = 2024
+    # print(f"Predictions for {ppr_model.target_col} in {view_year}:")
+    # print(ppr_model.view_year_test_predictions(preds, view_year))
 
 
 if __name__ == "__main__":
