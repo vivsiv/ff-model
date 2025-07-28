@@ -10,6 +10,7 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.svm import SVR
 from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.feature_selection import SelectKBest, f_regression, mutual_info_regression
 from typing import Any
 
 
@@ -19,6 +20,13 @@ class FantasyModel:
             self,
             data_dir: str = "../data",
             target_col: str = "ppr_fantasy_points",
+            possible_targets: list[str] = [
+                "ppr_fantasy_points",
+                "standard_fantasy_points",
+                "ppr_fantasy_points_per_game",
+                "standard_fantasy_points_per_game",
+                "value_over_replacement"
+            ]
     ):
         self.data_dir = data_dir
         self.gold_data_dir = os.path.join(data_dir, "gold")
@@ -28,13 +36,6 @@ class FantasyModel:
         os.makedirs(self.predictions_dir, exist_ok=True)
 
         self.id_col = "id"
-        possible_targets = [
-            "ppr_fantasy_points",
-            "standard_fantasy_points",
-            "ppr_fantasy_points_per_game",
-            "standard_fantasy_points_per_game",
-            "value_over_replacement"
-        ]
         if target_col not in possible_targets:
             raise ValueError(f"Target column {target_col} not in {possible_targets}")
         self.target_col = target_col
@@ -66,22 +67,23 @@ class FantasyModel:
         pipeline = Pipeline([
             ('imputer', SimpleImputer(strategy='mean')),
             ('scaler', StandardScaler()),
-            #('select', SelectKBest(f_regression, k=10)),
+            # ('select', SelectKBest(f_regression, k='all')), # All features performs the best with f_regression.
+            # ('select', SelectKBest(mutual_info_regression, k='all')), All features performs the best.
             ('model', model)
         ])
 
         return pipeline
 
     def create_grid_search(self, pipeline: Pipeline, data: dict[str, pd.DataFrame]) -> GridSearchCV:
-        # TODO: Incorporate feature selection.
         # TODO: incorporate hyper parameters for the better models.
         param_grid = {
+            # 'select__k': [100, 150, 'all'], # Lower feature counts perform worse, skew higher
             'model': [
                 LinearRegression(),
                 Ridge(),
                 Lasso(),
                 RandomForestRegressor(),
-                SVR(),
+                SVR(), # Performs poorly compared to other models, no further tuning needed.
                 HistGradientBoostingRegressor(),
             ]
         }
@@ -90,7 +92,7 @@ class FantasyModel:
             param_grid,
             cv=5,
             scoring='r2',
-            n_jobs=-1,
+            n_jobs=-1, # Uses all available cores.
         )
         grid_search.fit(data["X_train"], data["y_train"])
         return grid_search
