@@ -28,8 +28,8 @@ class TestFantasyFeatureEngineer:
         cls.feature_eng = FantasyFeatureEngineer(
             data_dir=cls.test_dir,
             metadata_cols=['id'],
-            target_cols=['target'],
-            redundancy_threshold=0.5)
+            target_cols=['target']
+        )
 
     @classmethod
     def teardown_class(cls):
@@ -104,6 +104,6 @@ class TestFantasyFeatureEngineer:
             expected_df = pd.DataFrame({
                 'feature': ['f1', 'f2', 'f3'],
                 'mi': [0.8, 0.3, 0.9]
-            }).sort_values(by='feature')
+            }).sort_values(by='feature').set_index('feature')
 
             pd.testing.assert_frame_equal(mi_df, expected_df)

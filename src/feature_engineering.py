@@ -36,8 +36,6 @@ class FantasyFeatureEngineer:
         data_dir: str = "../data",
         metadata_cols: List[str] = [],
         target_cols: List[str] = [],
-        must_include_features: List[str] = [],
-        redundancy_threshold: float = 0.75,
     ):
         """
         Initialize the feature engineer.
@@ -59,8 +57,6 @@ class FantasyFeatureEngineer:
         self.metadata_cols = metadata_cols
         self.target_cols = target_cols
         self.feature_cols = [col for col in self.gold_data.columns if col not in self.metadata_cols + self.target_cols]
-        self.must_include_features = must_include_features
-        self.redundancy_threshold = redundancy_threshold
 
     def load_gold_table(self) -> pd.DataFrame:
         """
@@ -69,13 +65,9 @@ class FantasyFeatureEngineer:
         Returns:
             DataFrame of the gold table(s)
         """
-        data = pd.DataFrame()
-
         gold_path = os.path.join(self.gold_data_dir, "final_stats.csv")
-        if os.path.exists(gold_path):
-            data = pd.read_csv(gold_path)
-            logger.info(f"Loaded gold table: {len(data)} rows")
-
+        data = pd.read_csv(gold_path)
+        logger.info(f"Loaded gold table: {len(data)} rows")
         return data
 
     def pearsons_correlation_between_features(self, output_file_name: str = "feature_corr_matrix.csv") -> pd.DataFrame:
@@ -108,7 +100,7 @@ class FantasyFeatureEngineer:
 
         corr_matrix.to_csv(os.path.join(self.discovery_data_dir, output_file_name), index=False)
 
-        return corr_matrix
+        return corr_matrix.set_index('feature')
 
     def mutual_information_with_target(self, target: str, output_file_name: str = "target_mi.csv") -> pd.DataFrame:
         """
@@ -122,13 +114,14 @@ class FantasyFeatureEngineer:
         mutual_info = mutual_info.sort_values(by="mi", ascending=False)
 
         mutual_info.to_csv(os.path.join(self.discovery_data_dir, output_file_name), index=False)
-        return mutual_info
+
+        return mutual_info.set_index('feature')
 
     def plot_correlation_matrix(
         self,
         corr_matrix: pd.DataFrame,
-        title: str = "Correlation Matrix",
-        output_file_name: str = "correlation_matrix.png",
+        title: str,
+        output_file_name: str,
         font_size: int = 12,
         annot_size: int = 8,
     ):
@@ -179,22 +172,20 @@ class FantasyFeatureEngineer:
         """
 
         feature_corr_matrix = self.pearsons_correlation_between_features()
-        self.plot_correlation_matrix(feature_corr_matrix, title="Correlation Matrix")
+        self.plot_correlation_matrix(feature_corr_matrix, title="Correlation Matrix", output_file_name="feature_corr_matrix.png")
 
         for target in self.target_cols:
-            target_corr = self.pearsons_correlation_with_target(target)
-            target_mi = self.mutual_information_with_target(target)
+            target_corr = self.pearsons_correlation_with_target(target, f"{target}_corr.csv")
+            target_mi = self.mutual_information_with_target(target, f"{target}_mi.csv")
 
-            self.plot_correlation_matrix(feature_corr_matrix, title=f"Correlation Matrix for {target}")
-            self.plot_correlation_matrix(target_corr, title=f"Pearson Correlation with {target}")
-            self.plot_correlation_matrix(target_mi, title=f"Mutual Information with {target}")
+            self.plot_correlation_matrix(target_corr, title=f"Pearson Correlation with {target}", output_file_name=f"{target}_corr.png")
+            self.plot_correlation_matrix(target_mi, title=f"Mutual Information with {target}", output_file_name=f"{target}_mi.png")
 
-        self.gold_data.to_csv(os.path.join(self.gold_data_dir, "final_data.csv"), index=False)
 
 def main():
     script_dir = os.path.dirname(os.path.abspath(__file__))
     data_dir = os.path.join(os.path.dirname(script_dir), "data")
-    metadata_cols = ["player", "year"]
+    metadata_cols = ["id"]
     target_cols = ["standard_fantasy_points", "standard_fantasy_points_per_game", "ppr_fantasy_points", "ppr_fantasy_points_per_game", "value_over_replacement"]
 
     feature_eng = FantasyFeatureEngineer(

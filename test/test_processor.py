@@ -298,6 +298,7 @@ class TestFantasyDataProcessor():
         test_df = pd.DataFrame({
             'player': ['john_doe', 'jane_smith', '', 'arch_manning'],
             'year': [2023, 2023, 1970, 1970],
+            'age': [27, 26, 40, 21],
             'team': ['PHI', 'DAL', 'HUH', 'NYG'],
             'fantasy_points': [100, 90, np.nan, 50],
             'rec_yards': [1000.0, 800.233, np.nan, 0],
@@ -322,7 +323,7 @@ class TestFantasyDataProcessor():
 
         expected_df = pd.DataFrame({
             'id': ['john_doe_2023', 'jane_smith_2023'],
-            'team': ['PHI', 'DAL'],
+            'age': [27.0, 26.0],
             'fantasy_points': [100.0, 90.0],
             'rec_yards': [1000.0, 800.23],
             'adot': [10.0, 8.0],

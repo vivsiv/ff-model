@@ -1,11 +1,11 @@
 import os
 import pandas as pd
-import mlflow
-from mlflow.models import infer_signature
+# import mlflow
+# from mlflow.models import infer_signature
 from sklearn.preprocessing import StandardScaler
 from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
-from sklearn.linear_model import LinearRegression, Ridge, Lasso, ElasticNet
+from sklearn.linear_model import LinearRegression, Ridge, Lasso
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.svm import SVR
 from sklearn.ensemble import HistGradientBoostingRegressor
@@ -19,7 +19,7 @@ class FantasyModel:
             self,
             data_dir: str = "../data",
             target_col: str = "ppr_fantasy_points",
-        ):
+    ):
         self.data_dir = data_dir
         self.gold_data_dir = os.path.join(data_dir, "gold")
         self.gold_data = self.load_gold_table()
@@ -46,9 +46,8 @@ class FantasyModel:
         self.Y = self.gold_data[self.target_col]
 
     def load_gold_table(self) -> pd.DataFrame:
-        return pd.read_csv(os.path.join(self.gold_data_dir, "final_data.csv"))
+        return pd.read_csv(os.path.join(self.gold_data_dir, "final_stats.csv"))
 
-        
     def split_data(self) -> dict[str, pd.DataFrame]:
         X_train, X_test, y_train, y_test, Id_train, Id_test = train_test_split(
             self.X, self.Y, self.Id, test_size=0.2, random_state=42
@@ -62,7 +61,7 @@ class FantasyModel:
             "Id_test": Id_test
         }
         return data
-    
+
     def create_pipeline(self, model: Any = LinearRegression()) -> Pipeline:
         pipeline = Pipeline([
             ('imputer', SimpleImputer(strategy='mean')),
@@ -72,7 +71,7 @@ class FantasyModel:
         ])
 
         return pipeline
-    
+
     def create_grid_search(self, pipeline: Pipeline, data: dict[str, pd.DataFrame]) -> GridSearchCV:
         # TODO: Incorporate feature selection.
         # TODO: incorporate hyper parameters for the better models.
@@ -91,10 +90,10 @@ class FantasyModel:
             param_grid,
             cv=5,
             scoring='r2',
+            n_jobs=-1,
         )
         grid_search.fit(data["X_train"], data["y_train"])
         return grid_search
-
 
     def make_test_predictions(self, model: Any, data: dict[str, pd.DataFrame]) -> tuple[float, pd.DataFrame]:
         pipeline = self.create_pipeline(model)
@@ -110,7 +109,7 @@ class FantasyModel:
         })
 
         return score, preds
-    
+
     def view_year_test_predictions(self, preds_df: pd.DataFrame, year: int) -> pd.DataFrame:
         preds_df["year"] = preds_df["id"].str.split("_").str[-2].astype(int)
         preds_df = preds_df[preds_df["year"] == year].sort_values(by=["predictions", "actual"], ascending=False)
@@ -118,6 +117,7 @@ class FantasyModel:
         preds_df.to_csv(os.path.join(self.predictions_dir, f"{self.target_col}_{year}_predictions.csv"), index=False)
 
         return preds_df
+
 
 def main():
     ff_model = FantasyModel()
