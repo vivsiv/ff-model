@@ -8,3 +8,4 @@ pytest
 matplotlib
 scikit-learn
 seaborn
+mlflow

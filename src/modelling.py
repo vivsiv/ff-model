@@ -1,10 +1,15 @@
 import os
 import pandas as pd
+import mlflow
+from mlflow.models import infer_signature
 from sklearn.preprocessing import StandardScaler
 from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
-from sklearn.linear_model import LinearRegression
-from sklearn.model_selection import train_test_split
+from sklearn.linear_model import LinearRegression, Ridge, Lasso, ElasticNet
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.svm import SVR
+from sklearn.ensemble import HistGradientBoostingRegressor
+from sklearn.model_selection import train_test_split, GridSearchCV
 from typing import Any
 
 
@@ -18,6 +23,9 @@ class FantasyModel:
         self.data_dir = data_dir
         self.gold_data_dir = os.path.join(data_dir, "gold")
         self.gold_data = self.load_gold_table()
+
+        self.predictions_dir = os.path.join(data_dir, "predictions")
+        os.makedirs(self.predictions_dir, exist_ok=True)
 
         self.id_col = "id"
         possible_targets = [
@@ -55,19 +63,40 @@ class FantasyModel:
         }
         return data
     
-    def create_pipeline(self, model: Any) -> Pipeline:
-        preprocessing_pipeline = Pipeline([
+    def create_pipeline(self, model: Any = LinearRegression()) -> Pipeline:
+        pipeline = Pipeline([
             ('imputer', SimpleImputer(strategy='mean')),
             ('scaler', StandardScaler()),
-        ])
-        model_pipeline = Pipeline([
-            ('preprocessing', preprocessing_pipeline),
+            #('select', SelectKBest(f_regression, k=10)),
             ('model', model)
         ])
 
-        return model_pipeline
+        return pipeline
+    
+    def create_grid_search(self, pipeline: Pipeline, data: dict[str, pd.DataFrame]) -> GridSearchCV:
+        # TODO: Incorporate feature selection.
+        # TODO: incorporate hyper parameters for the better models.
+        param_grid = {
+            'model': [
+                LinearRegression(),
+                Ridge(),
+                Lasso(),
+                RandomForestRegressor(),
+                SVR(),
+                HistGradientBoostingRegressor(),
+            ]
+        }
+        grid_search = GridSearchCV(
+            pipeline,
+            param_grid,
+            cv=5,
+            scoring='r2',
+        )
+        grid_search.fit(data["X_train"], data["y_train"])
+        return grid_search
 
-    def run_pipeline(self, model: Any, data: dict[str, pd.DataFrame]) -> tuple[float, pd.DataFrame]:
+
+    def make_test_predictions(self, model: Any, data: dict[str, pd.DataFrame]) -> tuple[float, pd.DataFrame]:
         pipeline = self.create_pipeline(model)
         pipeline.fit(data["X_train"], data["y_train"])
 
@@ -76,22 +105,63 @@ class FantasyModel:
         y_pred = pipeline.predict(data["X_test"])
         preds = pd.DataFrame({
             "id": data["Id_test"],
-            "ppr_fantasy_points": y_pred,
+            "predictions": y_pred,
+            "actual": data["y_test"]
         })
 
         return score, preds
+    
+    def view_year_test_predictions(self, preds_df: pd.DataFrame, year: int) -> pd.DataFrame:
+        preds_df["year"] = preds_df["id"].str.split("_").str[-2].astype(int)
+        preds_df = preds_df[preds_df["year"] == year].sort_values(by=["predictions", "actual"], ascending=False)
+
+        preds_df.to_csv(os.path.join(self.predictions_dir, f"{self.target_col}_{year}_predictions.csv"), index=False)
+
+        return preds_df
 
 def main():
-    model = FantasyModel()
-    data = model.split_data()
+    ff_model = FantasyModel()
 
-    estimator = LinearRegression()
-    score, preds = model.run_pipeline(estimator, data)
+    # mlflow.set_tracking_uri("http://localhost:8000")
+    # mlflow.set_experiment("ppr_total_linear_regression")
+    # mlflow.autolog()
 
-    print(f"R^2 Score: {score}")
-    print(preds)
+    data = ff_model.split_data()
 
-    preds.to_csv(os.path.join(model.data_dir, "predictions.csv"), index=False)
+    eval_pipeline = ff_model.create_pipeline()
+    grid_search = ff_model.create_grid_search(eval_pipeline)
+
+    print(f"Best params: {grid_search.best_params_}")
+    print(f"Best score: {grid_search.best_score_}")
+    print(f"Best estimator: {grid_search.best_estimator_}")
+
+    best_model = grid_search.best_estimator_
+    best_model_pipeline = ff_model.create_pipeline(best_model)
+    score, preds = ff_model.make_test_predictions(best_model_pipeline, data)
+
+    print(f"Best Model R^2 Score: {score}")
+
+    # with mlflow.start_run():
+    #     mlflow.log_param("target", model.target_col)
+    #     mlflow.log_param("features", model.feature_cols)
+    #     mlflow.log_param("r2_score", score)
+    #     # log the model type and params?
+    #     mlflow.log_params(estimator.get_params())
+
+    #     signature = infer_signature(data["X_train"], preds)
+    #     mlflow.sklearn.log_model(
+    #         sk_model=estimator,
+    #         registered_model_name="ppr_total_linear_regression",
+    #         artifact_path="model",
+    #         signature=signature,
+    #         input_example=data["X_train"],
+    #     )
+
+    view_year = 2024
+    print(f"Predictions for {ff_model.target_col} in {view_year}:")
+    print(ff_model.view_year_test_predictions(preds, view_year))
+
+    preds.to_csv(os.path.join(ff_model.data_dir, "predictions.csv"), index=False)
 
 
 if __name__ == "__main__":

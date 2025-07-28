@@ -38,9 +38,14 @@ class FantasyDataProcessor:
         """
         self.data_dir = data_dir
         self.bronze_data_dir = os.path.join(data_dir, "bronze")
-        self.silver_data_dir = os.path.join(data_dir, "silver")
+        if not os.path.exists(self.bronze_data_dir):
+            raise FileNotFoundError(f"Bronze data directory {self.bronze_data_dir} not found")
 
+        self.silver_data_dir = os.path.join(data_dir, "silver")
         os.makedirs(self.silver_data_dir, exist_ok=True)
+
+        self.gold_data_dir = os.path.join(data_dir, "gold")
+        os.makedirs(self.gold_data_dir, exist_ok=True)
 
     def standardize_name(self, name: str) -> str:
         """
@@ -636,6 +641,10 @@ class FantasyDataProcessor:
 
         joined_df = joined_df[joined_df['year'] != joined_df['year'].min()]
 
+        # Make an id column that is player_year
+        joined_df.insert(0, 'id', joined_df['player', 'year'].apply(lambda x: '_'.join(x.astype(str)), axis=1))
+        joined_df = joined_df.drop(columns=['player', 'year'])
+
         return joined_df
 
     def process_all_data(self) -> Dict[str, pd.DataFrame]:
@@ -656,7 +665,9 @@ class FantasyDataProcessor:
 
         joined_df = self.join_stats()
         cleaned_df = self.clean_final_stats(joined_df)
-        self.write_to_silver(cleaned_df, "final_stats.csv")
+
+        cleaned_df.to_csv(os.path.join(self.gold_data_dir, "final_stats.csv"), index=False)
+        logger.info(f"Final data saved to {os.path.join(self.gold_data_dir, 'final_stats.csv')}")
 
 
 def main():
@@ -666,7 +677,6 @@ def main():
     processor = FantasyDataProcessor(data_dir=data_dir)
 
     processor.process_all_data()
-    logger.info("Data processing complete")
 
 
 if __name__ == "__main__":

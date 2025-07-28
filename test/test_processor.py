@@ -316,13 +316,12 @@ class TestFantasyDataProcessor():
 
         cleaned_df = (
             self.processor.clean_final_stats(test_df)
-            .sort_values(['player', 'year'])
+            .sort_values(['id'])
             .reset_index(drop=True)
         )
 
         expected_df = pd.DataFrame({
-            'player': ['john_doe', 'jane_smith'],
-            'year': [2023, 2023],
+            'id': ['john_doe_2023', 'jane_smith_2023'],
             'team': ['PHI', 'DAL'],
             'fantasy_points': [100.0, 90.0],
             'rec_yards': [1000.0, 800.23],
@@ -333,6 +332,6 @@ class TestFantasyDataProcessor():
             'team_points': [350.0, 300.0],
             'awards': [1, 2],
             'games': [16, 15],
-        }).sort_values(['player', 'year']).reset_index(drop=True)
+        }).sort_values(['id']).reset_index(drop=True)
 
         pd.testing.assert_frame_equal(cleaned_df, expected_df)
