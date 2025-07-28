@@ -2,6 +2,8 @@ import os
 import pandas as pd
 import mlflow
 from mlflow.models import infer_signature
+import numpy as np
+from sklearn.metrics import mean_squared_error
 from sklearn.preprocessing import StandardScaler
 from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
@@ -79,12 +81,10 @@ class FantasyModel:
 
         return pipeline
 
-    def run_model_eval(self, data: dict[str, pd.DataFrame]) -> GridSearchCV:
+    def create_grid_search(self) -> GridSearchCV:
         eval_pipeline = self.create_pipeline()
 
-        # TODO: incorporate hyper parameters for the better models.
         param_grid = {
-            # 'select__k': [100, 150, 'all'], # Lower feature counts perform worse, skew higher
             'model': [
                 LinearRegression(),
                 Ridge(),
@@ -94,6 +94,7 @@ class FantasyModel:
                 HistGradientBoostingRegressor(),
             ]
         }
+
         grid_search = GridSearchCV(
             eval_pipeline,
             param_grid,
@@ -105,6 +106,12 @@ class FantasyModel:
             refit='r2',  # Use R2 for selecting best model
             n_jobs=-1,  # Uses all available cores.
         )
+
+        return grid_search
+
+    def run_model_eval(self, data: dict[str, pd.DataFrame]) -> GridSearchCV:
+        grid_search = self.create_grid_search()
+
         grid_search.fit(data["X_train"], data["y_train"])
 
         mlflow.set_experiment(self.target_col)
@@ -145,28 +152,43 @@ class FantasyModel:
 
         return grid_search
 
-    def make_test_predictions(self, model: Any, data: dict[str, pd.DataFrame]) -> tuple[float, pd.DataFrame]:
-        pipeline = self.create_pipeline(model)
-        pipeline.fit(data["X_train"], data["y_train"])
-
-        score = pipeline.score(data["X_test"], data["y_test"])
+    def make_test_predictions(self, model_name: str, model_version: int, data: dict[str, pd.DataFrame]) -> pd.DataFrame:
+        pipeline = mlflow.sklearn.load_model(f"models:/{model_name}/{model_version}")
 
         y_pred = pipeline.predict(data["X_test"])
-        preds = pd.DataFrame({
+        mlflow.set_experiment(self.target_col)
+
+        with mlflow.start_run(run_name=f"test_{model_name}_{model_version}"):
+            mlflow.set_tag("phase", "test")
+
+            mlflow.log_param("model_name", model_name)
+            mlflow.log_param("model_version", model_version)
+
+            score = pipeline.score(data["X_test"], data["y_test"])
+            print(f"R^2 score: {score}")
+            mlflow.log_metric("r2", score)
+
+            rmse = np.sqrt(mean_squared_error(data["y_test"], y_pred))
+            print(f"RMSE: {rmse}")
+            mlflow.log_metric("rmse", rmse)
+
+            # TODO: log a final model?
+
+        preds_df = pd.DataFrame({
             "id": data["Id_test"],
             "predictions": y_pred,
             "actual": data["y_test"]
         })
 
-        return score, preds
+        return preds_df
 
     def view_year_test_predictions(self, preds_df: pd.DataFrame, year: int) -> pd.DataFrame:
-        preds_df["year"] = preds_df["id"].str.split("_").str[-2].astype(int)
+        preds_df["year"] = preds_df["id"].str.split("_").str[-1].astype(int)
         preds_df = preds_df[preds_df["year"] == year].sort_values(by=["predictions", "actual"], ascending=False)
 
         preds_df.to_csv(os.path.join(self.predictions_dir, f"{self.target_col}_{year}_predictions.csv"), index=False)
 
-        return preds_df
+        return preds_df.drop(columns=["year"])
 
 
 def main():
@@ -175,12 +197,11 @@ def main():
 
     ppr_model.run_model_eval(data)
 
-    # score, preds = ppr_model.make_test_predictions(data)
-    # print(f"Test set R^2 Score: {score}")
+    preds_df = ppr_model.make_test_predictions(data)
 
-    # view_year = 2024
-    # print(f"Predictions for {ppr_model.target_col} in {view_year}:")
-    # print(ppr_model.view_year_test_predictions(preds, view_year))
+    view_year = 2024
+    print(f"Predictions for {ppr_model.target_col} in {view_year}:")
+    print(ppr_model.view_year_test_predictions(preds_df, view_year))
 
 
 if __name__ == "__main__":
