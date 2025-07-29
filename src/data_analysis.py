@@ -28,8 +28,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-class FantasyFeatureEngineer:
-    """Engineer features for fantasy football prediction."""
+class DataAnalysis:
+    """Class to analyze the gold table that is used for modeling."""
 
     def __init__(
         self,
@@ -37,12 +37,7 @@ class FantasyFeatureEngineer:
         metadata_cols: List[str] = [],
         target_cols: List[str] = [],
     ):
-        """
-        Initialize the feature engineer.
 
-        Args:
-            data_dir: Directory containing the processed data
-        """
         self.data_dir = data_dir
         try:
             self.gold_data_dir = os.path.join(data_dir, "gold")
@@ -59,12 +54,6 @@ class FantasyFeatureEngineer:
         self.feature_cols = [col for col in self.gold_data.columns if col not in self.metadata_cols + self.target_cols]
 
     def load_gold_table(self) -> pd.DataFrame:
-        """
-        Loads the gold table(s).
-
-        Returns:
-            DataFrame of the gold table(s)
-        """
         gold_path = os.path.join(self.gold_data_dir, "final_stats.csv")
         data = pd.read_csv(gold_path)
         logger.info(f"Loaded gold table: {len(data)} rows")
@@ -188,13 +177,13 @@ def main():
     metadata_cols = ["id"]
     target_cols = ["standard_fantasy_points", "standard_fantasy_points_per_game", "ppr_fantasy_points", "ppr_fantasy_points_per_game", "value_over_replacement"]
 
-    feature_eng = FantasyFeatureEngineer(
+    data_analysis = DataAnalysis(
         data_dir=data_dir,
         metadata_cols=metadata_cols,
         target_cols=target_cols,
     )
 
-    feature_eng.generate_feature_analysis()
+    data_analysis.generate_feature_analysis()
 
 
 if __name__ == "__main__":
