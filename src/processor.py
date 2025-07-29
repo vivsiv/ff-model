@@ -1,18 +1,10 @@
-#!/usr/bin/env python3
-"""
-NFL Fantasy Football Data Preprocessing
-
-This module provides functionality to clean, transform, and combine
-the raw data scraped from Pro Football Reference.
-"""
-
-import os
 import glob
 import logging
-from typing import Dict, List, Tuple, Callable
+import os
+from typing import Callable, Dict, List, Tuple
 
-import pandas as pd
 import numpy as np
+import pandas as pd
 from tqdm import tqdm
 
 logging.basicConfig(
@@ -26,28 +18,20 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-class FantasyDataProcessor:
+class DataProcessor:
     """Generate silver and gold layer data from bronze layer data."""
 
-    def __init__(self, data_dir: str = "../data", drop_rookies: bool = False):
-        """
-        Initialize the processor.
-
-        Args:
-            data_dir: Directory containing the scraped data
-        """
+    def __init__(self, data_dir: str = "../data"):
         self.data_dir = data_dir
         self.bronze_data_dir = os.path.join(data_dir, "bronze")
         if not os.path.exists(self.bronze_data_dir):
-            raise FileNotFoundError(f"Bronze data directory {self.bronze_data_dir} not found")
+            raise FileNotFoundError(f"{self.bronze_data_dir} not found")
 
         self.silver_data_dir = os.path.join(data_dir, "silver")
         os.makedirs(self.silver_data_dir, exist_ok=True)
 
         self.gold_data_dir = os.path.join(data_dir, "gold")
         os.makedirs(self.gold_data_dir, exist_ok=True)
-
-        self.drop_rookies = drop_rookies
 
     def standardize_name(self, name: str) -> str:
         """
@@ -120,76 +104,74 @@ class FantasyDataProcessor:
             return 0.0
         return len(awards.split(','))
 
+    def merge_multi_player_rows(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Merges rows for players that were on multiple teams in a season.
+        """
+        player_row_counts = df.groupby('player').size().reset_index(name='count')
+        multi_team_players = player_row_counts[player_row_counts['count'] > 1]['player'].tolist()
+        for multi_team_player in multi_team_players:
+            # For a multi-team player the row team=2TM has their combined stats for the year.
+            correct_row_mask = ~((df['player'] == multi_team_player) & (df['team'] != '2TM'))
+            df = df[correct_row_mask]
+
+        return df
+
     def combine_year_data(self,
                           file_pattern: str,
                           normalized_column_names: List[str],
-                          select_columns: List[str],
-                          transformations: Dict[str, Callable]) -> pd.DataFrame:
+                          select_columns: List[str] = [],
+                          transformations: Dict[str, Callable] = {}) -> pd.DataFrame:
         """
-        Combines data from multiple years into a single dataframe.
+        Combines data for a single stat type from multiple years into a single dataframe.
         """
         file_pattern = os.path.join(self.bronze_data_dir, file_pattern)
         files = glob.glob(file_pattern)
 
         if not files:
-            logger.error(f"No files found matching {file_pattern}")
-            return pd.DataFrame()
+            raise FileNotFoundError(f"No files found matching {file_pattern}")
 
-        dfs = []
+        year_dfs = []
         for file in tqdm(files, desc=f"Processing files matching: {file_pattern.split('/')[-1]}"):
-            df = pd.read_csv(file)
+            year_df = pd.read_csv(file)
 
             try:
-                assert len(normalized_column_names) == len(df.columns), f"{file} columns must be the same length as provided normalized_column_names"
-                df.columns = normalized_column_names
+                assert len(normalized_column_names) == len(year_df.columns), f"{file} columns must be the same length as provided normalized_column_names"
+                year_df.columns = normalized_column_names
             except (AssertionError, ValueError) as e:
-                if file.endswith('_player_passing_stats.csv') and 'QBR' not in df.columns and len(normalized_column_names) == len(df.columns) + 1:
-                    no_qbr_normalized_columns = [col for col in normalized_column_names if col != 'pass_qbr']
-                    df.columns = no_qbr_normalized_columns
-                    df['pass_qbr'] = 50.0
+                if file.endswith('_player_passing_stats.csv') and 'QBR' not in year_df.columns and len(normalized_column_names) == len(year_df.columns) + 1:
+                    non_qbr_normalized_columns = [col for col in normalized_column_names if col != 'pass_qbr']
+                    year_df.columns = non_qbr_normalized_columns
+                    year_df['pass_qbr'] = 50.0
                     logger.info(f"Added missing pass_qbr column to {file}")
-                elif file.endswith('_team_offense.csv') and 'EXP' not in df.columns and len(normalized_column_names) == len(df.columns) + 1:
-                    no_exp_normalized_columns = [col for col in normalized_column_names if col != 'team_expected_points']
-                    df.columns = no_exp_normalized_columns
-                    df['team_expected_points'] = 0.0
+                elif file.endswith('_team_offense.csv') and 'EXP' not in year_df.columns and len(normalized_column_names) == len(year_df.columns) + 1:
+                    non_exp_normalized_columns = [col for col in normalized_column_names if col != 'team_expected_points']
+                    year_df.columns = non_exp_normalized_columns
+                    year_df['team_expected_points'] = 0.0
                     logger.info(f"Added missing team_expected_points column to {file}")
                 else:
                     logger.error(f"{file} columns must be the same length as provided normalized_column_names")
                     raise e
 
-            # Handle player stat edge cases
-            if 'player' in df.columns:
-                # Keep only one row for players that were on multiple teams in a season
-                player_counts = df.groupby('player').size().reset_index(name='count')
-                multi_team_players = player_counts[player_counts['count'] > 1]['player'].tolist()
-                for multi_team_player in multi_team_players:
-                    df = df[~((df['player'] == multi_team_player) & (df['team'] != '2TM'))]
-
-                # Remove the league average row
-                df = df[df['player'] != 'League Average']
-
-            # Select only the columns we want to keep
-            df = df[select_columns]
-
             # Add a year column as the second column
             year_value = int(file.split('/')[-1].split('_')[0])
-            cols = df.columns.tolist()
-            cols.insert(1, 'year')
-            df = df.reindex(columns=cols)
-            df['year'] = year_value
+            year_df.insert(1, 'year', year_value)
+
+            # Handle player stat edge cases
+            if 'player' in year_df.columns:
+                year_df = self.merge_multi_player_rows(year_df)
+                year_df = year_df[year_df['player'] != 'League Average']
 
             # Apply any transformations to the columns
             for column, func in transformations.items():
-                if column in df.columns:
-                    df[column] = df[column].apply(func)
+                if column in year_df.columns:
+                    year_df[column] = year_df[column].apply(func)
                 else:
                     logger.warning(f"Column '{column}' not found in dataframe, skipping transformation.")
 
-            dfs.append(df)
+            year_dfs.append(year_df)
 
-        combined_df = pd.concat(dfs, ignore_index=True)
-
-        return combined_df
+        return pd.concat(year_dfs, ignore_index=True)
 
     def add_ratio_stats(self, stats_df: pd.DataFrame, ratio_column_pairs: List[Tuple[str, str]]) -> Tuple[pd.DataFrame, List[str]]:
         """
@@ -216,7 +198,7 @@ class FantasyDataProcessor:
                             stats_df: pd.DataFrame,
                             grouping_columns: List[str],
                             rollup_columns: List[str],
-                            max_rollup_window: int = 3) -> pd.DataFrame:
+                            max_rollup_window: int = 3) -> Tuple[pd.DataFrame, List[str]]:
         """
         Creates columns that are rolling averages of existing stats over multiple years.
 
@@ -235,6 +217,7 @@ class FantasyDataProcessor:
 
         stats_df_sorted = stats_df.sort_values("year")
 
+        generated_columns = []
         for window in range(2, max_rollup_window + 1):
             for col in rollup_columns:
                 rollup_col = f"{col}_{window}_yr_avg"
@@ -243,8 +226,9 @@ class FantasyDataProcessor:
                     .groupby(grouping_columns)[col]
                     .transform(lambda x: x.rolling(window=window, min_periods=1).mean())
                 )
+                generated_columns.append(rollup_col)
 
-        return stats_df_sorted
+        return stats_df_sorted, generated_columns
 
     def write_to_silver(self, df: pd.DataFrame, file_name: str) -> None:
         """
@@ -297,30 +281,30 @@ class FantasyDataProcessor:
             'position_rank',
             'overall_rank'
         ]
-        select_columns = [
-            'player',
-            'team',
-            'age',
-            'games',
-            'standard_fantasy_points',
-            'ppr_fantasy_points',
-            'value_over_replacement'
-        ]
 
         fantasy_stats_df = self.combine_year_data(
             file_pattern="*_player_fantasy_stats.csv",
             normalized_column_names=normalized_column_names,
-            select_columns=select_columns,
             transformations={'player': self.standardize_name},
         )
 
+        # TODO: Remove any rows where ppr_fantasy_points is null or 0
         fantasy_stats_df = fantasy_stats_df[fantasy_stats_df['ppr_fantasy_points'].notna()]
 
         ratio_column_pairs = [('standard_fantasy_points', 'games'), ('ppr_fantasy_points', 'games')]
-        fantasy_stats_df, _ = self.add_ratio_stats(fantasy_stats_df, ratio_column_pairs)
+        fantasy_stats_df, added_ratio_columns = self.add_ratio_stats(fantasy_stats_df, ratio_column_pairs)
 
-        # Games is dropped because it is the current years games, and we want to use games a feature so we need the previous years games.
-        fantasy_stats_df = fantasy_stats_df.drop(columns=['games'])
+        select_columns = [
+            'player',
+            'team',
+            'age',
+            'standard_fantasy_points',
+            'ppr_fantasy_points',
+            'value_over_replacement',
+            *added_ratio_columns
+        ]
+
+        fantasy_stats_df = fantasy_stats_df[select_columns]
 
         self.write_to_silver(fantasy_stats_df, "player_fantasy_stats.csv")
 
@@ -352,25 +336,28 @@ class FantasyDataProcessor:
             'rec_fumbles',
             'rec_awards',
         ]
-        excluded_columns = {'rank', 'team', 'position', 'games_started', 'rec_longest_reception', 'rec_fumbles'}
-        select_columns = [col for col in normalized_column_names if col not in excluded_columns]
 
         receiving_stats_df = self.combine_year_data(
             file_pattern="*_player_receiving_stats.csv",
             normalized_column_names=normalized_column_names,
-            select_columns=select_columns,
             transformations={'player': self.standardize_name, 'rec_awards': self.parse_awards},
         )
 
         ratio_column_pairs = [('rec_targets', 'rec_games'), ('rec_touchdowns', 'rec_games'), ('rec_first_downs', 'rec_games')]
-        receiving_stats_df, ratio_columns = self.add_ratio_stats(receiving_stats_df, ratio_column_pairs)
+        receiving_stats_df, added_ratio_columns = self.add_ratio_stats(receiving_stats_df, ratio_column_pairs)
 
-        rollup_columns = [col for col in select_columns if col not in ['player', 'age', 'rec_awards']] + ratio_columns
-        receiving_stats_df = self.create_rollup_stats(
+        rollup_columns = [col for col in select_columns if col not in ['player', 'age', 'rec_awards']] + added_ratio_columns
+        receiving_stats_df, added_rollup_columns = self.create_rollup_stats(
             stats_df=receiving_stats_df,
             grouping_columns=['player'],
             rollup_columns=rollup_columns,
         )
+
+        excluded_columns = {'rank', 'team', 'position', 'games_started', 'rec_longest_reception', 'rec_fumbles'}
+        select_columns = [col for col in normalized_column_names if col not in excluded_columns]
+        select_columns = select_columns + added_rollup_columns + added_ratio_columns
+
+        receiving_stats_df = receiving_stats_df[select_columns]
 
         self.write_to_silver(receiving_stats_df, "player_receiving_stats.csv")
 
@@ -399,24 +386,28 @@ class FantasyDataProcessor:
             'rush_fumbles',
             'rush_awards'
         ]
-        excluded_columns = {'rank', 'team', 'position', 'games_started', 'rush_longest_rush', 'rush_fumbles'}
-        select_columns = [col for col in normalized_column_names if col not in excluded_columns]
+
         rushing_stats_df = self.combine_year_data(
             file_pattern="*_player_rushing_stats.csv",
             normalized_column_names=normalized_column_names,
-            select_columns=select_columns,
             transformations={'player': self.standardize_name, 'rush_awards': self.parse_awards},
         )
 
         ratio_column_pairs = [('rush_touchdowns', 'rush_games'), ('rush_first_downs', 'rush_games')]
-        rushing_stats_df, ratio_columns = self.add_ratio_stats(rushing_stats_df, ratio_column_pairs)
+        rushing_stats_df, added_ratio_columns = self.add_ratio_stats(rushing_stats_df, ratio_column_pairs)
 
-        rollup_columns = [col for col in select_columns if col not in ['player', 'age', 'rush_awards']] + ratio_columns
-        rushing_stats_df = self.create_rollup_stats(
+        rollup_columns = [col for col in select_columns if col not in ['player', 'age', 'rush_awards']] + added_ratio_columns
+        rushing_stats_df, added_rollup_columns = self.create_rollup_stats(
             stats_df=rushing_stats_df,
             grouping_columns=['player'],
             rollup_columns=rollup_columns,
         )
+
+        excluded_columns = {'rank', 'team', 'position', 'games_started', 'rush_longest_rush', 'rush_fumbles'}
+        select_columns = [col for col in normalized_column_names if col not in excluded_columns]
+        select_columns = select_columns + added_rollup_columns + added_ratio_columns
+        rushing_stats_df = rushing_stats_df[select_columns]
+
         self.write_to_silver(rushing_stats_df, "player_rushing_stats.csv")
 
     def build_player_passing_stats(self) -> None:
@@ -459,24 +450,27 @@ class FantasyDataProcessor:
             'pass_game_winning_drives',
             'pass_awards'
         ]
-        excluded_columns = {'rank', 'team', 'position', 'games_started', 'pass_record', 'pass_longest_pass', 'pass_fourth_quarter_comebacks', 'pass_game_winning_drives'}
-        select_columns = [col for col in normalized_column_names if col not in excluded_columns]
+
         passing_stats_df = self.combine_year_data(
             file_pattern="*_player_passing_stats.csv",
             normalized_column_names=normalized_column_names,
-            select_columns=select_columns,
             transformations={'player': self.standardize_name, 'pass_awards': self.parse_awards},
         )
 
         ratio_column_pairs = [('pass_touchdowns', 'pass_games'), ('pass_interceptions', 'pass_games'), ('pass_first_downs', 'pass_games'), ('pass_sacks', 'pass_games'), ('pass_sack_yards', 'pass_games')]
-        passing_stats_df, ratio_columns = self.add_ratio_stats(passing_stats_df, ratio_column_pairs)
+        passing_stats_df, added_ratio_columns = self.add_ratio_stats(passing_stats_df, ratio_column_pairs)
 
-        rollup_columns = [col for col in select_columns if col not in ['player', 'age', 'pass_awards']] + ratio_columns
-        passing_stats_df = self.create_rollup_stats(
+        rollup_columns = [col for col in select_columns if col not in ['player', 'age', 'pass_awards']] + added_ratio_columns
+        passing_stats_df, added_rollup_columns = self.create_rollup_stats(
             stats_df=passing_stats_df,
             grouping_columns=['player'],
             rollup_columns=rollup_columns,
         )
+
+        excluded_columns = {'rank', 'team', 'position', 'games_started', 'pass_record', 'pass_longest_pass', 'pass_fourth_quarter_comebacks', 'pass_game_winning_drives'}
+        select_columns = [col for col in normalized_column_names if col not in excluded_columns]
+        select_columns = select_columns + added_rollup_columns + added_ratio_columns
+        passing_stats_df = passing_stats_df[select_columns]
 
         self.write_to_silver(passing_stats_df, "player_passing_stats.csv")
 
@@ -530,23 +524,25 @@ class FantasyDataProcessor:
             'team_turnover_percent',
             'team_expected_points'
         ]
-        excluded_columns = {'rank', 'games'}
-        select_columns = [col for col in normalized_column_names if col not in excluded_columns]
 
         team_offense_df = self.combine_year_data(
             file_pattern="*_team_offense.csv",
             normalized_column_names=normalized_column_names,
-            select_columns=select_columns,
             transformations={'team': self.standardize_team_name},
         )
 
         rollup_columns = ['team_points', 'team_yards', 'team_plays', 'team_yards_per_play']
-        team_offense_df = self.create_rollup_stats(
+        team_offense_df, added_rollup_columns = self.create_rollup_stats(
             stats_df=team_offense_df,
             grouping_columns=['team'],
             rollup_columns=rollup_columns,
         )
         team_offense_df = self.add_league_average_rows(team_offense_df)
+
+        excluded_columns = {'rank', 'games'}
+        select_columns = [col for col in normalized_column_names if col not in excluded_columns]
+        select_columns = select_columns + added_rollup_columns
+        team_offense_df = team_offense_df[select_columns]
 
         self.write_to_silver(team_offense_df, "team_offense.csv")
 
@@ -584,24 +580,7 @@ class FantasyDataProcessor:
             .merge(team_stats_df, on=['team', 'join_year'], how='left')
         )
 
-        if add_advanced_stats:
-            receiving_advanced_stats_df = (
-                pd.read_csv(os.path.join(self.silver_data_dir, "player_receiving_advanced_stats.csv"))
-                .rename(columns={'year': 'join_year', 'age': 'join_age'})
-            )
-            rushing_advanced_stats_df = (
-                pd.read_csv(os.path.join(self.silver_data_dir, "player_rushing_advanced_stats.csv"))
-                .rename(columns={'year': 'join_year', 'age': 'join_age'})
-            )
-            joined_df = (
-                joined_df
-                .merge(receiving_advanced_stats_df, on=['player', 'join_year', 'join_age'], how='left')
-                .merge(rushing_advanced_stats_df, on=['player', 'join_year', 'join_age'], how='left')
-            )
-
-        joined_df = joined_df.drop(columns=['join_year', 'join_age'])
-
-        return joined_df
+        return joined_df.drop(columns=['join_year', 'join_age'])
 
     def clean_final_stats(self, joined_df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -644,8 +623,8 @@ class FantasyDataProcessor:
         # Drop any rows where the player is null or an empty string
         final_df = final_df.loc[(final_df['player'].notna()) & (final_df['player'] != '')]
 
-        if self.drop_rookies:
-            # Rookies are players who have 0's for all games stats.
+        # Rookies are players who have 0's for all games stats.
+        if all(col in final_df.columns for col in ['games', 'games_2_yr_avg', 'games_3_yr_avg']):
             final_df = final_df[(final_df['games'] > 0) | (final_df['games_2_yr_avg'] > 0) | (final_df['games_3_yr_avg'] > 0)]
 
         # Drop the first year of data as it will have 0 for all stats
@@ -684,7 +663,7 @@ def main():
     script_dir = os.path.dirname(os.path.abspath(__file__))
     data_dir = os.path.join(os.path.dirname(script_dir), "data")
 
-    processor = FantasyDataProcessor(data_dir=data_dir)
+    processor = DataProcessor(data_dir=data_dir)
 
     processor.process_all_data()
 
