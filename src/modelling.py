@@ -1,11 +1,20 @@
 import os
 import pandas as pd
+import mlflow
+from mlflow.tracking import MlflowClient
+from mlflow.models import infer_signature
+import numpy as np
+from sklearn.metrics import mean_squared_error
 from sklearn.preprocessing import StandardScaler
 from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
-from sklearn.linear_model import LinearRegression
-from sklearn.model_selection import train_test_split
+from sklearn.linear_model import LinearRegression, Ridge, Lasso
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.svm import SVR
+from sklearn.ensemble import HistGradientBoostingRegressor
+from sklearn.model_selection import train_test_split, GridSearchCV
 from typing import Any
+from datetime import datetime
 
 
 class FantasyModel:
@@ -14,19 +23,26 @@ class FantasyModel:
             self,
             data_dir: str = "../data",
             target_col: str = "ppr_fantasy_points",
-        ):
+            possible_targets: list[str] = [
+                "ppr_fantasy_points",
+                "standard_fantasy_points",
+                "ppr_fantasy_points_per_game",
+                "standard_fantasy_points_per_game",
+                "value_over_replacement"
+            ]
+    ):
         self.data_dir = data_dir
         self.gold_data_dir = os.path.join(data_dir, "gold")
         self.gold_data = self.load_gold_table()
 
+        self.tracking_dir = os.path.join(data_dir, "mlruns")
+        os.makedirs(self.tracking_dir, exist_ok=True)
+        mlflow.set_tracking_uri(self.tracking_dir)
+
+        self.predictions_dir = os.path.join(data_dir, "predictions")
+        os.makedirs(self.predictions_dir, exist_ok=True)
+
         self.id_col = "id"
-        possible_targets = [
-            "ppr_fantasy_points",
-            "standard_fantasy_points",
-            "ppr_fantasy_points_per_game",
-            "standard_fantasy_points_per_game",
-            "value_over_replacement"
-        ]
         if target_col not in possible_targets:
             raise ValueError(f"Target column {target_col} not in {possible_targets}")
         self.target_col = target_col
@@ -38,9 +54,8 @@ class FantasyModel:
         self.Y = self.gold_data[self.target_col]
 
     def load_gold_table(self) -> pd.DataFrame:
-        return pd.read_csv(os.path.join(self.gold_data_dir, "final_data.csv"))
+        return pd.read_csv(os.path.join(self.gold_data_dir, "final_stats.csv"))
 
-        
     def split_data(self) -> dict[str, pd.DataFrame]:
         X_train, X_test, y_train, y_test, Id_train, Id_test = train_test_split(
             self.X, self.Y, self.Id, test_size=0.2, random_state=42
@@ -54,44 +69,217 @@ class FantasyModel:
             "Id_test": Id_test
         }
         return data
-    
-    def create_pipeline(self, model: Any) -> Pipeline:
-        preprocessing_pipeline = Pipeline([
+
+    def create_pipeline(self, model: Any = LinearRegression()) -> Pipeline:
+        pipeline = Pipeline([
             ('imputer', SimpleImputer(strategy='mean')),
             ('scaler', StandardScaler()),
-        ])
-        model_pipeline = Pipeline([
-            ('preprocessing', preprocessing_pipeline),
             ('model', model)
         ])
 
-        return model_pipeline
+        return pipeline
 
-    def run_pipeline(self, model: Any, data: dict[str, pd.DataFrame]) -> tuple[float, pd.DataFrame]:
-        pipeline = self.create_pipeline(model)
-        pipeline.fit(data["X_train"], data["y_train"])
+    def create_model_grid_search(self) -> GridSearchCV:
+        eval_pipeline = self.create_pipeline()
+        param_grid = {
+            'model': [
+                LinearRegression(),
+                Ridge(),
+                Lasso(),
+                RandomForestRegressor(),
+                SVR(),
+                HistGradientBoostingRegressor(),
+            ]
+        }
 
-        score = pipeline.score(data["X_test"], data["y_test"])
+        grid_search = GridSearchCV(
+            eval_pipeline,
+            param_grid,
+            cv=5,
+            scoring={
+                'r2': 'r2',
+                'rmse': 'neg_root_mean_squared_error',
+            },
+            refit='r2',  # Use R2 for selecting best model
+            n_jobs=-1,  # Uses all available cores.
+        )
+
+        return grid_search
+
+    def log_grid_search_to_mlflow(self, grid_search: GridSearchCV) -> None:
+        mlflow.log_param("input", grid_search.param_grid)
+        mlflow.log_param("best", str(grid_search.best_params_))
+
+        cv_results_df = pd.DataFrame(grid_search.cv_results_)
+        cv_results_df['mean_test_rmse'] = -cv_results_df['mean_test_rmse']
+        cv_results_cols = [f"param_{key}" for key in grid_search.param_grid.keys()] + ['mean_test_r2', 'mean_test_rmse', 'std_test_r2']
+        cv_results_log = (
+            cv_results_df[cv_results_cols]
+            .sort_values(by=['mean_test_r2', 'mean_test_rmse'], ascending=[False, True])
+            .to_dict(orient='records')
+        )
+        mlflow.log_param("results", cv_results_log)
+
+        mlflow.log_metric("r2", grid_search.best_score_)
+        mlflow.log_metric("r2_std", grid_search.cv_results_['std_test_r2'][grid_search.best_index_])
+        mlflow.log_metric("rmse", -grid_search.cv_results_['mean_test_rmse'][grid_search.best_index_])
+        mlflow.log_metric("rmse_std", grid_search.cv_results_['std_test_rmse'][grid_search.best_index_])
+
+    def run_model_eval(self, data: dict[str, pd.DataFrame]) -> GridSearchCV:
+        grid_search = self.create_model_grid_search()
+
+        grid_search.fit(data["X_train"], data["y_train"])
+
+        mlflow.set_experiment(self.target_col)
+        run_name = f"model_eval_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+
+        with mlflow.start_run(run_name=run_name):
+            mlflow.set_tag("phase", "eval")
+
+            self.log_grid_search_to_mlflow(grid_search)
+
+        return grid_search
+
+    def get_base_model(self, model_type: str) -> Any:
+        base_models = {
+            'ridge': Ridge(),
+            'lasso': Lasso(), # Lasso not performant for ppr_ppg
+            'random_forest': RandomForestRegressor(),
+            'svr': SVR(),
+            'hist_gradient_boosting': HistGradientBoostingRegressor(),
+            'linear_regression': LinearRegression(),
+        }
+        return base_models[model_type]
+
+    def get_param_grid(self, model_type: str) -> dict[str, list[Any]]:
+        master_param_grid = {
+            'ridge': {
+                'model__alpha': np.logspace(-4, 4, 10),
+            },
+            'lasso': {
+                'model__alpha': np.logspace(-4, 4, 10),
+            },
+            'random_forest': {
+                'model__n_estimators': [200, 300, 400],
+                'model__max_depth': [10, 15],
+                'model__min_samples_split': [5],
+                'model__min_samples_leaf': [2],
+            },
+            'svr': {
+                'model__C': np.logspace(-4, 4, 10),
+                'model__kernel': ['linear', 'rbf'],
+                'model__gamma': ['scale', 'auto'],
+            },
+            'hist_gradient_boosting': {
+                'model__learning_rate': [0.01, 0.05, 0.1],
+                'model__max_depth': [3, 5, 7, 9],
+                'model__min_samples_split': [2, 5, 10],
+                'model__min_samples_leaf': [1, 2, 4],
+            }
+        }
+
+        return master_param_grid[model_type]
+
+    def run_model_tuning(self, data: dict[str, pd.DataFrame], model_type: str) -> GridSearchCV:
+        pipeline = self.create_pipeline(self.get_base_model(model_type))
+        param_grid = self.get_param_grid(model_type)
+
+        grid_search = GridSearchCV(
+            pipeline,
+            param_grid,
+            cv=5,
+            scoring={
+                'r2': 'r2',
+                'rmse': 'neg_root_mean_squared_error',
+            },
+            refit='r2',
+            n_jobs=-1
+        )
+        grid_search.fit(data["X_train"], data["y_train"])
+
+        mlflow.set_experiment(self.target_col)
+        run_name = f"{model_type}_tuning_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+
+        with mlflow.start_run(run_name=run_name):
+            mlflow.set_tag("model_type", model_type)
+            mlflow.set_tag("phase", "tuning")
+
+            self.log_grid_search_to_mlflow(grid_search)
+
+            signature = infer_signature(data["X_train"], data["y_train"])
+            mlflow.sklearn.log_model(
+                sk_model=grid_search.best_estimator_,
+                registered_model_name=f"{self.target_col}_{model_type}",
+                name=model_type,
+                input_example=data["X_train"],
+                signature=signature)
+
+        return grid_search
+
+    def make_test_predictions(self, data: dict[str, pd.DataFrame], model_type: str, model_version: int = None) -> pd.DataFrame:
+        if model_version is None:
+            client = MlflowClient()
+            latest_version = client.get_latest_versions(f"{self.target_col}_{model_type}", stages=["None"])[0].version
+            model_version = latest_version
+        else:
+            model_version = model_version
+
+        pipeline = mlflow.sklearn.load_model(f"models:/{self.target_col}_{model_type}/{model_version}")
 
         y_pred = pipeline.predict(data["X_test"])
-        preds = pd.DataFrame({
+        mlflow.set_experiment(self.target_col)
+
+        with mlflow.start_run(run_name=f"test_v{model_version}"):
+            mlflow.set_tag("phase", "test")
+
+            mlflow.log_param("model_name", f"{self.target_col}_{model_type}")
+            mlflow.log_param("model_version", model_version)
+
+            score = pipeline.score(data["X_test"], data["y_test"])
+            print(f"R^2 score: {score}")
+            mlflow.log_metric("r2", score)
+
+            rmse = np.sqrt(mean_squared_error(data["y_test"], y_pred))
+            print(f"RMSE: {rmse}")
+            mlflow.log_metric("rmse", rmse)
+
+            # TODO: log a final model?
+
+        preds_df = pd.DataFrame({
             "id": data["Id_test"],
-            "ppr_fantasy_points": y_pred,
+            "predictions": y_pred,
+            "actual": data["y_test"]
         })
 
-        return score, preds
+        return preds_df
+
+    def view_year_test_predictions(self, preds_df: pd.DataFrame, year: int) -> pd.DataFrame:
+        preds_df["year"] = preds_df["id"].str.split("_").str[-1].astype(int)
+        preds_df = preds_df[preds_df["year"] == year].sort_values(by=["predictions", "actual"], ascending=False)
+
+        preds_df.to_csv(os.path.join(self.predictions_dir, f"{self.target_col}_{year}_predictions.csv"), index=False)
+
+        return preds_df.drop(columns=["year"])
+
 
 def main():
-    model = FantasyModel()
-    data = model.split_data()
+    ppr_model = FantasyModel(target_col="ppr_fantasy_points")
+    data = ppr_model.split_data()
 
-    estimator = LinearRegression()
-    score, preds = model.run_pipeline(estimator, data)
+    ppr_model.run_model_eval(data)
 
-    print(f"R^2 Score: {score}")
-    print(preds)
+    chosen_model_type = "ridge"
 
-    preds.to_csv(os.path.join(model.data_dir, "predictions.csv"), index=False)
+    ppr_model.run_model_tuning(data, chosen_model_type)
+    # ppr_model.run_model_tuning(data, "random_forest")
+    # ppr_model.run_model_tuning(data, "svr")
+    # ppr_model.run_model_tuning(data, "hist_gradient_boosting")
+
+    preds_df = ppr_model.make_test_predictions(data, chosen_model_type)
+
+    view_year = 2024
+    print(f"Predictions for {ppr_model.target_col} in {view_year}:")
+    print(ppr_model.view_year_test_predictions(preds_df, view_year))
 
 
 if __name__ == "__main__":

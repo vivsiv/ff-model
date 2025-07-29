@@ -12,24 +12,24 @@ class TestFantasyFeatureEngineer:
     @classmethod
     def setup_class(cls):
         cls.test_dir = tempfile.mkdtemp()
-        cls.silver_dir = os.path.join(cls.test_dir, "silver")
+        cls.gold_dir = os.path.join(cls.test_dir, "gold")
 
-        os.makedirs(cls.silver_dir)
+        os.makedirs(cls.gold_dir)
 
-        silver_data = pd.DataFrame({
+        gold_data = pd.DataFrame({
             'id': ['x', 'y', 'z'],
             'f1': [1, 2, 3],
             'f2': [100, 50, 0],
             'f3': [12, 0, 8],
             'target': [10, 11, 12]
         })
-        silver_data.to_csv(os.path.join(cls.silver_dir, "final_stats.csv"), index=False)
+        gold_data.to_csv(os.path.join(cls.gold_dir, "final_stats.csv"), index=False)
 
         cls.feature_eng = FantasyFeatureEngineer(
             data_dir=cls.test_dir,
             metadata_cols=['id'],
-            target_cols=['target'],
-            redundancy_threshold=0.5)
+            target_cols=['target']
+        )
 
     @classmethod
     def teardown_class(cls):
@@ -90,20 +90,6 @@ class TestFantasyFeatureEngineer:
         return pd.DataFrame(corr_data)
 
     @pytest.fixture
-    def target_score_df(self):
-        return pd.DataFrame({
-            'feature': ['f1', 'f2', 'f3', 'f4', 'f5', 'f6'],
-            'score': [0.80, 0.10, 0.95, 0.90, 0.95, 0.05],
-        })
-
-    def test_get_redundant_features(self, feature_corr_matrix):
-        with patch.object(self.feature_eng, 'pearsons_correlation_between_features', return_value=feature_corr_matrix):
-            redundant_features = self.feature_eng.get_redundant_features()
-
-        expected_redundant_features = {'f1': {'f4', 'f5'}, 'f2': {'f3'}, 'f3': {'f2'}, 'f4': {'f1', 'f5'}, 'f5': {'f1', 'f4'}}
-
-        assert redundant_features == expected_redundant_features
-
     def test_pearsons_correlation_with_target(self):
         corr_matrix = self.feature_eng.pearsons_correlation_with_target('target')
         assert corr_matrix.columns.tolist() == ['feature', 'p_corr']
@@ -118,13 +104,6 @@ class TestFantasyFeatureEngineer:
             expected_df = pd.DataFrame({
                 'feature': ['f1', 'f2', 'f3'],
                 'mi': [0.8, 0.3, 0.9]
-            }).sort_values(by='feature')
+            }).sort_values(by='feature').set_index('feature')
 
             pd.testing.assert_frame_equal(mi_df, expected_df)
-
-    def test_select_features_for_target(self, target_score_df, feature_corr_matrix):
-        with patch.object(self.feature_eng, 'pearsons_correlation_between_features', return_value=feature_corr_matrix):
-            redundant_features = self.feature_eng.get_redundant_features()
-
-        selected_features = self.feature_eng.select_features_for_target(target_score_df, redundant_features, max_features=2)
-        assert selected_features == {'f3', 'f5'}

@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 class FantasyDataProcessor:
     """Generate silver and gold layer data from bronze layer data."""
 
-    def __init__(self, data_dir: str = "../data"):
+    def __init__(self, data_dir: str = "../data", drop_rookies: bool = False):
         """
         Initialize the processor.
 
@@ -38,9 +38,16 @@ class FantasyDataProcessor:
         """
         self.data_dir = data_dir
         self.bronze_data_dir = os.path.join(data_dir, "bronze")
-        self.silver_data_dir = os.path.join(data_dir, "silver")
+        if not os.path.exists(self.bronze_data_dir):
+            raise FileNotFoundError(f"Bronze data directory {self.bronze_data_dir} not found")
 
+        self.silver_data_dir = os.path.join(data_dir, "silver")
         os.makedirs(self.silver_data_dir, exist_ok=True)
+
+        self.gold_data_dir = os.path.join(data_dir, "gold")
+        os.makedirs(self.gold_data_dir, exist_ok=True)
+
+        self.drop_rookies = drop_rookies
 
     def standardize_name(self, name: str) -> str:
         """
@@ -367,7 +374,6 @@ class FantasyDataProcessor:
 
         self.write_to_silver(receiving_stats_df, "player_receiving_stats.csv")
 
-
     def build_player_rushing_stats(self) -> None:
         """
         Reads in all years of rushing stats from the bronze layer, cleans the data and merges them all into one dataframe.
@@ -601,42 +607,55 @@ class FantasyDataProcessor:
         """
         Cleans the final stats dataframe.
         """
-        # Drop any rows where the player is null or an empty string
-        mask = joined_df['player'].notna() & (joined_df['player'] != '')
-        joined_df = joined_df.loc[mask].copy()
+        final_df = joined_df.copy()
 
-        # Fill any numeric columns with null values with 0, and round to 2 decimal places
-        numeric_columns = joined_df.select_dtypes(include=[np.number]).columns
-        fill_columns = [col for col in numeric_columns if col != 'year']
-        joined_df.loc[:, fill_columns] = joined_df.loc[:, fill_columns].fillna(0).round(2)
+        # Convert age to float
+        final_df['age'] = final_df['age'].astype(float)
 
         # Combine awards columns into a single awards column
         awards_columns = ['pass_awards', 'rush_awards', 'rec_awards']
-        if all(col in joined_df.columns for col in awards_columns):
-            joined_df.loc[:, 'awards'] = joined_df.loc[:, awards_columns].max(axis=1)
-            joined_df = joined_df.drop(columns=awards_columns)
+        if all(col in final_df.columns for col in awards_columns):
+            final_df.loc[:, 'awards'] = final_df.loc[:, awards_columns].max(axis=1)
+            final_df = final_df.drop(columns=awards_columns)
 
         # Combine multiple games columns into one column.
         games_columns = ['pass_games', 'rush_games', 'rec_games']
-        if all(col in joined_df.columns for col in games_columns):
-            joined_df.loc[:, 'games'] = joined_df.loc[:, games_columns].max(axis=1)
-            joined_df = joined_df.drop(columns=games_columns)
+        if all(col in final_df.columns for col in games_columns):
+            final_df.loc[:, 'games'] = final_df.loc[:, games_columns].max(axis=1)
+            final_df = final_df.drop(columns=games_columns)
 
         # Combine multiple 2 yr avg games columns into one column.
         games_2yr_avg_columns = ['pass_games_2_yr_avg', 'rush_games_2_yr_avg', 'rec_games_2_yr_avg']
-        if all(col in joined_df.columns for col in games_2yr_avg_columns):
-            joined_df.loc[:, 'games_2yr_avg'] = joined_df.loc[:, games_2yr_avg_columns].mean(axis=1)
-            joined_df = joined_df.drop(columns=games_2yr_avg_columns)
+        if all(col in final_df.columns for col in games_2yr_avg_columns):
+            final_df.loc[:, 'games_2_yr_avg'] = final_df.loc[:, games_2yr_avg_columns].mean(axis=1)
+            final_df = final_df.drop(columns=games_2yr_avg_columns)
 
         # Combine multiple 3 yr avg games columns into one column.
         games_3yr_avg_columns = ['pass_games_3_yr_avg', 'rush_games_3_yr_avg', 'rec_games_3_yr_avg']
-        if all(col in joined_df.columns for col in games_3yr_avg_columns):
-            joined_df.loc[:, 'games_3yr_avg'] = joined_df.loc[:, games_3yr_avg_columns].mean(axis=1)
-            joined_df = joined_df.drop(columns=games_3yr_avg_columns)
+        if all(col in final_df.columns for col in games_3yr_avg_columns):
+            final_df.loc[:, 'games_3_yr_avg'] = final_df.loc[:, games_3yr_avg_columns].mean(axis=1)
+            final_df = final_df.drop(columns=games_3yr_avg_columns)
 
-        joined_df = joined_df[joined_df['year'] != joined_df['year'].min()]
+        # Fill any numeric columns with null values with 0, and round to 2 decimal places
+        numeric_columns = final_df.select_dtypes(include=[np.number]).columns
+        fill_columns = [col for col in numeric_columns if col != 'year']
+        final_df.loc[:, fill_columns] = final_df.loc[:, fill_columns].fillna(0).round(2)
 
-        return joined_df
+        # Drop any rows where the player is null or an empty string
+        final_df = final_df.loc[(final_df['player'].notna()) & (final_df['player'] != '')]
+
+        if self.drop_rookies:
+            # Rookies are players who have 0's for all games stats.
+            final_df = final_df[(final_df['games'] > 0) | (final_df['games_2_yr_avg'] > 0) | (final_df['games_3_yr_avg'] > 0)]
+
+        # Drop the first year of data as it will have 0 for all stats
+        final_df = final_df[final_df['year'] != final_df['year'].min()]
+
+        # Make an id column that is player_year
+        final_df.insert(0, 'id', final_df['player'].astype(str) + '_' + final_df['year'].astype(str))
+        final_df = final_df.drop(columns=['player', 'year', 'team'])
+
+        return final_df
 
     def process_all_data(self) -> Dict[str, pd.DataFrame]:
         """
@@ -656,7 +675,9 @@ class FantasyDataProcessor:
 
         joined_df = self.join_stats()
         cleaned_df = self.clean_final_stats(joined_df)
-        self.write_to_silver(cleaned_df, "final_stats.csv")
+
+        cleaned_df.to_csv(os.path.join(self.gold_data_dir, "final_stats.csv"), index=False)
+        logger.info(f"Final data saved to {os.path.join(self.gold_data_dir, 'final_stats.csv')}")
 
 
 def main():
@@ -666,7 +687,6 @@ def main():
     processor = FantasyDataProcessor(data_dir=data_dir)
 
     processor.process_all_data()
-    logger.info("Data processing complete")
 
 
 if __name__ == "__main__":
