@@ -1,17 +1,8 @@
-#!/usr/bin/env python3
-"""
-NFL Fantasy Football Data Scraper
-
-This module provides functionality to scrape NFL player and team statistics
-from Pro Football Reference for fantasy football analysis.
-"""
-
 import os
 import time
 import logging
 import random
 import argparse
-from datetime import datetime
 
 import requests
 from bs4 import BeautifulSoup, Comment
@@ -40,18 +31,20 @@ class ProFootballReferenceScraper:
             data_dir: Directory to save scraped data
         """
         self.base_url = "https://www.pro-football-reference.com"
+
         self.data_dir = data_dir
+        os.makedirs(self.data_dir, exist_ok=True)
+
         self.html_dir = os.path.join(data_dir, "html")
+        os.makedirs(self.html_dir, exist_ok=True)
+
         self.bronze_data_dir = os.path.join(data_dir, "bronze")
+        os.makedirs(self.bronze_data_dir, exist_ok=True)
+
         self.session = requests.Session()
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         })
-
-        # Create data directories if they don't exist
-        os.makedirs(self.data_dir, exist_ok=True)
-        os.makedirs(self.html_dir, exist_ok=True)
-        os.makedirs(self.bronze_data_dir, exist_ok=True)
 
     def _get_soup(self, url: str, html_table_path: str, delay: float = 3.0, overwrite: bool = False) -> BeautifulSoup:
         """
@@ -285,21 +278,20 @@ class ProFootballReferenceScraper:
 
 
 def main():
-    """Main function to run the scraper."""
     parser = argparse.ArgumentParser(
         description="Scrapes stats from external sources"
     )
     parser.add_argument(
-        "--sources",
-        type=list,
-        default=["pro-football-reference"],
-        help="Sources to scrape, currently only pro-football-reference is supported."
+        "--start-year",
+        type=int,
+        default=1999,
+        help="Start year to scrape (default: 1999)"
     )
     parser.add_argument(
-        "--years-to-scrape",
+        "--end-year",
         type=int,
-        default=10,
-        help="Number of years to scrape back from current year (default: 10)"
+        default=2024,
+        help="End year to scrape (default: 2024)"
     )
     parser.add_argument(
         "--data-dir",
@@ -310,24 +302,9 @@ def main():
 
     args = parser.parse_args()
 
-    scrapers_map = {
-        "pro-football-reference": ProFootballReferenceScraper
-    }
-    scrapers = [(source, scrapers_map[source]) for source in args.sources]
+    scraper = ProFootballReferenceScraper(data_dir=args.data_dir)
 
-    current_year = datetime.now().year
-    end_year = current_year - 1
-    start_year = end_year - args.years_to_scrape + 1
-    logger.info(f"Scraping {args.sources} from {start_year} to {end_year}")
-
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    data_dir = os.path.join(os.path.dirname(script_dir), args.data_dir)
-    os.makedirs(data_dir, exist_ok=True)
-    logger.info(f"Saving scraped data to: {data_dir}")
-
-    for source, scraper in scrapers:
-        scraper.scrape_years(start_year, end_year)
-        logger.info(f"Completed scraping {source}")
+    scraper.scrape_years(start_year=args.start_year, end_year=args.end_year)
 
 
 if __name__ == "__main__":
