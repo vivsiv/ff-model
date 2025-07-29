@@ -5,7 +5,7 @@ import pytest
 import pandas as pd
 from unittest.mock import patch
 
-from src.data_analysis import DataAnalysis
+from src.analysis import DataAnalysis
 
 
 class TestDataAnalysis:
@@ -25,7 +25,7 @@ class TestDataAnalysis:
         })
         gold_data.to_csv(os.path.join(cls.gold_dir, "final_stats.csv"), index=False)
 
-        cls.data_analysis = DataAnalysis(
+        cls.analysis = DataAnalysis(
             data_dir=cls.test_dir,
             metadata_cols=['id'],
             target_cols=['target']
@@ -91,15 +91,15 @@ class TestDataAnalysis:
 
     @pytest.fixture
     def test_pearsons_correlation_with_target(self):
-        corr_matrix = self.data_analysis.pearsons_correlation_with_target('target')
+        corr_matrix = self.analysis.pearsons_correlation_with_target('target')
         assert corr_matrix.columns.tolist() == ['feature', 'p_corr']
         assert sorted(corr_matrix['feature'].tolist()) == ['f1', 'f2', 'f3']
 
     def test_mutual_information_with_target(self):
-        with patch('src.data_analysis.mutual_info_regression') as mock_mi:
+        with patch('src.analysis.mutual_info_regression') as mock_mi:
             mock_mi.return_value = [0.8, 0.3, 0.9]
 
-            mi_df = self.data_analysis.mutual_information_with_target('target').sort_values(by='feature')
+            mi_df = self.analysis.mutual_information_with_target('target').sort_values(by='feature')
 
             expected_df = pd.DataFrame({
                 'feature': ['f1', 'f2', 'f3'],
