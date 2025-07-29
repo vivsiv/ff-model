@@ -13,7 +13,6 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.svm import SVR
 from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.model_selection import train_test_split, GridSearchCV
-# from sklearn.feature_selection import SelectKBest, f_regression, mutual_info_regression
 from typing import Any
 from datetime import datetime
 
@@ -107,6 +106,25 @@ class FantasyModel:
 
         return grid_search
 
+    def log_grid_search_to_mlflow(self, grid_search: GridSearchCV) -> None:
+        mlflow.log_param("input", grid_search.param_grid)
+        mlflow.log_param("best", str(grid_search.best_params_))
+
+        cv_results_df = pd.DataFrame(grid_search.cv_results_)
+        cv_results_df['mean_test_rmse'] = -cv_results_df['mean_test_rmse']
+        cv_results_cols = [f"param_{key}" for key in grid_search.param_grid.keys()] + ['mean_test_r2', 'mean_test_rmse', 'std_test_r2']
+        cv_results_log = (
+            cv_results_df[cv_results_cols]
+            .sort_values(by=['mean_test_r2', 'mean_test_rmse'], ascending=[False, True])
+            .to_dict(orient='records')
+        )
+        mlflow.log_param("results", cv_results_log)
+
+        mlflow.log_metric("r2", grid_search.best_score_)
+        mlflow.log_metric("r2_std", grid_search.cv_results_['std_test_r2'][grid_search.best_index_])
+        mlflow.log_metric("rmse", -grid_search.cv_results_['mean_test_rmse'][grid_search.best_index_])
+        mlflow.log_metric("rmse_std", grid_search.cv_results_['std_test_rmse'][grid_search.best_index_])
+
     def run_model_eval(self, data: dict[str, pd.DataFrame]) -> GridSearchCV:
         grid_search = self.create_model_grid_search()
 
@@ -118,23 +136,7 @@ class FantasyModel:
         with mlflow.start_run(run_name=run_name):
             mlflow.set_tag("phase", "eval")
 
-            mlflow.log_param("param_grid", grid_search.param_grid)
-
-            mlflow.log_metric("r2", grid_search.best_score_)
-            mlflow.log_metric("r2_std", grid_search.cv_results_['std_test_r2'][grid_search.best_index_])
-            mlflow.log_metric("rmse", -grid_search.cv_results_['mean_test_rmse'][grid_search.best_index_])
-            mlflow.log_metric("rmse_std", grid_search.cv_results_['std_test_rmse'][grid_search.best_index_])
-
-            mlflow.log_param("best_params", str(grid_search.best_params_))
-
-            cv_results_df = pd.DataFrame(grid_search.cv_results_)
-            cv_results_df['mean_test_rmse'] = -cv_results_df['mean_test_rmse']
-            cv_results_log = (
-                cv_results_df[['param_model', 'mean_test_r2', 'mean_test_rmse', 'std_test_r2']]
-                .sort_values(by=['mean_test_r2', 'mean_test_rmse'], ascending=[False, True])
-                .to_dict(orient='records')
-            )
-            mlflow.log_param("cv_results", cv_results_log)
+            self.log_grid_search_to_mlflow(grid_search)
 
         return grid_search
 
@@ -158,14 +160,14 @@ class FantasyModel:
                 'model__alpha': np.logspace(-4, 4, 10),
             },
             'random_forest': {
-                'model__n_estimators': [100, 200, 300],
-                'model__max_depth': [3, 5, 7, 9],
-                'model__min_samples_split': [2, 5, 10],
-                'model__min_samples_leaf': [1, 2, 4],
+                'model__n_estimators': [200, 300, 400],
+                'model__max_depth': [10, 15],
+                'model__min_samples_split': [5],
+                'model__min_samples_leaf': [2],
             },
             'svr': {
                 'model__C': np.logspace(-4, 4, 10),
-                'model__kernel': ['linear', 'poly', 'rbf', 'sigmoid'],
+                'model__kernel': ['linear', 'rbf'],
                 'model__gamma': ['scale', 'auto'],
             },
             'hist_gradient_boosting': {
@@ -202,23 +204,7 @@ class FantasyModel:
             mlflow.set_tag("model_type", model_type)
             mlflow.set_tag("phase", "tuning")
 
-            mlflow.log_param("param_grid", param_grid)
-
-            mlflow.log_metric("r2", grid_search.best_score_)
-            mlflow.log_metric("r2_std", grid_search.cv_results_['std_test_r2'][grid_search.best_index_])
-            mlflow.log_metric("rmse", -grid_search.cv_results_['mean_test_rmse'][grid_search.best_index_])
-            mlflow.log_metric("rmse_std", grid_search.cv_results_['std_test_rmse'][grid_search.best_index_])
-
-            mlflow.log_param("best_params", str(grid_search.best_params_))
-
-            cv_results_df = pd.DataFrame(grid_search.cv_results_)
-            cv_results_cols = [f"param_{key}" for key in param_grid.keys()] + ['mean_test_r2', 'mean_test_rmse', 'std_test_r2']
-            cv_results_log = (
-                cv_results_df[cv_results_cols]
-                .sort_values(by=['mean_test_r2', 'mean_test_rmse'], ascending=[False, True])
-                .to_dict(orient='records')
-            )
-            mlflow.log_param("cv_results", cv_results_log)
+            self.log_grid_search_to_mlflow(grid_search)
 
             signature = infer_signature(data["X_train"], data["y_train"])
             mlflow.sklearn.log_model(
