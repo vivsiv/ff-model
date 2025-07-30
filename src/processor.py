@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 class DataProcessor:
     """Generate silver and gold layer data from bronze layer data."""
 
-    def __init__(self, data_dir: str = "../data"):
+    def __init__(self, data_dir: str = "../data", current_year: int = 2025):
         self.data_dir = data_dir
         self.bronze_data_dir = os.path.join(data_dir, "bronze")
         if not os.path.exists(self.bronze_data_dir):
@@ -32,6 +32,8 @@ class DataProcessor:
 
         self.gold_data_dir = os.path.join(data_dir, "gold")
         os.makedirs(self.gold_data_dir, exist_ok=True)
+
+        self.current_year = current_year
 
     def standardize_name(self, name: str) -> str:
         """
@@ -546,7 +548,7 @@ class DataProcessor:
 
         self.write_to_silver(team_offense_df, "team_offense.csv")
 
-    def join_stats(self, add_advanced_stats: bool = False) -> pd.DataFrame:
+    def join_training_stats(self, add_advanced_stats: bool = False) -> pd.DataFrame:
         """
         Joins the player stats into a single dataframe.
         The training set must use the previous years stats to predict the current years fantasy points
@@ -582,6 +584,42 @@ class DataProcessor:
 
         return joined_df.drop(columns=['join_year', 'join_age'])
 
+    def join_live_stats(self, current_year: int) -> pd.DataFrame:
+        """
+        Joins the player stats into a single dataframe.
+        The live set must use the current year stats to predict the next years fantasy points
+        so the join needs to be: year N in fantasy stats with year N+1 in other stat tables.
+        """
+        player_names_df = pd.read_csv(os.path.join(self.data_dir, f"{current_year}_fantasy_players.csv"))
+        join_year = current_year - 1
+
+        receiving_stats_df = pd.read_csv(os.path.join(self.silver_data_dir, "player_receiving_stats.csv"))
+        receiving_stats_df = receiving_stats_df[receiving_stats_df['year'] == current_year].drop(columns=['year'])
+        receiving_stats_df = receiving_stats_df.rename(columns={'age': 'age_receiving'})
+
+        rushing_stats_df = pd.read_csv(os.path.join(self.silver_data_dir, "player_rushing_stats.csv"))
+        rushing_stats_df = rushing_stats_df[rushing_stats_df['year'] == join_year].drop(columns=['year'])
+        rushing_stats_df = rushing_stats_df.rename(columns={'age': 'age_rushing'})
+
+        passing_stats_df = pd.read_csv(os.path.join(self.silver_data_dir, "player_passing_stats.csv"))
+        passing_stats_df = passing_stats_df[passing_stats_df['year'] == join_year].drop(columns=['year'])
+        passing_stats_df = passing_stats_df.rename(columns={'age': 'age_passing'})
+
+        team_stats_df = pd.read_csv(os.path.join(self.silver_data_dir, "team_offense.csv"))
+        team_stats_df = team_stats_df[team_stats_df['year'] == join_year].drop(columns=['year'])
+
+        joined_df = (
+            pd.merge(player_names_df, receiving_stats_df, on=['player'], how='left')
+            .merge(rushing_stats_df, on=['player'], how='left')
+            .merge(passing_stats_df, on=['player'], how='left')
+            .merge(team_stats_df, on=['team'], how='left')
+        )
+
+        joined_df = self.collapse_duplicate_columns(joined_df, ['age_receiving', 'age_rushing', 'age_passing'], 'age')
+        joined_df['age'] = joined_df['age'] + 1
+
+        return joined_df
+
     def collapse_duplicate_columns(self, df: pd.DataFrame, duplicate_columns: List[str], new_column_name: str) -> pd.DataFrame:
         """
         Collapses duplicate columns into a single column.
@@ -591,21 +629,19 @@ class DataProcessor:
             df = df.drop(columns=duplicate_columns)
         return df
 
-    def clean_final_stats(self, joined_df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Cleans the final stats dataframe.
-        """
+    def clean_stats(self, joined_df: pd.DataFrame, is_training: bool = True) -> pd.DataFrame:
         final_df = joined_df.copy()
 
-        # Drop any rows where the player is null or an empty string, Does this happen? Should probably be done earlier if so.
-        # final_df = final_df.loc[(final_df['player'].notna()) & (final_df['player'] != '')]
+        if is_training:
+            # Drop any rows where the player is null or an empty string, Does this happen? Should probably be done earlier if so.
+            # final_df = final_df.loc[(final_df['player'].notna()) & (final_df['player'] != '')]
 
-        # Drop the first year of data as it will have 0 for all stats
-        final_df = final_df[final_df['year'] != final_df['year'].min()]
+            # Drop the first year of data as it will have 0 for all stats
+            final_df = final_df[final_df['year'] != final_df['year'].min()]
 
-        # Make an id column that is player_year
-        final_df.insert(0, 'id', final_df['player'].astype(str) + '_' + final_df['year'].astype(str))
-        final_df = final_df.drop(columns=['player', 'year', 'team'])
+            # Make an id column that is player_year
+            final_df.insert(0, 'id', final_df['player'].astype(str) + '_' + final_df['year'].astype(str))
+            final_df = final_df.drop(columns=['player', 'year', 'team'])
 
         # Combine awards columns into a single awards column
         final_df = self.collapse_duplicate_columns(final_df, ['pass_awards', 'rush_awards', 'rec_awards'], 'awards')
@@ -625,6 +661,18 @@ class DataProcessor:
 
         return final_df
 
+    def build_training_set(self) -> None:
+        training_df = self.join_training_stats()
+        training_df = self.clean_stats(training_df, is_training=True)
+        training_df.to_csv(os.path.join(self.gold_data_dir, "training_set.csv"), index=False)
+        logger.info(f"Final data saved to {os.path.join(self.gold_data_dir, 'training_set.csv')}")
+
+    def build_live_set(self) -> None:
+        live_df = self.join_live_stats(current_year=self.current_year)
+        live_df = self.clean_stats(live_df, is_training=False)
+        live_df.to_csv(os.path.join(self.gold_data_dir, "live_set.csv"), index=False)
+        logger.info(f"Final data saved to {os.path.join(self.gold_data_dir, 'live_set.csv')}")
+
     def process_all_data(self) -> Dict[str, pd.DataFrame]:
         """
         Process all data and create combined datasets.
@@ -641,11 +689,8 @@ class DataProcessor:
         self.build_player_passing_stats()
         self.build_team_stats()
 
-        joined_df = self.join_stats()
-        cleaned_df = self.clean_final_stats(joined_df)
-
-        cleaned_df.to_csv(os.path.join(self.gold_data_dir, "training_set.csv"), index=False)
-        logger.info(f"Final data saved to {os.path.join(self.gold_data_dir, 'training_set.csv')}")
+        self.build_training_set()
+        self.build_live_set()
 
 
 def main():

@@ -1,9 +1,11 @@
 # Data directories
-data/
-raw/
-processed/
-final/
-features/
+data/bronze/
+data/silver/
+data/gold/
+data/discovery/
+data/html/
+data/mlruns/
+data/predictions/
 
 # Jupyter Notebook
 .ipynb_checkpoints

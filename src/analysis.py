@@ -61,6 +61,10 @@ class DataAnalysis:
         assert len(non_float_columns) == 1, f"Id should be the only non float column, got {non_float_columns}"
         assert self.training_data['id'].dtype == 'object', "Id should be a string"
 
+        # Check for rows where the id is only: _YYYY (the name is missing)
+        year_only_rows = self.training_data[self.training_data['id'].str.startswith('_')]
+        assert len(year_only_rows) == 0, f"Training data must not have rows where the id is missing the name, got {len(year_only_rows)}"
+
         duplicates = self.training_data.duplicated()
         assert not duplicates.any(), f"Training data must not have duplicates, got {duplicates.sum()}"
 

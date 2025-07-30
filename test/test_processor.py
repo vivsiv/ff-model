@@ -253,7 +253,7 @@ class TestDataProcessor():
         pd.testing.assert_frame_equal(result, expected_df)
 
     @patch('pandas.read_csv')
-    def test_join_stats(self, mock_read_csv):
+    def test_join_training_stats(self, mock_read_csv):
         """Test joining all stats into a single dataframe."""
         fantasy_df = pd.DataFrame({
             'player': ['john_doe', 'jane_smith', 'jane_smith'],
@@ -294,7 +294,7 @@ class TestDataProcessor():
         mock_read_csv.side_effect = [fantasy_df, receiving_df, rushing_df, passing_df, team_df]
 
         joined_df = (
-            self.processor.join_stats(add_advanced_stats=True)
+            self.processor.join_training_stats(add_advanced_stats=True)
             .sort_values(['player', 'year'])
             .reset_index(drop=True)
         )
@@ -355,7 +355,7 @@ class TestDataProcessor():
 
         pd.testing.assert_frame_equal(result, expected_df)
 
-    def test_clean_final_stats(self):
+    def test_clean_stats(self):
         """Test cleaning of final stats dataframe."""
         test_df = pd.DataFrame({
             'player': ['john_doe', 'jane_smith', 'arch_manning'],
@@ -376,7 +376,7 @@ class TestDataProcessor():
         })
 
         cleaned_df = (
-            self.processor.clean_final_stats(test_df)
+            self.processor.clean_stats(test_df, is_training=True)
             .sort_values(['id'])
             .reset_index(drop=True)
         )
