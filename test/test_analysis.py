@@ -23,7 +23,7 @@ class TestDataAnalysis:
             'f3': [12, 0, 8],
             'target': [10, 11, 12]
         })
-        gold_data.to_csv(os.path.join(cls.gold_dir, "final_stats.csv"), index=False)
+        gold_data.to_csv(os.path.join(cls.gold_dir, "training_set.csv"), index=False)
 
         cls.analysis = DataAnalysis(
             data_dir=cls.test_dir,

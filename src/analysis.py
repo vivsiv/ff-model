@@ -1,27 +1,17 @@
-#!/usr/bin/env python3
-"""
-NFL Fantasy Football Feature Engineering
-
-This module combines player and team statistics and creates advanced
-features for fantasy football prediction.
-"""
-
 import os
 import logging
+from typing import List
+
 import pandas as pd
 import matplotlib.pyplot as plt
-import numpy as np
 import seaborn as sns
 from sklearn.feature_selection import mutual_info_regression
-from tqdm import tqdm
-from typing import Dict, List, Set
 
-# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler("feature_engineering.log"),
+        logging.FileHandler("analysis.log"),
         logging.StreamHandler()
     ]
 )
@@ -29,21 +19,19 @@ logger = logging.getLogger(__name__)
 
 
 class DataAnalysis:
-    """Class to analyze the gold table that is used for modeling."""
-
     def __init__(
         self,
         data_dir: str = "../data",
-        metadata_cols: List[str] = [],
-        target_cols: List[str] = [],
+        metadata_cols: List[str] = ["id"],
+        target_cols: List[str] = ["standard_fantasy_points", "standard_fantasy_points_per_game", "ppr_fantasy_points", "ppr_fantasy_points_per_game", "value_over_replacement"],
     ):
 
         self.data_dir = data_dir
         try:
             self.gold_data_dir = os.path.join(data_dir, "gold")
-            self.gold_data = self.load_gold_table()
+            self.training_data = self.load_training_data()
         except Exception as e:
-            logger.error(f"Gold table not found at {self.gold_data_dir}")
+            logger.error(f"Error loading data at: {self.gold_data_dir}: {e}")
             raise e
 
         self.discovery_data_dir = os.path.join(data_dir, "discovery")
@@ -51,19 +39,74 @@ class DataAnalysis:
 
         self.metadata_cols = metadata_cols
         self.target_cols = target_cols
-        self.feature_cols = [col for col in self.gold_data.columns if col not in self.metadata_cols + self.target_cols]
+        self.feature_cols = [col for col in self.training_data.columns if col not in self.metadata_cols + self.target_cols]
 
-    def load_gold_table(self) -> pd.DataFrame:
-        gold_path = os.path.join(self.gold_data_dir, "final_stats.csv")
-        data = pd.read_csv(gold_path)
-        logger.info(f"Loaded gold table: {len(data)} rows")
-        return data
+    def load_training_data(self) -> pd.DataFrame:
+        training_data_path = os.path.join(self.gold_data_dir, "training_set.csv")
+        training_data = pd.read_csv(training_data_path)
+        logger.info(f"Loaded training data: {len(training_data)} rows")
+
+        # live_data_path = os.path.join(self.gold_data_dir, "live_set.csv")
+        # live_data = pd.read_csv(live_data_path)
+        # return training_data, live_data
+
+        return training_data
+
+    def run_data_quality_checks(self) -> None:
+        training_shape = self.training_data.shape
+        assert training_shape[0] > 8000, f"Training data must have at least 8000 rows, got {training_shape[0]}"
+        assert training_shape[1] >= 200, f"Training data must have at least 200 columns, got {training_shape[1]}"
+
+        non_float_columns = self.training_data.select_dtypes(exclude=['float64']).columns
+        assert len(non_float_columns) == 1, f"Id should be the only non float column, got {non_float_columns}"
+        assert self.training_data['id'].dtype == 'object', "Id should be a string"
+
+        duplicates = self.training_data.duplicated()
+        assert not duplicates.any(), f"Training data must not have duplicates, got {duplicates.sum()}"
+
+        null_value_rows = self.training_data.isnull().any(axis=1)
+        assert not null_value_rows.any(), f"Training data must not have rows with null values, got {null_value_rows.sum()}"
+
+        all_zero_rows = self.training_data[self.feature_cols].eq(0).all(axis=1)
+        assert not all_zero_rows.any(), f"Training data must not have rows that are 0 for all features, got {all_zero_rows.sum()}"
+
+        mostly_zero_rows = self.training_data[self.feature_cols].eq(0).sum(axis=1) / len(self.feature_cols) > 0.95
+        assert not mostly_zero_rows.any(), f"Training data must not have rows that are 0 for 95% of features, got {mostly_zero_rows.sum()}"
+
+        # Spot check some known rookies to see that they are not there
+        rookies = ['malik_nabers_2024', 'jamarr_chase_2021', 'saquon_barkley_2018', 'dak_prescott_2016', 'aaron_rodgers_2005']
+        for rookie in rookies:
+            rookie_rows = self.training_data[self.training_data['id'] == rookie]
+            assert len(rookie_rows) == 0, f"Training data must not have rookies, got {rookie}"
+
+        # Spot check some known joins to see that they are correct
+        aaron_rodgers_2012_pass_touchdowns = self.training_data[self.training_data['id'] == 'aaron_rodgers_2012']['pass_touchdowns'].iloc[0]
+        assert aaron_rodgers_2012_pass_touchdowns == 45, f"Aaron Rodgers' 2012 row should have 2011's passing touchdowns (45), got {aaron_rodgers_2012_pass_touchdowns}"
+        christian_mccaffrey_2020_rec_receptions = self.training_data[self.training_data['id'] == 'christian_mccaffrey_2020']['rec_receptions'].iloc[0]
+        assert christian_mccaffrey_2020_rec_receptions == 116, f"Christian McCaffrey's 2020 row should have 2019's receptions (116), got {christian_mccaffrey_2020_rec_receptions}"
+        saquon_barkley_2024_rushing_yards = self.training_data[self.training_data['id'] == 'saquon_barkley_2024']['rush_yards'].iloc[0]
+        assert saquon_barkley_2024_rushing_yards == 962, f"Saquon Barkley's 2024 row should have 2023's rushing yards (962), got {saquon_barkley_2024_rushing_yards}"
+        priest_holmes_2002_rush_touchdowns = self.training_data[self.training_data['id'] == 'priest_holmes_2002']['rush_touchdowns'].iloc[0]
+        assert priest_holmes_2002_rush_touchdowns == 8, f"Priest Holmes' 2002 row should have 2001's rushing touchdowns (8), got {priest_holmes_2002_rush_touchdowns}"
+
+        self.training_data['year'] = self.training_data['id'].str.split('_').str[-1].astype(int)
+
+        # Should have at least 350 rows for each year
+        year_counts = self.training_data['year'].value_counts()
+        year_counts_below_350 = year_counts[year_counts < 350]
+        assert len(year_counts_below_350) == 0, f"Training data must have at least 350 rows for each year, got {year_counts_below_350['year'].tolist()}"
+
+        # Check that the last year of data is dropped
+        last_year_data = self.training_data[self.training_data['year'] == 2000]
+        assert len(last_year_data) == 0, f"Training data must not have the last year of data, got {len(last_year_data)}"
+
+        self.training_data.drop(columns=['year'], inplace=True)
 
     def pearsons_correlation_between_features(self, output_file_name: str = "feature_corr_matrix.csv") -> pd.DataFrame:
         """
         Runs a Pearson correlation analysis between all features.
         """
-        corr_matrix = self.gold_data[self.feature_cols].corr(method='pearson')
+        corr_matrix = self.training_data[self.feature_cols].corr(method='pearson')
         corr_matrix = corr_matrix.round(2)
 
         corr_matrix.to_csv(os.path.join(self.discovery_data_dir, output_file_name))
@@ -75,10 +118,10 @@ class DataAnalysis:
         Runs a Pearson correlation analysis between all features and a single target.
         """
 
-        gold_data_single_target = self.gold_data[self.feature_cols].copy()
-        gold_data_single_target[target] = self.gold_data[target]
+        training_data_single_target = self.training_data[self.feature_cols].copy()
+        training_data_single_target[target] = self.training_data[target]
 
-        corr_matrix = gold_data_single_target.corr(method='pearson')
+        corr_matrix = training_data_single_target.corr(method='pearson')
 
         # Double brackets returns a dataframe as opposed to a series
         # The .drop() call drops the row with index label exam_score (axis is set to 0 by default)
@@ -95,7 +138,7 @@ class DataAnalysis:
         """
         Runs a mutual information analysis between all features and a single target.
         """
-        mutual_info_values = mutual_info_regression(self.gold_data[self.feature_cols], self.gold_data[target], random_state=68)
+        mutual_info_values = mutual_info_regression(self.training_data[self.feature_cols], self.training_data[target], random_state=68)
         mutual_info = pd.DataFrame({
             'feature': self.feature_cols,
             'mi': [round(mi, 2) for mi in mutual_info_values]
@@ -172,16 +215,7 @@ class DataAnalysis:
 
 
 def main():
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    data_dir = os.path.join(os.path.dirname(script_dir), "data")
-    metadata_cols = ["id"]
-    target_cols = ["standard_fantasy_points", "standard_fantasy_points_per_game", "ppr_fantasy_points", "ppr_fantasy_points_per_game", "value_over_replacement"]
-
-    data_analysis = DataAnalysis(
-        data_dir=data_dir,
-        metadata_cols=metadata_cols,
-        target_cols=target_cols,
-    )
+    data_analysis = DataAnalysis()
 
     data_analysis.generate_feature_analysis()
 

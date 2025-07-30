@@ -546,7 +546,7 @@ class DataProcessor:
 
         self.write_to_silver(team_offense_df, "team_offense.csv")
 
-    def join_stats(self, add_advanced_stats: bool = False) -> None:
+    def join_stats(self, add_advanced_stats: bool = False) -> pd.DataFrame:
         """
         Joins the player stats into a single dataframe.
         The training set must use the previous years stats to predict the current years fantasy points
@@ -644,8 +644,8 @@ class DataProcessor:
         joined_df = self.join_stats()
         cleaned_df = self.clean_final_stats(joined_df)
 
-        cleaned_df.to_csv(os.path.join(self.gold_data_dir, "final_stats.csv"), index=False)
-        logger.info(f"Final data saved to {os.path.join(self.gold_data_dir, 'final_stats.csv')}")
+        cleaned_df.to_csv(os.path.join(self.gold_data_dir, "training_set.csv"), index=False)
+        logger.info(f"Final data saved to {os.path.join(self.gold_data_dir, 'training_set.csv')}")
 
 
 def main():
