@@ -120,8 +120,8 @@ class DataAnalysis:
         assert live_shape[0] > 250, f"Live data must have at least 200 rows, got {live_shape[0]}"
         assert live_shape[1] >= 150, f"Live data must have at least 150 columns, got {live_shape[1]}"
 
-        #non_float_columns = self.live_data.select_dtypes(exclude=['float64']).columns
-        #assert len(non_float_columns) == 1, f"Id should be the only non float column, got {non_float_columns}"
+        non_float_columns = self.live_data.select_dtypes(exclude=['float64']).columns
+        assert len(non_float_columns) == 1, f"Id should be the only non float column, got {non_float_columns}"
 
         duplicates = self.live_data.duplicated()
         assert not duplicates.any(), f"Live data must not have duplicates, got {duplicates.sum()}"
@@ -136,19 +136,19 @@ class DataAnalysis:
         assert not mostly_zero_rows.any(), f"Live data must not have rows that are 0 for 95% of features, got {mostly_zero_rows.sum()}"
 
         # Spot check some known rows
-        saquon_barkley_rushing_yards = self.live_data[self.live_data['player'] == 'saquon_barkley']['rush_yards'].iloc[0]
+        saquon_barkley_rushing_yards = self.live_data[self.live_data['id'] == 'saquon_barkley_rb']['rush_yards'].iloc[0]
         assert saquon_barkley_rushing_yards == 2005, f"Saquon Barkley's rushing yards should be 2005, got {saquon_barkley_rushing_yards}"
 
-        jamarr_chase_rec_yards = self.live_data[self.live_data['player'] == 'jamarr_chase']['rec_yards'].iloc[0]
+        jamarr_chase_rec_yards = self.live_data[self.live_data['id'] == 'jamarr_chase_wr']['rec_yards'].iloc[0]
         assert jamarr_chase_rec_yards == 1708, f"Jamarr Chase's rec yards should be 1708, got {jamarr_chase_rec_yards}"
 
-        josh_allen_pass_touchdowns = self.live_data[self.live_data['player'] == 'josh_allen']['pass_touchdowns'].iloc[0]
+        josh_allen_pass_touchdowns = self.live_data[self.live_data['id'] == 'josh_allen_qb']['pass_touchdowns'].iloc[0]
         assert josh_allen_pass_touchdowns == 28, f"Josh Allen's pass touchdowns should be 28, got {josh_allen_pass_touchdowns}"
 
-        josh_allen_rush_touchdowns = self.live_data[self.live_data['player'] == 'josh_allen']['rush_touchdowns'].iloc[0]
+        josh_allen_rush_touchdowns = self.live_data[self.live_data['id'] == 'josh_allen_qb']['rush_touchdowns'].iloc[0]
         assert josh_allen_rush_touchdowns == 12, f"Josh Allen's rush touchdowns should be 12, got {josh_allen_rush_touchdowns}"
 
-        christian_mccaffrey_games = self.live_data[self.live_data['player'] == 'christian_mccaffrey']['games'].iloc[0]
+        christian_mccaffrey_games = self.live_data[self.live_data['id'] == 'christian_mccaffrey_rb']['games'].iloc[0]
         assert christian_mccaffrey_games == 4, f"Christian McCaffrey's games should be 4, got {christian_mccaffrey_games}"
 
     def pearsons_correlation_between_features(self, output_file_name: str = "feature_corr_matrix.csv") -> pd.DataFrame:

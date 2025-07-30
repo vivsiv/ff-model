@@ -412,7 +412,7 @@ class TestDataProcessor():
 
         pd.testing.assert_frame_equal(joined_df, expected_df)
 
-    def test_clean_stats(self):
+    def test_clean_training_stats(self):
         """Test cleaning of final stats dataframe."""
         test_df = pd.DataFrame({
             'player': ['john_doe', 'jane_smith', 'arch_manning'],
@@ -452,3 +452,31 @@ class TestDataProcessor():
 
         pd.testing.assert_frame_equal(cleaned_df, expected_df)
 
+    def test_clean_stats_live(self):
+        test_df = pd.DataFrame({
+            'player': ['john_doe', 'jane_smith', 'arch_manning'],
+            'position': ['WR', 'RB', 'QB'],
+            'team': ['PHI', 'DAL', 'NYG'],
+            'rec_yards': [1500, 500, np.nan],
+            'rush_yards': [200, 1000, np.nan],
+            'pass_yards': [np.nan, np.nan, 3500],
+            'team_points': [400, 350, 250],
+            'age': [28.0, 25.0, 22.0],
+        })
+
+        cleaned_df = (
+            self.processor.clean_stats(test_df, is_training=False)
+            .sort_values(['id'])
+            .reset_index(drop=True)
+        )
+
+        expected_df = pd.DataFrame({
+            'id': ['john_doe_WR', 'jane_smith_RB', 'arch_manning_QB'],
+            'rec_yards': [1500.0, 500.0, 0.0],
+            'rush_yards': [200.0, 1000.0, 0.0],
+            'pass_yards': [0.0, 0.0, 3500.0],
+            'team_points': [400.0, 350.0, 250.0],
+            'age': [28.0, 25.0, 22.0],
+        }).sort_values(['id']).reset_index(drop=True)
+
+        pd.testing.assert_frame_equal(cleaned_df, expected_df)

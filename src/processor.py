@@ -646,6 +646,9 @@ class DataProcessor:
             # Make an id column that is player_year
             final_df.insert(0, 'id', final_df['player'].astype(str) + '_' + final_df['year'].astype(str))
             final_df = final_df.drop(columns=['player', 'year', 'team'])
+        else:
+            final_df.insert(0, 'id', final_df['player'].astype(str) + '_' + final_df['position'].str.lower())
+            final_df = final_df.drop(columns=['player', 'position', 'team'])
 
         # Combine awards columns into a single awards column
         final_df = self.collapse_duplicate_columns(final_df, ['pass_awards', 'rush_awards', 'rec_awards'], 'awards')
