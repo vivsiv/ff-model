@@ -297,6 +297,7 @@ class DataProcessor:
         select_columns = [
             'player',
             'team',
+            'year',
             'age',
             'standard_fantasy_points',
             'ppr_fantasy_points',
@@ -343,6 +344,9 @@ class DataProcessor:
             transformations={'player': self.standardize_name, 'rec_awards': self.parse_awards},
         )
 
+        excluded_columns = {'rank', 'team', 'position', 'games_started', 'rec_longest_reception', 'rec_fumbles'}
+        select_columns = [col for col in normalized_column_names if col not in excluded_columns] + ['year']
+
         ratio_column_pairs = [('rec_targets', 'rec_games'), ('rec_touchdowns', 'rec_games'), ('rec_first_downs', 'rec_games')]
         receiving_stats_df, added_ratio_columns = self.add_ratio_stats(receiving_stats_df, ratio_column_pairs)
 
@@ -353,11 +357,7 @@ class DataProcessor:
             rollup_columns=rollup_columns,
         )
 
-        excluded_columns = {'rank', 'team', 'position', 'games_started', 'rec_longest_reception', 'rec_fumbles'}
-        select_columns = [col for col in normalized_column_names if col not in excluded_columns]
-        select_columns = select_columns + added_rollup_columns + added_ratio_columns
-
-        receiving_stats_df = receiving_stats_df[select_columns]
+        receiving_stats_df = receiving_stats_df[select_columns + added_rollup_columns + added_ratio_columns]
 
         self.write_to_silver(receiving_stats_df, "player_receiving_stats.csv")
 
@@ -393,6 +393,9 @@ class DataProcessor:
             transformations={'player': self.standardize_name, 'rush_awards': self.parse_awards},
         )
 
+        excluded_columns = {'rank', 'team', 'position', 'games_started', 'rush_longest_rush', 'rush_fumbles'}
+        select_columns = [col for col in normalized_column_names if col not in excluded_columns] + ['year']
+
         ratio_column_pairs = [('rush_touchdowns', 'rush_games'), ('rush_first_downs', 'rush_games')]
         rushing_stats_df, added_ratio_columns = self.add_ratio_stats(rushing_stats_df, ratio_column_pairs)
 
@@ -403,10 +406,7 @@ class DataProcessor:
             rollup_columns=rollup_columns,
         )
 
-        excluded_columns = {'rank', 'team', 'position', 'games_started', 'rush_longest_rush', 'rush_fumbles'}
-        select_columns = [col for col in normalized_column_names if col not in excluded_columns]
-        select_columns = select_columns + added_rollup_columns + added_ratio_columns
-        rushing_stats_df = rushing_stats_df[select_columns]
+        rushing_stats_df = rushing_stats_df[select_columns + added_rollup_columns + added_ratio_columns]
 
         self.write_to_silver(rushing_stats_df, "player_rushing_stats.csv")
 
@@ -457,6 +457,9 @@ class DataProcessor:
             transformations={'player': self.standardize_name, 'pass_awards': self.parse_awards},
         )
 
+        excluded_columns = {'rank', 'team', 'position', 'games_started', 'pass_record', 'pass_longest_pass', 'pass_fourth_quarter_comebacks', 'pass_game_winning_drives'}
+        select_columns = [col for col in normalized_column_names if col not in excluded_columns] + ['year']
+
         ratio_column_pairs = [('pass_touchdowns', 'pass_games'), ('pass_interceptions', 'pass_games'), ('pass_first_downs', 'pass_games'), ('pass_sacks', 'pass_games'), ('pass_sack_yards', 'pass_games')]
         passing_stats_df, added_ratio_columns = self.add_ratio_stats(passing_stats_df, ratio_column_pairs)
 
@@ -467,10 +470,7 @@ class DataProcessor:
             rollup_columns=rollup_columns,
         )
 
-        excluded_columns = {'rank', 'team', 'position', 'games_started', 'pass_record', 'pass_longest_pass', 'pass_fourth_quarter_comebacks', 'pass_game_winning_drives'}
-        select_columns = [col for col in normalized_column_names if col not in excluded_columns]
-        select_columns = select_columns + added_rollup_columns + added_ratio_columns
-        passing_stats_df = passing_stats_df[select_columns]
+        passing_stats_df = passing_stats_df[select_columns + added_rollup_columns + added_ratio_columns]
 
         self.write_to_silver(passing_stats_df, "player_passing_stats.csv")
 
@@ -531,6 +531,9 @@ class DataProcessor:
             transformations={'team': self.standardize_team_name},
         )
 
+        excluded_columns = {'rank', 'games'}
+        select_columns = [col for col in normalized_column_names if col not in excluded_columns] + ['year']
+
         rollup_columns = ['team_points', 'team_yards', 'team_plays', 'team_yards_per_play']
         team_offense_df, added_rollup_columns = self.create_rollup_stats(
             stats_df=team_offense_df,
@@ -539,10 +542,7 @@ class DataProcessor:
         )
         team_offense_df = self.add_league_average_rows(team_offense_df)
 
-        excluded_columns = {'rank', 'games'}
-        select_columns = [col for col in normalized_column_names if col not in excluded_columns]
-        select_columns = select_columns + added_rollup_columns
-        team_offense_df = team_offense_df[select_columns]
+        team_offense_df = team_offense_df[select_columns + added_rollup_columns]
 
         self.write_to_silver(team_offense_df, "team_offense.csv")
 
@@ -582,50 +582,23 @@ class DataProcessor:
 
         return joined_df.drop(columns=['join_year', 'join_age'])
 
+    def collapse_duplicate_columns(self, df: pd.DataFrame, duplicate_columns: List[str], new_column_name: str) -> pd.DataFrame:
+        """
+        Collapses duplicate columns into a single column.
+        """
+        if all(col in df.columns for col in duplicate_columns):
+            df[new_column_name] = df[duplicate_columns].max(axis=1)
+            df = df.drop(columns=duplicate_columns)
+        return df
+
     def clean_final_stats(self, joined_df: pd.DataFrame) -> pd.DataFrame:
         """
         Cleans the final stats dataframe.
         """
         final_df = joined_df.copy()
 
-        # Convert age to float
-        final_df['age'] = final_df['age'].astype(float)
-
-        # Combine awards columns into a single awards column
-        awards_columns = ['pass_awards', 'rush_awards', 'rec_awards']
-        if all(col in final_df.columns for col in awards_columns):
-            final_df.loc[:, 'awards'] = final_df.loc[:, awards_columns].max(axis=1)
-            final_df = final_df.drop(columns=awards_columns)
-
-        # Combine multiple games columns into one column.
-        games_columns = ['pass_games', 'rush_games', 'rec_games']
-        if all(col in final_df.columns for col in games_columns):
-            final_df.loc[:, 'games'] = final_df.loc[:, games_columns].max(axis=1)
-            final_df = final_df.drop(columns=games_columns)
-
-        # Combine multiple 2 yr avg games columns into one column.
-        games_2yr_avg_columns = ['pass_games_2_yr_avg', 'rush_games_2_yr_avg', 'rec_games_2_yr_avg']
-        if all(col in final_df.columns for col in games_2yr_avg_columns):
-            final_df.loc[:, 'games_2_yr_avg'] = final_df.loc[:, games_2yr_avg_columns].mean(axis=1)
-            final_df = final_df.drop(columns=games_2yr_avg_columns)
-
-        # Combine multiple 3 yr avg games columns into one column.
-        games_3yr_avg_columns = ['pass_games_3_yr_avg', 'rush_games_3_yr_avg', 'rec_games_3_yr_avg']
-        if all(col in final_df.columns for col in games_3yr_avg_columns):
-            final_df.loc[:, 'games_3_yr_avg'] = final_df.loc[:, games_3yr_avg_columns].mean(axis=1)
-            final_df = final_df.drop(columns=games_3yr_avg_columns)
-
-        # Fill any numeric columns with null values with 0, and round to 2 decimal places
-        numeric_columns = final_df.select_dtypes(include=[np.number]).columns
-        fill_columns = [col for col in numeric_columns if col != 'year']
-        final_df.loc[:, fill_columns] = final_df.loc[:, fill_columns].fillna(0).round(2)
-
-        # Drop any rows where the player is null or an empty string
-        final_df = final_df.loc[(final_df['player'].notna()) & (final_df['player'] != '')]
-
-        # Rookies are players who have 0's for all games stats.
-        if all(col in final_df.columns for col in ['games', 'games_2_yr_avg', 'games_3_yr_avg']):
-            final_df = final_df[(final_df['games'] > 0) | (final_df['games_2_yr_avg'] > 0) | (final_df['games_3_yr_avg'] > 0)]
+        # Drop any rows where the player is null or an empty string, Does this happen? Should probably be done earlier if so.
+        # final_df = final_df.loc[(final_df['player'].notna()) & (final_df['player'] != '')]
 
         # Drop the first year of data as it will have 0 for all stats
         final_df = final_df[final_df['year'] != final_df['year'].min()]
@@ -633,6 +606,22 @@ class DataProcessor:
         # Make an id column that is player_year
         final_df.insert(0, 'id', final_df['player'].astype(str) + '_' + final_df['year'].astype(str))
         final_df = final_df.drop(columns=['player', 'year', 'team'])
+
+        # Combine awards columns into a single awards column
+        final_df = self.collapse_duplicate_columns(final_df, ['pass_awards', 'rush_awards', 'rec_awards'], 'awards')
+
+        # Combine multiple games columns into one column.
+        final_df = self.collapse_duplicate_columns(final_df, ['pass_games', 'rush_games', 'rec_games'], 'games')
+        final_df = self.collapse_duplicate_columns(final_df, ['pass_games_2_yr_avg', 'rush_games_2_yr_avg', 'rec_games_2_yr_avg'], 'games_2_yr_avg')
+        final_df = self.collapse_duplicate_columns(final_df, ['pass_games_3_yr_avg', 'rush_games_3_yr_avg', 'rec_games_3_yr_avg'], 'games_3_yr_avg')
+
+        # Fill null values in feature columns with 0 and round to 2 decimal places
+        feature_columns = final_df.select_dtypes(include=[np.number]).columns
+        final_df[feature_columns] = final_df[feature_columns].fillna(0).astype(float).round(2)
+
+        # Exclude rookies (rookies are players who have 0's for all games stats.)
+        if all(col in final_df.columns for col in ['games', 'games_2_yr_avg', 'games_3_yr_avg']):
+            final_df = final_df[(final_df['games'] > 0) | (final_df['games_2_yr_avg'] > 0) | (final_df['games_3_yr_avg'] > 0)]
 
         return final_df
 
