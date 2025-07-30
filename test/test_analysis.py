@@ -16,14 +16,23 @@ class TestDataAnalysis:
 
         os.makedirs(cls.gold_dir)
 
-        gold_data = pd.DataFrame({
+        training_data = pd.DataFrame({
             'id': ['x', 'y', 'z'],
             'f1': [1, 2, 3],
             'f2': [100, 50, 0],
             'f3': [12, 0, 8],
             'target': [10, 11, 12]
         })
-        gold_data.to_csv(os.path.join(cls.gold_dir, "training_set.csv"), index=False)
+        training_data.to_csv(os.path.join(cls.gold_dir, "training_set.csv"), index=False)
+
+        live_data = pd.DataFrame({
+            'id': ['d'],
+            'f1': [4],
+            'f2': [24],
+            'f3': [7],
+            'target': [5]
+        })
+        live_data.to_csv(os.path.join(cls.gold_dir, "live_set.csv"), index=False)
 
         cls.analysis = DataAnalysis(
             data_dir=cls.test_dir,

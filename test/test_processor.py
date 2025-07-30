@@ -355,6 +355,63 @@ class TestDataProcessor():
 
         pd.testing.assert_frame_equal(result, expected_df)
 
+    @patch('pandas.read_csv')
+    def test_join_live_stats(self, mock_read_csv):
+        """Test joining live stats."""
+        player_df = pd.DataFrame({
+            'player': ['john_doe', 'jane_smith', 'arch_manning'],
+            'position': ['WR', 'RB', 'QB'],
+            'team': ['PHI', 'DAL', 'NYG'],
+        })
+
+        receiving_df = pd.DataFrame({
+            'player': ['john_doe', 'jane_smith'],
+            'year': [2022, 2022],
+            'age': [27.0, 24.0],
+            'rec_yards': [1500, 500]
+        })
+
+        rushing_df = pd.DataFrame({
+            'player': ['john_doe', 'jane_smith'],
+            'year': [2022, 2022],
+            'age': [27.0, 24.0],
+            'rush_yards': [200, 1000]
+        })
+
+        passing_df = pd.DataFrame({
+            'player': ['arch_manning'],
+            'year': [2022],
+            'age': [21.0],
+            'pass_yards': [3500.0]
+        })
+
+        team_df = pd.DataFrame({
+            'team': ['PHI', 'DAL', 'NYG'],
+            'year': [2022, 2022, 2022],
+            'team_points': [400, 350, 250]
+        })
+
+        mock_read_csv.side_effect = [player_df, receiving_df, rushing_df, passing_df, team_df]
+
+        joined_df = (
+            self.processor.join_live_stats(current_year=2023)
+            .sort_values(['player'])
+            .reset_index(drop=True)
+        )
+
+        expected_df = pd.DataFrame({
+            'player': ['john_doe', 'jane_smith', 'arch_manning'],
+            'position': ['WR', 'RB', 'QB'],
+            'team': ['PHI', 'DAL', 'NYG'],
+            'rec_yards': [1500, 500, np.nan],
+            'rush_yards': [200, 1000, np.nan],
+            'pass_yards': [np.nan, np.nan, 3500],
+            'team_points': [400, 350, 250],
+            'age': [28.0, 25.0, 22.0],
+        }).sort_values(['player']).reset_index(drop=True)
+
+        pd.testing.assert_frame_equal(joined_df, expected_df)
+
     def test_clean_stats(self):
         """Test cleaning of final stats dataframe."""
         test_df = pd.DataFrame({
@@ -394,3 +451,4 @@ class TestDataProcessor():
         }).sort_values(['id']).reset_index(drop=True)
 
         pd.testing.assert_frame_equal(cleaned_df, expected_df)
+

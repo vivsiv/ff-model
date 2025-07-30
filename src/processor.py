@@ -85,7 +85,7 @@ class DataProcessor:
             "New York Jets": "NYJ",
             "New England Patriots": "NWE",
             "New Orleans Saints": "NOR",
-            "Saint Louis Rams": "STL",
+            "St. Louis Rams": "STL",
             "San Diego Chargers": "SDG",
             "San Francisco 49ers": "SFO",
         }
@@ -347,19 +347,20 @@ class DataProcessor:
         )
 
         excluded_columns = {'rank', 'team', 'position', 'games_started', 'rec_longest_reception', 'rec_fumbles'}
-        select_columns = [col for col in normalized_column_names if col not in excluded_columns] + ['year']
+        base_columns = [col for col in normalized_column_names if col not in excluded_columns]
 
         ratio_column_pairs = [('rec_targets', 'rec_games'), ('rec_touchdowns', 'rec_games'), ('rec_first_downs', 'rec_games')]
         receiving_stats_df, added_ratio_columns = self.add_ratio_stats(receiving_stats_df, ratio_column_pairs)
 
-        rollup_columns = [col for col in select_columns if col not in ['player', 'age', 'rec_awards']] + added_ratio_columns
+        rollup_columns = [col for col in base_columns if col not in ['player', 'age', 'rec_awards']] + added_ratio_columns
         receiving_stats_df, added_rollup_columns = self.create_rollup_stats(
             stats_df=receiving_stats_df,
             grouping_columns=['player'],
             rollup_columns=rollup_columns,
         )
 
-        receiving_stats_df = receiving_stats_df[select_columns + added_rollup_columns + added_ratio_columns]
+        select_columns = base_columns + ['year'] + added_rollup_columns + added_ratio_columns
+        receiving_stats_df = receiving_stats_df[select_columns]
 
         self.write_to_silver(receiving_stats_df, "player_receiving_stats.csv")
 
@@ -396,19 +397,20 @@ class DataProcessor:
         )
 
         excluded_columns = {'rank', 'team', 'position', 'games_started', 'rush_longest_rush', 'rush_fumbles'}
-        select_columns = [col for col in normalized_column_names if col not in excluded_columns] + ['year']
+        base_columns = [col for col in normalized_column_names if col not in excluded_columns]
 
         ratio_column_pairs = [('rush_touchdowns', 'rush_games'), ('rush_first_downs', 'rush_games')]
         rushing_stats_df, added_ratio_columns = self.add_ratio_stats(rushing_stats_df, ratio_column_pairs)
 
-        rollup_columns = [col for col in select_columns if col not in ['player', 'age', 'rush_awards']] + added_ratio_columns
+        rollup_columns = [col for col in base_columns if col not in ['player', 'age', 'rush_awards']] + added_ratio_columns
         rushing_stats_df, added_rollup_columns = self.create_rollup_stats(
             stats_df=rushing_stats_df,
             grouping_columns=['player'],
             rollup_columns=rollup_columns,
         )
 
-        rushing_stats_df = rushing_stats_df[select_columns + added_rollup_columns + added_ratio_columns]
+        select_columns = base_columns + ['year'] + added_rollup_columns + added_ratio_columns
+        rushing_stats_df = rushing_stats_df[select_columns]
 
         self.write_to_silver(rushing_stats_df, "player_rushing_stats.csv")
 
@@ -460,19 +462,20 @@ class DataProcessor:
         )
 
         excluded_columns = {'rank', 'team', 'position', 'games_started', 'pass_record', 'pass_longest_pass', 'pass_fourth_quarter_comebacks', 'pass_game_winning_drives'}
-        select_columns = [col for col in normalized_column_names if col not in excluded_columns] + ['year']
+        base_columns = [col for col in normalized_column_names if col not in excluded_columns]
 
         ratio_column_pairs = [('pass_touchdowns', 'pass_games'), ('pass_interceptions', 'pass_games'), ('pass_first_downs', 'pass_games'), ('pass_sacks', 'pass_games'), ('pass_sack_yards', 'pass_games')]
         passing_stats_df, added_ratio_columns = self.add_ratio_stats(passing_stats_df, ratio_column_pairs)
 
-        rollup_columns = [col for col in select_columns if col not in ['player', 'age', 'pass_awards']] + added_ratio_columns
+        rollup_columns = [col for col in base_columns if col not in ['player', 'age', 'pass_awards']] + added_ratio_columns
         passing_stats_df, added_rollup_columns = self.create_rollup_stats(
             stats_df=passing_stats_df,
             grouping_columns=['player'],
             rollup_columns=rollup_columns,
         )
 
-        passing_stats_df = passing_stats_df[select_columns + added_rollup_columns + added_ratio_columns]
+        select_columns = base_columns + ['year'] + added_rollup_columns + added_ratio_columns
+        passing_stats_df = passing_stats_df[select_columns]
 
         self.write_to_silver(passing_stats_df, "player_passing_stats.csv")
 
@@ -534,7 +537,7 @@ class DataProcessor:
         )
 
         excluded_columns = {'rank', 'games'}
-        select_columns = [col for col in normalized_column_names if col not in excluded_columns] + ['year']
+        base_columns = [col for col in normalized_column_names if col not in excluded_columns]
 
         rollup_columns = ['team_points', 'team_yards', 'team_plays', 'team_yards_per_play']
         team_offense_df, added_rollup_columns = self.create_rollup_stats(
@@ -544,7 +547,8 @@ class DataProcessor:
         )
         team_offense_df = self.add_league_average_rows(team_offense_df)
 
-        team_offense_df = team_offense_df[select_columns + added_rollup_columns]
+        select_columns = base_columns + ['year'] + added_rollup_columns
+        team_offense_df = team_offense_df[select_columns]
 
         self.write_to_silver(team_offense_df, "team_offense.csv")
 
@@ -594,7 +598,7 @@ class DataProcessor:
         join_year = current_year - 1
 
         receiving_stats_df = pd.read_csv(os.path.join(self.silver_data_dir, "player_receiving_stats.csv"))
-        receiving_stats_df = receiving_stats_df[receiving_stats_df['year'] == current_year].drop(columns=['year'])
+        receiving_stats_df = receiving_stats_df[receiving_stats_df['year'] == join_year].drop(columns=['year'])
         receiving_stats_df = receiving_stats_df.rename(columns={'age': 'age_receiving'})
 
         rushing_stats_df = pd.read_csv(os.path.join(self.silver_data_dir, "player_rushing_stats.csv"))
