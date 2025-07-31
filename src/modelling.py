@@ -1,7 +1,8 @@
 import os
 import logging
-
+from typing import Tuple
 from datetime import datetime
+
 import pandas as pd
 import mlflow
 from mlflow.tracking import MlflowClient
@@ -237,7 +238,7 @@ class FantasyModel:
 
         return grid_search
 
-    def load_model(self, model_type: str, model_version: int = None) -> Pipeline:
+    def load_model(self, model_type: str, model_version: int = None) -> Tuple[Pipeline, int]:
         if model_version is None:
             client = MlflowClient()
             latest_version = client.get_latest_versions(f"{self.target_col}_{model_type}", stages=["None"])[0].version
@@ -247,7 +248,7 @@ class FantasyModel:
 
         pipeline = mlflow.sklearn.load_model(f"models:/{self.target_col}_{model_type}/{model_version}")
 
-        return pipeline
+        return pipeline, model_version
 
     def view_year_test_predictions(self, preds_df: pd.DataFrame, year: int) -> pd.DataFrame:
         preds_df["year"] = preds_df["id"].str.split("_").str[-1].astype(int)
@@ -258,7 +259,7 @@ class FantasyModel:
         return preds_df.drop(columns=["year"])
 
     def make_test_predictions(self, data: dict[str, pd.DataFrame], model_type: str, model_version: int = None, log_year: int = 2024) -> pd.DataFrame:
-        pipeline = self.load_model(model_type, model_version)
+        pipeline, model_version = self.load_model(model_type, model_version)
 
         y_pred = pipeline.predict(data["X_test"])
         mlflow.set_experiment(self.target_col)
@@ -269,11 +270,10 @@ class FantasyModel:
             "actual": data["y_test"]
         })
 
-        with mlflow.start_run(run_name=f"test_{model_type}_v{model_version}"):
+        with mlflow.start_run(run_name=f"test_{model_type}"):
             mlflow.set_tag("phase", "test")
 
-            mlflow.log_param("model_name", f"{self.target_col}_{model_type}")
-            mlflow.log_param("model_version", model_version)
+            mlflow.log_param("model_name", f"{self.target_col}_{model_type}_v{model_version}")
 
             score = pipeline.score(data["X_test"], data["y_test"])
             print(f"R^2 score: {score}")
@@ -284,12 +284,20 @@ class FantasyModel:
             mlflow.log_metric("rmse", rmse)
 
             log_year_preds_df = self.view_year_test_predictions(preds_df, log_year)
-            mlflow.log_artifact(log_year_preds_df, f"predictions_{log_year}")
+            log_year_preds_df["player"] = log_year_preds_df["id"].str.split("_").str[:-1].str.join("_")
+            log_year_preds_df["year"] = log_year_preds_df["id"].str.split("_").str[-1].astype(int)
+            log_year_preds_df.drop(columns=["id"], inplace=True)
+            log_year_preds_df.sort_values(by="predictions", ascending=False, inplace=True)
+
+            csv_path = os.path.join(self.predictions_dir, f"test_predictions_{log_year}.csv")
+            log_year_preds_df.to_csv(csv_path, index=False)
+
+            mlflow.log_artifact(csv_path, f"test_predictions_{log_year}")
 
         return preds_df
 
     def make_live_predictions(self, data: dict[str, pd.DataFrame], model_type: str, model_version: int = None) -> pd.DataFrame:
-        pipeline = self.load_model(model_type, model_version)
+        pipeline, model_version = self.load_model(model_type, model_version)
 
         y_pred = pipeline.predict(self.live_features)
 
@@ -297,14 +305,22 @@ class FantasyModel:
             "id": self.live_ids,
             "predictions": y_pred,
         })
+        preds_df["player"] = preds_df["id"].str.split("_").str[:-1].str.join("_")
+        preds_df["position"] = preds_df["id"].str.split("_").str[-1]
+        preds_df.drop(columns=["id"], inplace=True)
+        preds_df.sort_values(by="predictions", ascending=False, inplace=True)
+
+        csv_path = os.path.join(self.predictions_dir, "live_predictions.csv")
+        preds_df.to_csv(csv_path, index=False)
 
         with mlflow.start_run(run_name=f"live_{model_type}_v{model_version}"):
             mlflow.set_tag("phase", "live")
-            mlflow.log_param("model_name", f"{self.target_col}_{model_type}")
-            mlflow.log_param("model_version", model_version)
-            mlflow.log_artifact(preds_df, "predictions")
+            mlflow.log_param("model_name", f"{self.target_col}_{model_type}_v{model_version}")
+
+            mlflow.log_artifact(csv_path, "predictions")
 
         return preds_df
+
 
 def main():
     ppr_model = FantasyModel(target_col="ppr_fantasy_points")
