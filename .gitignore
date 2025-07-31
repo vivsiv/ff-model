@@ -6,6 +6,7 @@ data/discovery/
 data/html/
 data/mlruns/
 data/predictions/
+data/rankings/
 
 # Jupyter Notebook
 .ipynb_checkpoints

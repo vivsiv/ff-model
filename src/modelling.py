@@ -254,8 +254,6 @@ class FantasyModel:
         preds_df["year"] = preds_df["id"].str.split("_").str[-1].astype(int)
         preds_df = preds_df[preds_df["year"] == year].sort_values(by=["predictions", "actual"], ascending=False)
 
-        preds_df.to_csv(os.path.join(self.predictions_dir, f"{self.target_col}_{year}_predictions.csv"), index=False)
-
         return preds_df.drop(columns=["year"])
 
     def make_test_predictions(self, data: dict[str, pd.DataFrame], model_type: str, model_version: int = None, log_year: int = 2024) -> pd.DataFrame:
@@ -270,7 +268,7 @@ class FantasyModel:
             "actual": data["y_test"]
         })
 
-        with mlflow.start_run(run_name=f"test_{model_type}"):
+        with mlflow.start_run(run_name=f"test_{model_type}_{model_version}"):
             mlflow.set_tag("phase", "test")
 
             mlflow.log_param("model_name", f"{self.target_col}_{model_type}_v{model_version}")
@@ -286,11 +284,13 @@ class FantasyModel:
             log_year_preds_df = self.view_year_test_predictions(preds_df, log_year)
             log_year_preds_df["player"] = log_year_preds_df["id"].str.split("_").str[:-1].str.join("_")
             log_year_preds_df["year"] = log_year_preds_df["id"].str.split("_").str[-1].astype(int)
-            log_year_preds_df.drop(columns=["id"], inplace=True)
             log_year_preds_df.sort_values(by="predictions", ascending=False, inplace=True)
+            log_year_preds_df.rename(columns={"predictions": self.target_col}, inplace=True)
+            log_year_preds_df[self.target_col] = log_year_preds_df[self.target_col].round(2)
+            log_year_preds_df.drop(columns=["id"], inplace=True)
 
-            csv_path = os.path.join(self.predictions_dir, f"test_predictions_{log_year}.csv")
-            log_year_preds_df.to_csv(csv_path, index=False)
+            csv_path = os.path.join(self.predictions_dir, f"{self.target_col}_{log_year}_predictions.csv")
+            log_year_preds_df[["player", "year", self.target_col, "actual"]].to_csv(csv_path, index=False)
 
             mlflow.log_artifact(csv_path, f"test_predictions_{log_year}")
 
@@ -305,13 +305,16 @@ class FantasyModel:
             "id": self.live_ids,
             "predictions": y_pred,
         })
+
         preds_df["player"] = preds_df["id"].str.split("_").str[:-1].str.join("_")
         preds_df["position"] = preds_df["id"].str.split("_").str[-1]
-        preds_df.drop(columns=["id"], inplace=True)
         preds_df.sort_values(by="predictions", ascending=False, inplace=True)
+        preds_df.rename(columns={"predictions": self.target_col}, inplace=True)
+        preds_df[self.target_col] = preds_df[self.target_col].round(2)
+        preds_df.drop(columns=["id"], inplace=True)
 
-        csv_path = os.path.join(self.predictions_dir, "live_predictions.csv")
-        preds_df.to_csv(csv_path, index=False)
+        csv_path = os.path.join(self.predictions_dir, f"{self.target_col}_live_predictions.csv")
+        preds_df[["player", "position", self.target_col]].to_csv(csv_path, index=False)
 
         with mlflow.start_run(run_name=f"live_{model_type}_v{model_version}"):
             mlflow.set_tag("phase", "live")
