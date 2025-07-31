@@ -107,7 +107,7 @@ class DataAnalysis:
         # Should have at least 350 rows for each year
         year_counts = self.training_data['year'].value_counts()
         year_counts_below_350 = year_counts[year_counts < 350]
-        assert len(year_counts_below_350) == 0, f"Training data must have at least 350 rows for each year, got {year_counts_below_350['year'].tolist()}"
+        assert len(year_counts_below_350) == 0, f"Training data must have at least 350 rows for each year, got {year_counts_below_350.index.tolist()}"
 
         # Check that the last year of data is dropped
         last_year_data = self.training_data[self.training_data['year'] == 2000]
@@ -117,7 +117,7 @@ class DataAnalysis:
 
     def run_live_data_quality_checks(self) -> None:
         live_shape = self.live_data.shape
-        assert live_shape[0] > 250, f"Live data must have at least 200 rows, got {live_shape[0]}"
+        assert live_shape[0] > 200, f"Live data must have at least 200 rows, got {live_shape[0]}"
         assert live_shape[1] >= 150, f"Live data must have at least 150 columns, got {live_shape[1]}"
 
         non_float_columns = self.live_data.select_dtypes(exclude=['float64']).columns

@@ -290,7 +290,7 @@ class DataProcessor:
             transformations={'player': self.standardize_name},
         )
 
-        # TODO: Remove any rows where ppr_fantasy_points is null or 0
+        # TODO: Remove any rows where ppr_fantasy_points is 0
         fantasy_stats_df = fantasy_stats_df[fantasy_stats_df['ppr_fantasy_points'].notna()]
 
         ratio_column_pairs = [('standard_fantasy_points', 'games'), ('ppr_fantasy_points', 'games')]
@@ -552,7 +552,7 @@ class DataProcessor:
 
         self.write_to_silver(team_offense_df, "team_offense.csv")
 
-    def join_training_stats(self, add_advanced_stats: bool = False) -> pd.DataFrame:
+    def join_training_stats(self) -> pd.DataFrame:
         """
         Joins the player stats into a single dataframe.
         The training set must use the previous years stats to predict the current years fantasy points
