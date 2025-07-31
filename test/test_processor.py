@@ -471,7 +471,7 @@ class TestDataProcessor():
         )
 
         expected_df = pd.DataFrame({
-            'id': ['john_doe_WR', 'jane_smith_RB', 'arch_manning_QB'],
+            'id': ['john_doe_wr', 'jane_smith_rb', 'arch_manning_qb'],
             'rec_yards': [1500.0, 500.0, 0.0],
             'rush_yards': [200.0, 1000.0, 0.0],
             'pass_yards': [0.0, 0.0, 3500.0],
