@@ -102,15 +102,32 @@ class Rankings:
         final_rankings['overall_rank'] = range(1, len(final_rankings) + 1)
 
         rankings_path = os.path.join(self.rankings_dir, f"{self.target_col}_{self.year}_rankings.csv")
-        final_rankings[["player", "position", "overall_rank", 'position_rank', 'value_over_bench']].to_csv(rankings_path, index=False)
+        final_rankings[["player", "position", "overall_rank", 'position_rank', self.target_col, 'value_over_bench']].to_csv(rankings_path, index=False)
         logger.info(f"Rankings saved to {rankings_path}")
 
         return final_rankings
 
+    def save_position_rankings(self, overall_rankings: pd.DataFrame) -> None:
+        """Save rankings split by position to separate CSV files."""
+
+        for position in overall_rankings['position'].unique():
+            position_df = overall_rankings[overall_rankings['position'] == position].copy()
+
+            position_df = position_df.sort_values('position_rank')
+
+            position_file = os.path.join(self.rankings_dir, f"{self.target_col}_{self.year}_{position}_rankings.csv")
+            position_df[["player", "position", "overall_rank", 'position_rank', self.target_col, 'value_over_bench']].to_csv(position_file, index=False)
+
+            logger.info(f"Saved {position.upper()} rankings to {position_file} ({len(position_df)} players)")
+
+        logger.info(f"All position rankings saved to {self.rankings_dir}")
+
 
 def main():
-    rankings = Rankings()
-    ppr_ppg_2025_rankings = rankings.build_rankings(target_col="ppr_fantasy_points_per_game", year=2025)
+    rankings = Rankings(year=2025, target_col="ppr_fantasy_points_per_game")
+    ppr_ppg_2025_rankings = rankings.build_rankings()
+
+    rankings.save_position_rankings(ppr_ppg_2025_rankings)
 
     print(f"Top 10 {rankings.target_col} rankings for {rankings.year}:")
     print(ppr_ppg_2025_rankings.head(10))
