@@ -294,7 +294,7 @@ class TestDataProcessor():
         mock_read_csv.side_effect = [fantasy_df, receiving_df, rushing_df, passing_df, team_df]
 
         joined_df = (
-            self.processor.join_training_stats(add_advanced_stats=True)
+            self.processor.join_training_stats()
             .sort_values(['player', 'year'])
             .reset_index(drop=True)
         )
