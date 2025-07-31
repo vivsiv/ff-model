@@ -1,4 +1,8 @@
 import os
+import logging
+from typing import Tuple
+from datetime import datetime
+
 import pandas as pd
 import mlflow
 from mlflow.tracking import MlflowClient
@@ -14,7 +18,16 @@ from sklearn.svm import SVR
 from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.model_selection import train_test_split, GridSearchCV
 from typing import Any
-from datetime import datetime
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("analysis.log"),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
 
 
 class FantasyModel:
@@ -33,7 +46,7 @@ class FantasyModel:
     ):
         self.data_dir = data_dir
         self.gold_data_dir = os.path.join(data_dir, "gold")
-        self.gold_data = self.load_gold_table()
+        self.training_data, self.live_data = self.load_data()
 
         self.tracking_dir = os.path.join(data_dir, "mlruns")
         os.makedirs(self.tracking_dir, exist_ok=True)
@@ -47,18 +60,27 @@ class FantasyModel:
             raise ValueError(f"Target column {target_col} not in {possible_targets}")
         self.target_col = target_col
 
-        self.feature_cols = [col for col in self.gold_data.columns if col not in [self.id_col] + possible_targets]
+        self.feature_cols = [col for col in self.training_data.columns if col not in [self.id_col] + possible_targets]
 
-        self.Id = self.gold_data[self.id_col]
-        self.X = self.gold_data[self.feature_cols]
-        self.Y = self.gold_data[self.target_col]
+        self.train_ids = self.training_data[self.id_col]
+        self.train_features = self.training_data[self.feature_cols]
+        self.train_target = self.training_data[self.target_col]
 
-    def load_gold_table(self) -> pd.DataFrame:
-        return pd.read_csv(os.path.join(self.gold_data_dir, "final_stats.csv"))
+        self.live_ids = self.live_data[self.id_col]
+        self.live_features = self.live_data[self.feature_cols]
+
+    def load_data(self) -> pd.DataFrame:
+        train_data = pd.read_csv(os.path.join(self.gold_data_dir, "training_set.csv"))
+        logger.info(f"Loaded training data: {len(train_data)} rows")
+
+        live_data = pd.read_csv(os.path.join(self.gold_data_dir, "live_set.csv"))
+        logger.info(f"Loaded live data: {len(live_data)} rows")
+
+        return train_data, live_data
 
     def split_data(self) -> dict[str, pd.DataFrame]:
         X_train, X_test, y_train, y_test, Id_train, Id_test = train_test_split(
-            self.X, self.Y, self.Id, test_size=0.2, random_state=42
+            self.train_features, self.train_target, self.train_ids, test_size=0.2, random_state=42
         )
         data = {
             "X_train": X_train,
@@ -216,7 +238,7 @@ class FantasyModel:
 
         return grid_search
 
-    def make_test_predictions(self, data: dict[str, pd.DataFrame], model_type: str, model_version: int = None) -> pd.DataFrame:
+    def load_model(self, model_type: str, model_version: int = None) -> Tuple[Pipeline, int]:
         if model_version is None:
             client = MlflowClient()
             latest_version = client.get_latest_versions(f"{self.target_col}_{model_type}", stages=["None"])[0].version
@@ -226,14 +248,32 @@ class FantasyModel:
 
         pipeline = mlflow.sklearn.load_model(f"models:/{self.target_col}_{model_type}/{model_version}")
 
+        return pipeline, model_version
+
+    def view_year_test_predictions(self, preds_df: pd.DataFrame, year: int) -> pd.DataFrame:
+        preds_df["year"] = preds_df["id"].str.split("_").str[-1].astype(int)
+        preds_df = preds_df[preds_df["year"] == year].sort_values(by=["predictions", "actual"], ascending=False)
+
+        preds_df.to_csv(os.path.join(self.predictions_dir, f"{self.target_col}_{year}_predictions.csv"), index=False)
+
+        return preds_df.drop(columns=["year"])
+
+    def make_test_predictions(self, data: dict[str, pd.DataFrame], model_type: str, model_version: int = None, log_year: int = 2024) -> pd.DataFrame:
+        pipeline, model_version = self.load_model(model_type, model_version)
+
         y_pred = pipeline.predict(data["X_test"])
         mlflow.set_experiment(self.target_col)
 
-        with mlflow.start_run(run_name=f"test_v{model_version}"):
+        preds_df = pd.DataFrame({
+            "id": data["Id_test"],
+            "predictions": y_pred,
+            "actual": data["y_test"]
+        })
+
+        with mlflow.start_run(run_name=f"test_{model_type}"):
             mlflow.set_tag("phase", "test")
 
-            mlflow.log_param("model_name", f"{self.target_col}_{model_type}")
-            mlflow.log_param("model_version", model_version)
+            mlflow.log_param("model_name", f"{self.target_col}_{model_type}_v{model_version}")
 
             score = pipeline.score(data["X_test"], data["y_test"])
             print(f"R^2 score: {score}")
@@ -243,23 +283,43 @@ class FantasyModel:
             print(f"RMSE: {rmse}")
             mlflow.log_metric("rmse", rmse)
 
-            # TODO: log a final model?
+            log_year_preds_df = self.view_year_test_predictions(preds_df, log_year)
+            log_year_preds_df["player"] = log_year_preds_df["id"].str.split("_").str[:-1].str.join("_")
+            log_year_preds_df["year"] = log_year_preds_df["id"].str.split("_").str[-1].astype(int)
+            log_year_preds_df.drop(columns=["id"], inplace=True)
+            log_year_preds_df.sort_values(by="predictions", ascending=False, inplace=True)
 
-        preds_df = pd.DataFrame({
-            "id": data["Id_test"],
-            "predictions": y_pred,
-            "actual": data["y_test"]
-        })
+            csv_path = os.path.join(self.predictions_dir, f"test_predictions_{log_year}.csv")
+            log_year_preds_df.to_csv(csv_path, index=False)
+
+            mlflow.log_artifact(csv_path, f"test_predictions_{log_year}")
 
         return preds_df
 
-    def view_year_test_predictions(self, preds_df: pd.DataFrame, year: int) -> pd.DataFrame:
-        preds_df["year"] = preds_df["id"].str.split("_").str[-1].astype(int)
-        preds_df = preds_df[preds_df["year"] == year].sort_values(by=["predictions", "actual"], ascending=False)
+    def make_live_predictions(self, data: dict[str, pd.DataFrame], model_type: str, model_version: int = None) -> pd.DataFrame:
+        pipeline, model_version = self.load_model(model_type, model_version)
 
-        preds_df.to_csv(os.path.join(self.predictions_dir, f"{self.target_col}_{year}_predictions.csv"), index=False)
+        y_pred = pipeline.predict(self.live_features)
 
-        return preds_df.drop(columns=["year"])
+        preds_df = pd.DataFrame({
+            "id": self.live_ids,
+            "predictions": y_pred,
+        })
+        preds_df["player"] = preds_df["id"].str.split("_").str[:-1].str.join("_")
+        preds_df["position"] = preds_df["id"].str.split("_").str[-1]
+        preds_df.drop(columns=["id"], inplace=True)
+        preds_df.sort_values(by="predictions", ascending=False, inplace=True)
+
+        csv_path = os.path.join(self.predictions_dir, "live_predictions.csv")
+        preds_df.to_csv(csv_path, index=False)
+
+        with mlflow.start_run(run_name=f"live_{model_type}_v{model_version}"):
+            mlflow.set_tag("phase", "live")
+            mlflow.log_param("model_name", f"{self.target_col}_{model_type}_v{model_version}")
+
+            mlflow.log_artifact(csv_path, "predictions")
+
+        return preds_df
 
 
 def main():
@@ -275,11 +335,14 @@ def main():
     # ppr_model.run_model_tuning(data, "svr")
     # ppr_model.run_model_tuning(data, "hist_gradient_boosting")
 
-    preds_df = ppr_model.make_test_predictions(data, chosen_model_type)
+    test_preds_df = ppr_model.make_test_predictions(data, chosen_model_type)
 
     view_year = 2024
     print(f"Predictions for {ppr_model.target_col} in {view_year}:")
-    print(ppr_model.view_year_test_predictions(preds_df, view_year))
+    print(ppr_model.view_year_test_predictions(test_preds_df, view_year))
+
+    live_preds_df = ppr_model.make_live_predictions(data, chosen_model_type)
+    print(live_preds_df)
 
 
 if __name__ == "__main__":

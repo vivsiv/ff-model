@@ -1,9 +1,7 @@
-import pytest
+from bs4 import BeautifulSoup
 from unittest.mock import patch
 
 from src.scraper import ProFootballReferenceScraper
-
-from bs4 import BeautifulSoup
 
 
 class TestProFootballReferenceScraper():

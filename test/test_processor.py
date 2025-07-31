@@ -1,18 +1,18 @@
 import os
 import tempfile
 import shutil
-from unittest.mock import patch, MagicMock
-import pandas as pd
+
 import numpy as np
+import pandas as pd
 import pytest
+from unittest.mock import patch
 
-from src.processor import FantasyDataProcessor
+from src.processor import DataProcessor
 
 
-class TestFantasyDataProcessor():
+class TestDataProcessor():
     @classmethod
     def setup_class(cls):
-        """Set up test fixtures with temporary directories."""
         cls.test_dir = tempfile.mkdtemp()
         cls.bronze_dir = os.path.join(cls.test_dir, "bronze")
         cls.silver_dir = os.path.join(cls.test_dir, "silver")
@@ -22,11 +22,10 @@ class TestFantasyDataProcessor():
         os.makedirs(cls.silver_dir)
         os.makedirs(cls.gold_dir)
 
-        cls.processor = FantasyDataProcessor(data_dir=cls.test_dir)
+        cls.processor = DataProcessor(data_dir=cls.test_dir)
 
     @classmethod
     def teardown_class(cls):
-        """Clean up temporary directories."""
         shutil.rmtree(cls.test_dir)
 
     def test_standardize_name(self):
@@ -66,17 +65,33 @@ class TestFantasyDataProcessor():
         assert self.processor.parse_awards(None) == 0.0
         assert self.processor.parse_awards("") == 0.0
 
+    def test_merge_multi_player_rows(self):
+        """Test merging of multi-player rows."""
+        test_df = pd.DataFrame({
+            'player': ['john_doe', 'jane_smith', 'jane_smith', 'jane_smith'],
+            'team': ['PHI', '2TM', 'DAL', 'WAS'],
+            'points': [100, 90, 80, 70]
+        })
+
+        result = self.processor.merge_multi_player_rows(test_df)
+
+        expected_df = pd.DataFrame({
+            'player': ['john_doe', 'jane_smith'],
+            'team': ['PHI', '2TM'],
+            'points': [100, 90]
+        })
+
+        pd.testing.assert_frame_equal(result, expected_df)
+
     def test_combine_year_data_success(self):
         """Test successful combination of year data."""
         # Create test CSV files
         test_data_2023 = pd.DataFrame({
-            'Rank': [1, 2, None, 3, 4, 5],
             'Player': ['John Doe', 'Jane Smith', "League Average", "Alice Brown", "Alice Brown", "Alice Brown"],
             'Team': ['PHI', 'DAL', "", "2TM", "NYJ", "NYG"],
             'Points': [100, 90, 95, 80, 30, 50],
         })
         test_data_2024 = pd.DataFrame({
-            'Rank': [1, 3, 2],
             'Player': ['Bob Johnson', 'Alice Brown+', 'John Doe'],
             'Team': ['MIA', 'NYG', 'PHI'],
             'Points': [110, 95, 105]
@@ -87,8 +102,7 @@ class TestFantasyDataProcessor():
         # Combine data
         result = self.processor.combine_year_data(
             file_pattern="*_test_stats.csv",
-            normalized_column_names=['rank', 'player', 'team', 'points'],
-            select_columns=['player', 'team', 'points'],
+            normalized_column_names=['player', 'team', 'points'],
             transformations={'player': self.processor.standardize_name}
         ).sort_values(['player', 'year']).reset_index(drop=True)
 
@@ -154,12 +168,13 @@ class TestFantasyDataProcessor():
             'touchdowns': [5, 6, 7, 3, 4]
         })
 
-        result = self.processor.create_rollup_stats(
+        result, generated_columns = self.processor.create_rollup_stats(
             stats_df=test_df,
             grouping_columns=['player'],
             rollup_columns=['yards', 'touchdowns'],
             max_rollup_window=3
-        ).sort_values(['player', 'year']).reset_index(drop=True)
+        )
+        result = result.sort_values(['player', 'year']).reset_index(drop=True)
 
         expected_df = pd.DataFrame({
             'player': ['jane_smith', 'jane_smith', 'john_doe', 'john_doe', 'john_doe'],
@@ -214,8 +229,31 @@ class TestFantasyDataProcessor():
 
         pd.testing.assert_frame_equal(result, expected_df)
 
+    def test_add_league_average_rows_no_team_stats(self):
+        test_df = pd.DataFrame({
+            'year': [2023, 2023, 2022, 2022],
+            'team': ['PHI', 'DAL', 'PHI', 'DAL'],
+            'points': [100, 90, 120, 110],
+            'yards': [5000, 4000, 6000, 5000]
+        })
+
+        result = (
+            self.processor.add_league_average_rows(test_df)
+            .sort_values(['year', 'team'])
+            .reset_index(drop=True)
+        )
+
+        expected_df = pd.DataFrame({
+            'year': [2023, 2023, 2023, 2022, 2022, 2022],
+            'team': ['PHI', 'DAL', '2TM', 'PHI', 'DAL', '2TM'],
+            'points': [100.0, 90.0, 95.0, 120.0, 110.0, 115.0],
+            'yards': [5000.0, 4000.0, 4500.0, 6000.0, 5000.0, 5500.0]
+        }).sort_values(['year', 'team']).reset_index(drop=True)
+
+        pd.testing.assert_frame_equal(result, expected_df)
+
     @patch('pandas.read_csv')
-    def test_join_stats(self, mock_read_csv):
+    def test_join_training_stats(self, mock_read_csv):
         """Test joining all stats into a single dataframe."""
         fantasy_df = pd.DataFrame({
             'player': ['john_doe', 'jane_smith', 'jane_smith'],
@@ -232,25 +270,11 @@ class TestFantasyDataProcessor():
             'rec_yards': [600, 1000, 1200, 800]
         })
 
-        receiving_advanced_df = pd.DataFrame({
-            'player': ['john_doe', 'john_doe', 'john_doe', 'jane_smith'],
-            'year': [2021, 2022, 2023, 2022],
-            'age': [23.0, 24.0, 25.0, 22.0],
-            'adot': [6, 10, 12, 8]
-        })
-
         rushing_df = pd.DataFrame({
             'player': ['john_doe', 'john_doe', 'john_doe'],
             'year': [2021, 2022, 2023],
             'age': [23.0, 24.0, 25.0],
             'rush_yards': [500, 600, 700]
-        })
-
-        rushing_advanced_df = pd.DataFrame({
-            'player': ['john_doe', 'john_doe', 'john_doe'],
-            'year': [2021, 2022, 2023],
-            'age': [23.0, 24.0, 25.0],
-            'yac': [5, 6, 7]
         })
 
         passing_df = pd.DataFrame({
@@ -267,12 +291,10 @@ class TestFantasyDataProcessor():
         })
 
         # Have each call to pd.read_csv return each of the test dataframes
-        mock_read_csv.side_effect = [
-            fantasy_df, receiving_df, rushing_df, passing_df, team_df, receiving_advanced_df, rushing_advanced_df
-        ]
+        mock_read_csv.side_effect = [fantasy_df, receiving_df, rushing_df, passing_df, team_df]
 
         joined_df = (
-            self.processor.join_stats(add_advanced_stats=True)
+            self.processor.join_training_stats()
             .sort_values(['player', 'year'])
             .reset_index(drop=True)
         )
@@ -287,36 +309,131 @@ class TestFantasyDataProcessor():
             'rush_yards': [600, np.nan, np.nan],
             'pass_yards': [3500, np.nan, 700],
             'team_points': [350, 300, 250],
-            'adot': [10, 8, np.nan],
-            'yac': [6, np.nan, np.nan],
         }).sort_values(['player', 'year']).reset_index(drop=True)
 
         pd.testing.assert_frame_equal(joined_df, expected_df)
 
-    def test_clean_final_stats(self):
+    def test_collapse_duplicate_columns(self):
+        """Test collapsing duplicate columns."""
+        test_df = pd.DataFrame({
+            'player': ['john_doe', 'jane_smith', 'arch_manning'],
+            'year': [2023, 2023, 2023],
+            'rush_awards': [1, 2, 0],
+            'pass_awards': [0, 0, 3],
+            'rec_awards': [1, 1, 0],
+        })
+
+        result = self.processor.collapse_duplicate_columns(test_df, ['rush_awards', 'pass_awards', 'rec_awards'], 'awards')
+        result = result.sort_values(['player', 'year']).reset_index(drop=True)
+
+        expected_df = pd.DataFrame({
+            'player': ['john_doe', 'jane_smith', 'arch_manning'],
+            'year': [2023, 2023, 2023],
+            'awards': [1, 2, 3],
+        }).sort_values(['player', 'year']).reset_index(drop=True)
+
+        pd.testing.assert_frame_equal(result, expected_df)
+
+    def test_collapse_duplicate_columns_all_null(self):
+        """Test collapsing duplicate columns with all null values."""
+        test_df = pd.DataFrame({
+            'player': ['john_doe', 'jane_smith', 'arch_manning'],
+            'year': [2023, 2023, 2023],
+            'rush_awards': [np.nan, np.nan, np.nan],
+            'pass_awards': [np.nan, np.nan, np.nan],
+            'rec_awards': [np.nan, np.nan, np.nan],
+        })
+
+        result = self.processor.collapse_duplicate_columns(test_df, ['rush_awards', 'pass_awards', 'rec_awards'], 'awards')
+        result = result.sort_values(['player', 'year']).reset_index(drop=True)
+
+        expected_df = pd.DataFrame({
+            'player': ['john_doe', 'jane_smith', 'arch_manning'],
+            'year': [2023, 2023, 2023],
+            'awards': [np.nan, np.nan, np.nan],
+        }).sort_values(['player', 'year']).reset_index(drop=True)
+
+        pd.testing.assert_frame_equal(result, expected_df)
+
+    @patch('pandas.read_csv')
+    def test_join_live_stats(self, mock_read_csv):
+        """Test joining live stats."""
+        player_df = pd.DataFrame({
+            'player': ['john_doe', 'jane_smith', 'arch_manning'],
+            'position': ['WR', 'RB', 'QB'],
+            'team': ['PHI', 'DAL', 'NYG'],
+        })
+
+        receiving_df = pd.DataFrame({
+            'player': ['john_doe', 'jane_smith'],
+            'year': [2022, 2022],
+            'age': [27.0, 24.0],
+            'rec_yards': [1500, 500]
+        })
+
+        rushing_df = pd.DataFrame({
+            'player': ['john_doe', 'jane_smith'],
+            'year': [2022, 2022],
+            'age': [27.0, 24.0],
+            'rush_yards': [200, 1000]
+        })
+
+        passing_df = pd.DataFrame({
+            'player': ['arch_manning'],
+            'year': [2022],
+            'age': [21.0],
+            'pass_yards': [3500.0]
+        })
+
+        team_df = pd.DataFrame({
+            'team': ['PHI', 'DAL', 'NYG'],
+            'year': [2022, 2022, 2022],
+            'team_points': [400, 350, 250]
+        })
+
+        mock_read_csv.side_effect = [player_df, receiving_df, rushing_df, passing_df, team_df]
+
+        joined_df = (
+            self.processor.join_live_stats(current_year=2023)
+            .sort_values(['player'])
+            .reset_index(drop=True)
+        )
+
+        expected_df = pd.DataFrame({
+            'player': ['john_doe', 'jane_smith', 'arch_manning'],
+            'position': ['WR', 'RB', 'QB'],
+            'team': ['PHI', 'DAL', 'NYG'],
+            'rec_yards': [1500, 500, np.nan],
+            'rush_yards': [200, 1000, np.nan],
+            'pass_yards': [np.nan, np.nan, 3500],
+            'team_points': [400, 350, 250],
+            'age': [28.0, 25.0, 22.0],
+        }).sort_values(['player']).reset_index(drop=True)
+
+        pd.testing.assert_frame_equal(joined_df, expected_df)
+
+    def test_clean_training_stats(self):
         """Test cleaning of final stats dataframe."""
         test_df = pd.DataFrame({
-            'player': ['john_doe', 'jane_smith', '', 'arch_manning'],
-            'year': [2023, 2023, 1970, 1970],
-            'age': [27, 26, 40, 21],
-            'team': ['PHI', 'DAL', 'HUH', 'NYG'],
-            'fantasy_points': [100, 90, np.nan, 50],
-            'rec_yards': [1000.0, 800.233, np.nan, 0],
-            'adot': [10, 8, np.nan, 0],
-            'rush_yards': [600, 0, np.nan, 0],
-            'yac': [6, 0, np.nan, 0],
-            'pass_yards': [3500, 0, np.nan, 1000],
-            'team_points': [350, 300, np.nan, 100],
-            'rec_awards': [1, 0, 0, 0],
-            'rush_awards': [1, 0, 0, 0],
-            'pass_awards': [0, 2, 0, 0],
-            'rec_games': [15, 15, 0, 0],
-            'rush_games': [16, 0, 0, 0],
-            'pass_games': [16, 0, 0, 16],
+            'player': ['john_doe', 'jane_smith', 'arch_manning'],
+            'year': [2023, 2023, 1970],
+            'age': [27, 26, 21],
+            'team': ['PHI', 'DAL', 'NYG'],
+            'fantasy_points': [100, 90, 50],
+            'rec_yards': [1000.0, 800.233, np.nan],
+            'rush_yards': [600, np.nan, 0],
+            'pass_yards': [3500, np.nan, 1000],
+            'team_points': [350, 300, 100],
+            'rec_awards': [1, 0, 0],
+            'rush_awards': [1, 0, 0],
+            'pass_awards': [0, 2, 0],
+            'rec_games': [16, 15, 0],
+            'rush_games': [16, 0, 0],
+            'pass_games': [16, 0, 15],
         })
 
         cleaned_df = (
-            self.processor.clean_final_stats(test_df)
+            self.processor.clean_stats(test_df, is_training=True)
             .sort_values(['id'])
             .reset_index(drop=True)
         )
@@ -326,13 +443,40 @@ class TestFantasyDataProcessor():
             'age': [27.0, 26.0],
             'fantasy_points': [100.0, 90.0],
             'rec_yards': [1000.0, 800.23],
-            'adot': [10.0, 8.0],
             'rush_yards': [600.0, 0.0],
-            'yac': [6.0, 0.0],
             'pass_yards': [3500.0, 0.0],
             'team_points': [350.0, 300.0],
-            'awards': [1, 2],
-            'games': [16, 15],
+            'awards': [1.0, 2.0],
+            'games': [16.0, 15.0],
+        }).sort_values(['id']).reset_index(drop=True)
+
+        pd.testing.assert_frame_equal(cleaned_df, expected_df)
+
+    def test_clean_stats_live(self):
+        test_df = pd.DataFrame({
+            'player': ['john_doe', 'jane_smith', 'arch_manning'],
+            'position': ['WR', 'RB', 'QB'],
+            'team': ['PHI', 'DAL', 'NYG'],
+            'rec_yards': [1500, 500, np.nan],
+            'rush_yards': [200, 1000, np.nan],
+            'pass_yards': [np.nan, np.nan, 3500],
+            'team_points': [400, 350, 250],
+            'age': [28.0, 25.0, 22.0],
+        })
+
+        cleaned_df = (
+            self.processor.clean_stats(test_df, is_training=False)
+            .sort_values(['id'])
+            .reset_index(drop=True)
+        )
+
+        expected_df = pd.DataFrame({
+            'id': ['john_doe_wr', 'jane_smith_rb', 'arch_manning_qb'],
+            'rec_yards': [1500.0, 500.0, 0.0],
+            'rush_yards': [200.0, 1000.0, 0.0],
+            'pass_yards': [0.0, 0.0, 3500.0],
+            'team_points': [400.0, 350.0, 250.0],
+            'age': [28.0, 25.0, 22.0],
         }).sort_values(['id']).reset_index(drop=True)
 
         pd.testing.assert_frame_equal(cleaned_df, expected_df)

@@ -5,10 +5,10 @@ import pytest
 import pandas as pd
 from unittest.mock import patch
 
-from src.feature_engineering import FantasyFeatureEngineer
+from src.analysis import DataAnalysis
 
 
-class TestFantasyFeatureEngineer:
+class TestDataAnalysis:
     @classmethod
     def setup_class(cls):
         cls.test_dir = tempfile.mkdtemp()
@@ -16,16 +16,25 @@ class TestFantasyFeatureEngineer:
 
         os.makedirs(cls.gold_dir)
 
-        gold_data = pd.DataFrame({
+        training_data = pd.DataFrame({
             'id': ['x', 'y', 'z'],
             'f1': [1, 2, 3],
             'f2': [100, 50, 0],
             'f3': [12, 0, 8],
             'target': [10, 11, 12]
         })
-        gold_data.to_csv(os.path.join(cls.gold_dir, "final_stats.csv"), index=False)
+        training_data.to_csv(os.path.join(cls.gold_dir, "training_set.csv"), index=False)
 
-        cls.feature_eng = FantasyFeatureEngineer(
+        live_data = pd.DataFrame({
+            'id': ['d'],
+            'f1': [4],
+            'f2': [24],
+            'f3': [7],
+            'target': [5]
+        })
+        live_data.to_csv(os.path.join(cls.gold_dir, "live_set.csv"), index=False)
+
+        cls.analysis = DataAnalysis(
             data_dir=cls.test_dir,
             metadata_cols=['id'],
             target_cols=['target']
@@ -91,15 +100,15 @@ class TestFantasyFeatureEngineer:
 
     @pytest.fixture
     def test_pearsons_correlation_with_target(self):
-        corr_matrix = self.feature_eng.pearsons_correlation_with_target('target')
+        corr_matrix = self.analysis.pearsons_correlation_with_target('target')
         assert corr_matrix.columns.tolist() == ['feature', 'p_corr']
         assert sorted(corr_matrix['feature'].tolist()) == ['f1', 'f2', 'f3']
 
     def test_mutual_information_with_target(self):
-        with patch('src.feature_engineering.mutual_info_regression') as mock_mi:
+        with patch('src.analysis.mutual_info_regression') as mock_mi:
             mock_mi.return_value = [0.8, 0.3, 0.9]
 
-            mi_df = self.feature_eng.mutual_information_with_target('target').sort_values(by='feature')
+            mi_df = self.analysis.mutual_information_with_target('target').sort_values(by='feature')
 
             expected_df = pd.DataFrame({
                 'feature': ['f1', 'f2', 'f3'],
