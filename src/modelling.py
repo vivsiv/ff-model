@@ -268,7 +268,7 @@ class FantasyModel:
             "actual": data["y_test"]
         })
 
-        with mlflow.start_run(run_name=f"test_{model_type}_{model_version}"):
+        with mlflow.start_run(run_name=f"test_{model_type}_v{model_version}"):
             mlflow.set_tag("phase", "test")
 
             mlflow.log_param("model_name", f"{self.target_col}_{model_type}_v{model_version}")

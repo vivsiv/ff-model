@@ -25,9 +25,9 @@ class LeagueFormat:
     ):
         self.total_picks = (qbs_per_team + rbs_per_team + wrs_per_team + tes_per_team + flex_per_team) * teams
         self.qbs_picked = qbs_per_team * teams
-        self.rbs_picked = rbs_per_team * teams + (0.33 * teams * flex_per_team)
-        self.wrs_picked = wrs_per_team * teams + (0.33 * teams * flex_per_team)
-        self.tes_picked = tes_per_team * teams + (0.33 * teams * flex_per_team)
+        self.rbs_picked = (rbs_per_team + (0.5 * flex_per_team)) * teams
+        self.wrs_picked = (wrs_per_team + (0.5 * flex_per_team)) * teams
+        self.tes_picked = tes_per_team * teams
 
 
 class Rankings:
@@ -37,8 +37,8 @@ class Rankings:
         target_col: str,
         data_dir: str = "../data",
         league_format: LeagueFormat = LeagueFormat(
-            teams=12, qbs_per_team=1, rbs_per_team=2, 
-            wrs_per_team=2, tes_per_team=1, flex_per_team=1
+            teams=12, qbs_per_team=1, rbs_per_team=2,
+            wrs_per_team=2, tes_per_team=1, flex_per_team=1,
         )
     ):
         self.data_dir = data_dir
@@ -92,17 +92,17 @@ class Rankings:
                     if len(position_rankings) > 0 else 0
                 )
 
-            position_rankings['value_over_bench'] = position_rankings[self.target_col] - replacement_value
-            position_rankings['value_over_bench'] = position_rankings['value_over_bench'].round(2)
+            position_rankings['points_over_bench'] = position_rankings[self.target_col] - replacement_value
+            position_rankings['points_over_bench'] = position_rankings['points_over_bench'].round(2)
             processed_positions.append(position_rankings)
 
         final_rankings = pd.concat(processed_positions, ignore_index=True)
-        final_rankings = final_rankings.sort_values(by='value_over_bench', ascending=False)
+        final_rankings = final_rankings.sort_values(by='points_over_bench', ascending=False)
 
         final_rankings['overall_rank'] = range(1, len(final_rankings) + 1)
 
         rankings_path = os.path.join(self.rankings_dir, f"{self.target_col}_{self.year}_rankings.csv")
-        final_rankings[["player", "position", "overall_rank", 'position_rank', self.target_col, 'value_over_bench']].to_csv(rankings_path, index=False)
+        final_rankings[["player", "position", "overall_rank", 'position_rank', self.target_col, 'points_over_bench']].to_csv(rankings_path, index=False)
         logger.info(f"Rankings saved to {rankings_path}")
 
         return final_rankings
@@ -116,7 +116,7 @@ class Rankings:
             position_df = position_df.sort_values('position_rank')
 
             position_file = os.path.join(self.rankings_dir, f"{self.target_col}_{self.year}_{position}_rankings.csv")
-            position_df[["player", "position", "overall_rank", 'position_rank', self.target_col, 'value_over_bench']].to_csv(position_file, index=False)
+            position_df[["player", "position", "overall_rank", 'position_rank', self.target_col, 'points_over_bench']].to_csv(position_file, index=False)
 
             logger.info(f"Saved {position.upper()} rankings to {position_file} ({len(position_df)} players)")
 
