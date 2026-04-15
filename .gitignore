@@ -13,6 +13,7 @@ data/rankings/
 */.ipynb_checkpoints/*
 
 # Python
+.python-version
 __pycache__/
 *.py[cod]
 *$py.class
