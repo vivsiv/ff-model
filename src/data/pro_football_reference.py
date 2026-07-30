@@ -28,47 +28,46 @@ class ProFootballReferenceScraper:
         Initialize the scraper.
 
         Args:
-            data_dir: Directory to save scraped data
+            data_dir: Root directory to save scraped data
         """
         self.base_url = "https://www.pro-football-reference.com"
 
         self.data_dir = data_dir 
-        os.makedirs(self.data_dir, exist_ok=True)
+        self.html_dir = os.path.join(data_dir, "html")
+        self.bronze_dir = os.path.join(data_dir, "bronze")
 
-        self.html_dir = os.path.join(data_dir, "raw")
-        os.makedirs(self.html_dir, exist_ok=True)
-
-        self.bronze_data_dir = os.path.join(data_dir, "bronze")
-        os.makedirs(self.bronze_data_dir, exist_ok=True)
+        for d in [self.data_dir, self.html_dir, self.bronze_dir]:
+            os.makedirs(d, exist_ok=True)
 
         self.session = requests.Session()
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         })
 
-    def _get_soup(self, url: str, html_table_path: str, delay: float = 3.0, overwrite: bool = False) -> BeautifulSoup:
+    def _get_html_page_soup(self, 
+        url: str,
+        html_page_path: str,
+        delay: float = 3.0,
+        overwrite: bool = False) -> BeautifulSoup:
         """
-        Get BeautifulSoup object from URL with rate limiting.
+        Send a web request for a url.
 
         Args:
             url: URL to scrape
-            html_table_path: Fully qualified path that the html table exists at or will be saved to.
-            delay: Time to wait between requests (seconds)
-            overwrite: Overwrite the existing html file (default: False)
+            html_page_path: Fully qualified path that the scraped html page will be saved to.
+            delay: Time (in seconds) to wait between requests.
+            overwrite: Whether or not to overwrite an existing html file. (default: False)
 
         Returns:
-            BeautifulSoup object
+            A BeautifulSoup object wrapping the response for the requested url.
         """
 
-        # If the file specified by html_table_path exsists, use it. 
-        # Otherwise scrape the web and save to this location.
-        if os.path.exists(html_table_path) and not overwrite:
-            logger.info(f"Using existing html file {html_table_path}")
-            with open(html_table_path, "r", encoding="utf-8") as f:
+        if os.path.exists(html_page_path) and not overwrite:
+            logger.info(f"{url} already saved at {html_page_path}. skipping...")
+            with open(html_page_path, "r", encoding="utf-8") as f:
                 html_content = f.read()
             return BeautifulSoup(html_content, 'lxml')
 
-        # Add jitter to delay to avoid detection
         time.sleep(delay + random.uniform(0.5, 1.5))
 
         try:
@@ -76,7 +75,7 @@ class ProFootballReferenceScraper:
             response = self.session.get(url)
             response.raise_for_status()
 
-            with open(html_table_path, "w", encoding="utf-8") as f:
+            with open(html_page_path, "w", encoding="utf-8") as f:
                 f.write(response.text)
 
             return BeautifulSoup(response.text, 'lxml')
@@ -84,30 +83,25 @@ class ProFootballReferenceScraper:
             logger.error(f"Error fetching {url}: {e}")
             return None
 
-    def scrape_html_table(self, url: str, html_table_file: str, table_id: str, year: int, overwrite: bool = False) -> pd.DataFrame:
+    def scrape_html_table(self,
+        html_page_soup: BeautifulSoup,
+        table_id: str,
+        year: int) -> pd.DataFrame:
         """
-        Scrape an HTML table from a URL.
+        Scrape an HTML table object from an html page.
 
         Args:
-            url: URL to scrape
-            html_table_file: File the html table is in or will be saved to
+            html_page_soup: BeautifulSoup object wrapping an html page.
             table_id: ID of the table to scrape
             year: Year of the data
-            overwrite: Overwrite the existing html file (default: False)
 
         Returns:
             DataFrame with the scraped table data
         """
-        html_table_path = os.path.join(self.html_dir, f"{html_table_file}.html")
-        soup = self._get_soup(url, html_table_path, overwrite=overwrite)
-        if not soup:
-            logger.error(f"Failed to get data for {url}")
-            return pd.DataFrame()
-
-        table = soup.find('table', id=table_id)
+        table = html_page_soup.find('table', id=table_id)
         if not table:
             # Try to find the table inside HTML comments
-            for comment in soup.find_all(string=lambda text: isinstance(text, Comment)):
+            for comment in html_page_soup.find_all(string=lambda text: isinstance(text, Comment)):
                 comment_soup = BeautifulSoup(comment, 'lxml')
                 table = comment_soup.find('table', id=table_id)
                 if table:
@@ -115,13 +109,13 @@ class ProFootballReferenceScraper:
                     break
 
         if not table:
-            logger.error(f"Table with id '{table_id}' not found on {url}")
+            logger.error(f"Table with id '{table_id}' not found.")
             return pd.DataFrame()
 
         # Extract columns from thead elements
         columns = [th.get_text(strip=True) for th in table.find('thead').find_all('th')]
 
-        # Extract data from tbody elements
+        # Extract rows from tbody elements
         rows = []
         for tr in table.find('tbody').find_all('tr'):
             # Skip column names
@@ -132,18 +126,18 @@ class ProFootballReferenceScraper:
 
         if len(rows) > 0:
             # Adjust columns to match whats in the data, this ignores category headers that precede the actual data.
-            actual_column_count = len(rows[0])
-            # If we have more headers than actual columns, take the last N headers
-            if len(columns) > actual_column_count:
-                original_count = len(columns)
-                columns = columns[-actual_column_count:]
-                logger.info(f"Adjusted headers from {original_count} to {actual_column_count}")
-            elif len(columns) < actual_column_count:
+            header_column_count = len(columns)
+            data_column_count = len(rows[0])
+            # If we have more headers than actual columns, take the last N header columns
+            if header_column_count > data_column_count:
+                columns = columns[-data_column_count:]
+                logger.info(f"Adjusted headers from {header_column_count} to {data_column_count}")
+            elif header_column_count < data_column_count:
                 # Add dummy column names for extra data columns
-                extra_cols_needed = actual_column_count - len(columns)
-                for i in range(extra_cols_needed):
+                dummy_col_count = data_column_count - header_column_count
+                for i in range(dummy_col_count):
                     columns.append(f"Unknown_Col_{i+1}")
-                logger.info(f"Added {extra_cols_needed} dummy columns")
+                logger.info(f"Added {dummy_col_count} dummy columns")
             else:
                 logger.info(f"Headers and data columns match for {year}")
         else:
@@ -152,28 +146,39 @@ class ProFootballReferenceScraper:
 
         return pd.DataFrame(rows, columns=columns)
 
-    def scrape_player_fantasy_stats(self, year: int) -> None:
+    def scrape_player_fantasy_stats(self, year: int, overwrite: bool = False) -> pd.DataFrame:
         """
-        Scrape fantasy stats for a specific season.
+        Scrape a player's fantasy stats for a specific season and save them to a file
+        in the bronze layer.
 
         Args:
-            year: NFL season year (e.g., 2023)
+            year: NFL season (e.g., 2023)
+            overwrite: Overwrite the existing html file (default: False)
 
         Returns:
-            None (saves data to bronze layer)
+            DataFrame containing the players stats.
         """
         url = f"{self.base_url}/years/{year}/fantasy.htm"
+        html_page_path = os.path.join(self.html_dir, f"{year}_player_fantasy_stats.html")
+        html_page_soup = self._get_html_page_soup(url, html_page_path, overwrite=overwrite)
 
-        df = self.scrape_html_table(url, f"{year}_player_fantasy_stats", "fantasy", year)
+        df = pd.DataFrame()
+        if html_page_soup:
+            df = self.scrape_html_table(html_page_soup=html_page_soup, table_id="fantasy", year=year)
+        else:
+            logger.error(f"Failed to get player fantasy data from: {url}")
 
         if not df.empty:
-            output_path = os.path.join(self.bronze_data_dir, f"{year}_player_fantasy_stats.csv")
+            output_path = os.path.join(self.bronze_dir, f"{year}_player_fantasy_stats.csv")
             df.to_csv(output_path, index=False)
             logger.info(f"Saved fantasy stats for {year} to {output_path}")
 
-    def scrape_player_offensive_stats(self, year: int, category: str) -> None:
+        return df
+
+    def scrape_player_offensive_stats(self, year: int, category: str, overwrite: bool = False) -> pd.DataFrame:
         """
-        Scrape player receiving stats for a given year.
+        Scrape player receiving stats for a specific season and save them to a file
+        in the bronze layer.
 
         Args:
             year: NFL season year
@@ -183,73 +188,69 @@ class ProFootballReferenceScraper:
                 - "rushing_advanced"
                 - "receiving"
                 - "receiving_advanced"
+            overwrite: Overwrite the existing html file (default: False)
 
         Returns:
-            None (saves data to bronze layer)
+            DataFrame containing the player's stats.
         """
-        assert category in ["passing", "rushing", "receiving", "rushing_advanced", "receiving_advanced"], "Invalid category"
+
+        category_to_table_id = {
+            "passing": "passing",
+            "rushing": "rushing",
+            "receiving": "receiving",
+            "rushing_advanced": "adv_rushing",
+            "receiving_advanced": "adv_receiving"
+        }
+
+        assert category in category_to_table_id.keys(), "Invalid Category"
+        table_id = category_to_table_id[category]
 
         url = f"{self.base_url}/years/{year}/{category}.htm"
-        html_table_file = f"{year}_{category}_stats"
+        html_page_path = os.path.join(self.html_dir, f"{year}_{category}_stats.html")
+        html_page_soup = self._get_html_page_soup(url, html_page_path, overwrite=overwrite)
 
-        if category == "passing":
-            df = self.scrape_html_table(
-                url=url,
-                html_table_file=html_table_file,
-                table_id="passing",
-                year=year)
-        elif category == "rushing":
-            df = self.scrape_html_table(
-                url=url,
-                html_table_file=html_table_file,
-                table_id="rushing",
-                year=year)
-        elif category == "rushing_advanced":
-            df = self.scrape_html_table(
-                url=url,
-                html_table_file=html_table_file,
-                table_id="adv_rushing",
-                year=year)
-        elif category == "receiving":
-            df = self.scrape_html_table(
-                url=url,
-                html_table_file=html_table_file,
-                table_id="receiving",
-                year=year)
-        elif category == "receiving_advanced":
-            df = self.scrape_html_table(
-                url=url,
-                html_table_file=html_table_file,
-                table_id="adv_receiving", year=year)
+        df = pd.DataFrame()
+        if html_page_soup:
+            df = self.scrape_html_table(html_page_soup=html_page_soup, table_id=table_id, year=year)
         else:
-            logger.error(f"Invalid category: {category}")
+            logger.error(f"Failed to get player {category} data from: {url}")
 
         if not df.empty:
-            output_path = os.path.join(self.bronze_data_dir, f"{year}_player_{category}_stats.csv")
+            output_path = os.path.join(self.bronze_dir, f"{year}_player_{category}_stats.csv")
             df.to_csv(output_path, index=False)
             logger.info(f"Saved {category} stats for {year} to {output_path}")
 
         return df
 
-    def scrape_team_offensive_stats(self, year: int) -> None:
+    def scrape_team_offensive_stats(self, year: int, overwrite: bool = False) -> pd.DataFrame:
         """
-        Scrape multiple team offensive stats tables for a specific season.
-        Tables scraped: team_offense, passing_offense, rushing_offense.
+        Scrape multiple team's offensive stats for a specific season and save them to a file
+        in the bronze layer.
+            - Tables scraped: team_offense, passing_offense, rushing_offense.
 
         Args:
             year: NFL season year
+            overwrite: Overwrite the existing html file (default: False)
 
         Returns:
-            None (saves data to bronze layer)
+            DataFrame containing the player's stats.
         """
         url = f"{self.base_url}/years/{year}/#team_stats"
+        html_page_path = os.path.join(self.html_dir, f"{year}_team_offense.html")
+        html_page_soup = self._get_html_page_soup(url, html_page_path, overwrite=overwrite)
 
-        df = self.scrape_html_table(url, f"{year}_team_offense", "team_stats", year)
+        df = pd.DataFrame()
+        if html_page_soup:
+            df = self.scrape_html_table(html_page_soup=html_page_soup, table_id="team_stats", year=year)
+        else:
+            logger.error(f"Failed to get team data from: {url}")
 
         if not df.empty:
-            output_path = os.path.join(self.bronze_data_dir, f"{year}_team_offense.csv")
+            output_path = os.path.join(self.bronze_dir, f"{year}_team_offense.csv")
             df.to_csv(output_path, index=False)
             logger.info(f"Saved team offense stats for {year} to {output_path}")
+
+        return df
 
     def scrape_years(self, start_year: int, end_year: int):
         """
@@ -266,11 +267,8 @@ class ProFootballReferenceScraper:
 
             self.scrape_player_fantasy_stats(year)
 
-            self.scrape_player_offensive_stats(year, "passing")
-            self.scrape_player_offensive_stats(year, "rushing")
-            self.scrape_player_offensive_stats(year, "rushing_advanced")
-            self.scrape_player_offensive_stats(year, "receiving")
-            self.scrape_player_offensive_stats(year, "receiving_advanced")
+            for cat in ["passing", "rushing", "rushing_advanced", "receiving", "receiving_advanced"]:
+                self.scrape_player_offensive_stats(year, category=cat)
 
             self.scrape_team_offensive_stats(year)
 
