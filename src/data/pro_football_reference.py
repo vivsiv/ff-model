@@ -21,9 +21,9 @@ logger = logging.getLogger(__name__)
 
 
 class ProFootballReferenceScraper:
-    """Scraper for Pro Football Reference website."""
+    """Raw data scraper for pro football reference's website."""
 
-    def __init__(self, data_dir: str = "../data"):
+    def __init__(self, data_dir: str = "../data/pfr"):
         """
         Initialize the scraper.
 
@@ -32,10 +32,10 @@ class ProFootballReferenceScraper:
         """
         self.base_url = "https://www.pro-football-reference.com"
 
-        self.data_dir = data_dir
+        self.data_dir = data_dir 
         os.makedirs(self.data_dir, exist_ok=True)
 
-        self.html_dir = os.path.join(data_dir, "html")
+        self.html_dir = os.path.join(data_dir, "raw")
         os.makedirs(self.html_dir, exist_ok=True)
 
         self.bronze_data_dir = os.path.join(data_dir, "bronze")
@@ -284,8 +284,8 @@ def main():
     parser.add_argument(
         "--start-year",
         type=int,
-        default=1999,
-        help="Start year to scrape (default: 1999)"
+        default=2023,
+        help="Start year to scrape (default: 2023)"
     )
     parser.add_argument(
         "--end-year",
@@ -296,13 +296,14 @@ def main():
     parser.add_argument(
         "--data-dir",
         type=str,
-        default="../data",
-        help="Directory to save scraped data, paths are relative to this script (default: ../data)"
+        default=None,
+        help="Directory to save scraped data."
     )
 
     args = parser.parse_args()
 
-    scraper = ProFootballReferenceScraper(data_dir=args.data_dir)
+    kwargs = {"data_dir": args.data_dir} if args.data_dir is not None else {}
+    scraper = ProFootballReferenceScraper(**kwargs)
 
     scraper.scrape_years(start_year=args.start_year, end_year=args.end_year)
 

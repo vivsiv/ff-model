@@ -1,7 +1,7 @@
 from bs4 import BeautifulSoup
 from unittest.mock import patch
 
-from src.scraper import ProFootballReferenceScraper
+from src.data.pro_football_reference import ProFootballReferenceScraper
 
 
 class TestProFootballReferenceScraper():

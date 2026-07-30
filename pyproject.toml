@@ -9,6 +9,7 @@ dependencies = [
     "lxml>=6.0.4",
     "matplotlib>=3.10.8",
     "mlflow>=3.11.1",
+    "nflreadpy>=0.1.5",
     "numpy>=2.4.4",
     "pandas>=2.3.3",
     "pytest>=9.0.3",
