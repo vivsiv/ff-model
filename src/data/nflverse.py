@@ -32,90 +32,65 @@ class NflverseDataScraper:
         self.bronze_dir = os.path.join(data_dir, "bronze")
         os.makedirs(self.bronze_dir, exist_ok=True)
 
-    def _save_by_season(self, df: pd.DataFrame, file_prefix: str) -> None:
+    def _save(self, df: pd.DataFrame, filename: str) -> None:
         """
-        Splits a multi-season dataframe by its 'season' column and writes one CSV per season
-        to the bronze layer, matching the per-year file convention used by other sources.
+        Writes a dataframe covering all available seasons to a single bronze file.
         """
-        for season, season_df in df.groupby("season"):
-            output_path = os.path.join(self.bronze_dir, f"{season}_{file_prefix}.csv")
-            season_df.to_csv(output_path, index=False)
-            logger.info(f"Saved {file_prefix} for {season} to {output_path}")
+        output_path = os.path.join(self.bronze_dir, filename)
+        df.to_csv(output_path, index=False)
+        logger.info(f"Saved {filename} to {output_path}")
 
-    def fetch_player_stats(self, start_year: int, end_year: int, summary_level: str = "reg") -> pd.DataFrame:
+    def fetch_player_stats(self, summary_level: str = "reg") -> pd.DataFrame:
         """
         Fetch player season stats (passing, rushing, receiving, kicking, fantasy points, etc.)
-        for a range of years and save them to the bronze layer, one file per year.
+        for all available seasons and save them to the bronze layer as a single file.
 
         Args:
-            start_year: First season to fetch
-            end_year: Last season to fetch
             summary_level: One of "week", "reg", "post", "reg+post" (default: "reg")
 
         Returns:
-            DataFrame with player stats for all requested years
+            DataFrame with player stats for all available seasons
         """
-        years = list(range(start_year, end_year + 1))
-        logger.info(f"Fetching nflverse player stats for {years}")
+        logger.info("Fetching nflverse player stats for all available seasons")
 
-        df = nfl.load_player_stats(seasons=years, summary_level=summary_level).to_pandas()
+        df = nfl.load_player_stats(seasons=True, summary_level=summary_level).to_pandas()
         if not df.empty:
-            self._save_by_season(df, "nflverse_player_stats")
+            self._save(df, "player_stats.csv")
         else:
-            logger.warning(f"No player stats returned for {years}")
+            logger.warning("No player stats returned")
 
         return df
 
-    def fetch_team_stats(self, start_year: int, end_year: int, summary_level: str = "reg") -> pd.DataFrame:
+    def fetch_team_stats(self, summary_level: str = "reg") -> pd.DataFrame:
         """
-        Fetch team season stats for a range of years and save them to the bronze layer, one file per year.
+        Fetch team season stats for all available seasons and save them to the bronze layer
+        as a single file.
 
         Args:
-            start_year: First season to fetch
-            end_year: Last season to fetch
             summary_level: One of "week", "reg", "post", "reg+post" (default: "reg")
 
         Returns:
-            DataFrame with team stats for all requested years
+            DataFrame with team stats for all available seasons
         """
-        years = list(range(start_year, end_year + 1))
-        logger.info(f"Fetching nflverse team stats for {years}")
+        logger.info("Fetching nflverse team stats for all available seasons")
 
-        df = nfl.load_team_stats(seasons=years, summary_level=summary_level).to_pandas()
+        df = nfl.load_team_stats(seasons=True, summary_level=summary_level).to_pandas()
         if not df.empty:
-            self._save_by_season(df, "nflverse_team_stats")
+            self._save(df, "team_stats.csv")
         else:
-            logger.warning(f"No team stats returned for {years}")
+            logger.warning("No team stats returned")
 
         return df
 
-    def fetch_years(self, start_year: int, end_year: int) -> None:
-        """
-        Fetch player and team stats for a range of years.
-
-        Args:
-            start_year: First year to fetch
-            end_year: Last year to fetch
-        """
-        self.fetch_player_stats(start_year, end_year)
-        self.fetch_team_stats(start_year, end_year)
+    def fetch_all(self) -> None:
+        """Fetch player and team stats for all available seasons."""
+        self.fetch_player_stats()
+        self.fetch_team_stats()
 
 
 def main():
     parser = argparse.ArgumentParser(
         description="Fetches NFL stats from the nflverse project"
-    )
-    parser.add_argument(
-        "--start-year",
-        type=int,
-        default=1999,
-        help="Start year to fetch (default: 1999)"
-    )
-    parser.add_argument(
-        "--end-year",
-        type=int,
-        default=2024,
-        help="End year to fetch (default: 2024)"
     )
     parser.add_argument(
         "--data-dir",
@@ -128,7 +103,7 @@ def main():
 
     kwargs = {"data_dir": args.data_dir} if args.data_dir is not None else {}
     source = NflverseDataScraper(**kwargs)
-    source.fetch_years(start_year=args.start_year, end_year=args.end_year)
+    source.fetch_all()
 
 
 if __name__ == "__main__":
