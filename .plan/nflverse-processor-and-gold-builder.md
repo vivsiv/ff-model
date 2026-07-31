@@ -97,6 +97,9 @@ class NflverseProcessor:
 
 Location: `src/processing/gold.py`, class `TrainingSetBuilder`. Building this
 incrementally (implement + test one piece at a time), same as the processor.
+`gold_dir` is `data_dir/gold` (not `data_dir/gold/nflv`) — unlike bronze/silver,
+gold is common across whatever sources feed it, since it just houses finished
+training sets, not per-source raw/cleaned data.
 
 This replaces the fixed 2/3-year rolling-window features
 (`DataProcessor.create_rollup_stats`) with **expanding, prior-years-only**
@@ -122,29 +125,56 @@ be a stale reference for recent seasons. Verified concretely with
 ~81.3 all-time — a real, non-trivial gap. `window_years` defaults to 5,
 tunable/expandable later (e.g. different window sizes, decay weighting).
 
-### `_add_career_features` — not yet implemented
+### `_add_career_features` — IMPLEMENTED (`src/processing/gold.py`, tested in
+`test/processing/test_gold.py`)
 
 ```python
 def _add_career_features(
     self,
     df: pd.DataFrame,
-    grouping_col: str = "player",
-    stat_columns: List[str] = [...],  # TBD, see above
+    positional_baseline_df: pd.DataFrame,
+    stat_columns: List[str],  # TBD, see above
+    player_grouping_col: str = "player_id",
+    shrinkage_k: float = 3.0,
 ) -> pd.DataFrame:
-    """For each player, sorted by year, compute expanding (not fixed-window)
-    aggregates using only prior seasons:
-      - {stat}_career_avg / _career_std / _career_max / _career_min
+    """For each player, sorted by season, compute expanding (inclusive of the
+    current row's own season — the "prior years only" restriction is
+    _shift_for_prediction's job, not this function's) aggregates:
+      - {stat}_career_avg / _career_std / _career_max / _career_min.
+        career_std is filled to 0 for a player's first season (undefined
+        with 1 data point) rather than left NaN.
       - years_played: explicit career-length signal (this is the piece
         missing from the current model)
       - a shrinkage-adjusted average: blends career_avg toward
-        _positional_baseline, weighted by years_played (exact shrinkage
-        constant TBD, needs tuning rather than guessing up front — starting
-        point: shrunk_avg = (n / (n + k)) * career_avg + (k / (n + k)) *
-        positional_baseline, with k=3 as a first guess)
-      - a trend feature: simplest version is (most_recent_year_value -
-        career_avg); could upgrade to a fitted slope later
+        _positional_baseline, weighted by years_played:
+        shrunk_avg = (n / (n + k)) * career_avg + (k / (n + k)) *
+        positional_baseline, with k=3 as a first guess (tunable later)
+      - a trend feature: this season's own value minus career_avg
     """
 ```
+
+Verified against real data (`Christian McCaffrey` vs. `Brian Thomas Jr.`,
+the pair that motivated this whole redesign): by year 9, McCaffrey's
+`shrunk_avg` (≈229) stays close to his real `career_avg` (≈279) since
+`years_played` gives his own history a 0.75 weight — his down years (2020,
+2021, 2024 injury seasons) don't erase a decade of track record. Brian
+Thomas Jr.'s one outlier rookie season (284 points) gets `shrunk_avg` ≈ 129,
+pulled hard toward the ~77-point WR positional baseline, since
+`years_played=1` gives his own average only a 0.25 weight — no longer looks
+as "established" as it would under a plain career average.
+
+**Note on shrinkage symmetry (raised and confirmed this session):** the
+formula is a convex combination, so it pulls in *either* direction — a
+rookie with an unusually *bad* small-sample season gets pulled up toward the
+baseline exactly as hard as an unusually great one gets pulled down. This is
+intentional, not a bug: with only 1 year of evidence, an extreme observation
+(good or bad) is more likely to be partly noise than a true reflection of
+talent, so regression-to-the-mean should apply symmetrically (same logic as
+the classic batting-average shrinkage example in sabermetrics). Known
+limitation: this can't distinguish "genuinely weak rookie" from "talented
+rookie in a bad situation" — that would need additional signal (draft
+capital, target share, etc.) as its own feature later, not something this
+estimator alone can capture.
 
 ### `_shift_for_prediction` — not yet implemented
 
@@ -226,24 +256,49 @@ the live-set piece specifically.
 ### Required schema change vs. today
 
 `DataProcessor.clean_stats` currently does
-`final_df.drop(columns=['player', 'year', 'team'])` and folds player identity
+`final_df.drop(columns=['player', 'year', 'team'])` and folds identity
 entirely into the `id` string (e.g. `"christian_mccaffrey_2020"`). The new
-gold output must **keep a raw `player` column** so `modelling.py` can pass
-`groups=df["player"]` directly into `GroupShuffleSplit`/`GroupKFold`, instead
-of reverse-parsing it out of `id` string-splitting.
+gold output must **keep both a raw `player` column and the target `season`/
+`year` column** (not just fold them into `id`) — `player` for diagnostics
+(see below), and `season`/`year` because the corrected split (section 3)
+needs to filter/sort rows chronologically, not reverse-parse them out of the
+`id` string every time.
 
-## 3. Follow-on fix in `modelling.py` (not this session, but tracked here)
+## 3. Follow-on fix in `modelling.py` (revised this session — see below)
 
-`split_data` currently does a plain row-level `train_test_split` with no
-grouping. Confirmed via inspection this is a live bug today: two rows for
-the same player (adjacent target years) share overlapping rolling-window
-inputs, so the model can partially learn a player's signature from one row
-and get evaluated on a near-duplicate. A player-grouped split
-(`GroupShuffleSplit`/`GroupKFold`, `groups=player`) is required regardless of
-which gold-table version lands — a pure chronological cutoff isn't sufficient
-because a long-career player still straddles it. This also needs to apply to
-any internal CV folds inside `GridSearchCV`/`run_model_tuning`, not just the
-outer split.
+**Revised conclusion — a chronological split is the fix, not a player-grouped
+one.** Earlier in this project we concluded `split_data`'s plain row-level
+`train_test_split` (no grouping) was buggy specifically because it lets the
+same player's rows land on both sides of the split. On reflection (prompted
+by a good pushback, worth recording): a player-*grouped* split is the wrong
+fix for this domain. The reasoning that generally justifies grouped splits
+(e.g. medical imaging, where a patient's other scans usually aren't available
+in production) doesn't hold here — a returning player's own prior-season
+history is *always* going to be sitting in training data whenever the
+production model predicts their next season, since the training set is just
+"all of NFL history so far." A grouped split would evaluate a scenario
+(zero information about the player at all) that's actually the *minority*
+case in production, not the norm, and would throw out most usable data to do
+it. Analogy that clarified this: a model predicting Apple's stock price would
+of course train on Apple's own price history — you wouldn't hold Apple out
+of training to "test fairly."
+
+The real bug was narrower: the split was random, so a row can end up in
+"train" whose features were built from seasons that postdate a "test" row's
+target year — i.e. no guarantee the test set is strictly in the future
+relative to the training set. The fix is a **chronological split**: hold out
+the most recent N seasons as test, train on everything before. This still
+lets returning players appear in both train and test (correct — that matches
+deployment), while guaranteeing no row's features were built using
+information from after the point it's predicting. Applies to any internal CV
+folds inside `GridSearchCV`/`run_model_tuning` too, not just the outer split
+(e.g. a time-series-aware CV scheme, not vanilla k-fold).
+
+Soft follow-up, not a blocker: worth separately tracking validation error for
+low-experience players (`years_played <= 1`) as a diagnostic once the model
+is being evaluated, since that's specifically the population the career-length
+redesign was about (the Brian Thomas Jr. case that started this whole
+discussion) — a good overall score could still mask poor performance there.
 
 ## Explicitly deferred (came up in discussion, not in scope here)
 
