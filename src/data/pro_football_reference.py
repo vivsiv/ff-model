@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 class ProFootballReferenceScraper:
     """Raw data scraper for pro football reference's website."""
 
-    def __init__(self, data_dir: str = "../data/pfr"):
+    def __init__(self, data_dir: str = "../data"):
         """
         Initialize the scraper.
 

@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 class NflverseDataScraper:
     """Data source for player and team stats from the nflverse project (via nflreadpy)."""
 
-    def __init__(self, data_dir: str = "../data/nflv"):
+    def __init__(self, data_dir: str = "../data"):
         """
         Initialize the data source.
 
@@ -29,8 +29,8 @@ class NflverseDataScraper:
         self.data_dir = data_dir
         os.makedirs(self.data_dir, exist_ok=True)
 
-        self.bronze_data_dir = os.path.join(data_dir, "bronze")
-        os.makedirs(self.bronze_data_dir, exist_ok=True)
+        self.bronze_dir = os.path.join(data_dir, "bronze")
+        os.makedirs(self.bronze_dir, exist_ok=True)
 
     def _save_by_season(self, df: pd.DataFrame, file_prefix: str) -> None:
         """
@@ -38,7 +38,7 @@ class NflverseDataScraper:
         to the bronze layer, matching the per-year file convention used by other sources.
         """
         for season, season_df in df.groupby("season"):
-            output_path = os.path.join(self.bronze_data_dir, f"{season}_{file_prefix}.csv")
+            output_path = os.path.join(self.bronze_dir, f"{season}_{file_prefix}.csv")
             season_df.to_csv(output_path, index=False)
             logger.info(f"Saved {file_prefix} for {season} to {output_path}")
 
