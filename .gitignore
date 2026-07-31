@@ -1,12 +1,14 @@
-# Data directories
-data/bronze/
-data/silver/
-data/gold/
-data/discovery/
-data/html/
-data/mlruns/
-data/predictions/
-data/rankings/
+# Data directories (unanchored so they match per-source subfolders too,
+# e.g. data/nflv/bronze/, data/pfr/bronze/)
+bronze/
+silver/
+gold/
+discovery/
+html/
+raw/
+mlruns/
+predictions/
+rankings/
 
 # Jupyter Notebook
 .ipynb_checkpoints
