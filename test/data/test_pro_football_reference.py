@@ -1,7 +1,6 @@
 from bs4 import BeautifulSoup
-from unittest.mock import patch
 
-from src.scraper import ProFootballReferenceScraper
+from src.data.pro_football_reference import ProFootballReferenceScraper
 
 
 class TestProFootballReferenceScraper():
@@ -9,8 +8,7 @@ class TestProFootballReferenceScraper():
     def setup_class(cls):
         cls.scraper = ProFootballReferenceScraper(data_dir="test_data")
 
-    @patch.object(ProFootballReferenceScraper, '_get_soup')
-    def test_table_in_main_html(self, mock_get_soup):
+    def test_scrape_html_table__table_in_main_html(self):
         html = '''
         <html>
             <table id="fantasy">
@@ -19,13 +17,12 @@ class TestProFootballReferenceScraper():
             </table>
         </html>
         '''
-        mock_get_soup.return_value = BeautifulSoup(html, 'lxml')
-        df = self.scraper.scrape_html_table("fake_url", "fake_file", "fantasy", 2023)
+        html_page_soup = BeautifulSoup(html, 'lxml')
+        df = self.scraper.scrape_html_table(html_page_soup, "fantasy", 2023)
         assert list(df.columns) == ["Player", "Points"]
         assert df.iloc[0]["Player"] == "John Doe"
 
-    @patch.object(ProFootballReferenceScraper, '_get_soup')
-    def test_table_in_html_comment(self, mock_get_soup):
+    def test_scrape_html_table__table_in_html_comment(self):
         html = '''
         <html>
             <!--
@@ -36,21 +33,18 @@ class TestProFootballReferenceScraper():
             -->
         </html>
         '''
-        mock_get_soup.return_value = BeautifulSoup(html, 'lxml')
-        df = self.scraper.scrape_html_table("fake_url", "fake_file", "fantasy", 2023)
+        html_page_soup = BeautifulSoup(html, 'lxml')
+        df = self.scraper.scrape_html_table(html_page_soup, "fantasy", 2023)
         assert list(df.columns) == ["Player", "Points"]
         assert df.iloc[0]["Player"] == "Jane Smith"
         assert df.iloc[0]["Points"] == "120"
 
-    @patch.object(ProFootballReferenceScraper, '_get_soup')
-    def test_table_not_found(self, mock_get_soup):
-        html = '<html></html>'
-        mock_get_soup.return_value = BeautifulSoup(html, 'lxml')
-        df = self.scraper.scrape_html_table("fake_url", "fake_file", "fantasy", 2023)
+    def test_scrape_html_table__table_not_found(self):
+        html_page_soup = BeautifulSoup('<html></html>', 'lxml')
+        df = self.scraper.scrape_html_table(html_page_soup, "fantasy", 2023)
         assert df.empty
 
-    @patch.object(ProFootballReferenceScraper, '_get_soup')
-    def test_header_more_than_body(self, mock_get_soup):
+    def test_scrape_html_table__more_header_cols_than_data_cols(self):
         html = '''
         <html>
             <table id="fantasy">
@@ -59,14 +53,13 @@ class TestProFootballReferenceScraper():
             </table>
         </html>
         '''
-        mock_get_soup.return_value = BeautifulSoup(html, 'lxml')
-        df = self.scraper.scrape_html_table("fake_url", "fake_file", "fantasy", 2023)
+        html_page_soup = BeautifulSoup(html, 'lxml')
+        df = self.scraper.scrape_html_table(html_page_soup, "fantasy", 2023)
 
         assert list(df.columns) == ["Player", "Points"]
         assert df.iloc[0]["Points"] == "100"
 
-    @patch.object(ProFootballReferenceScraper, '_get_soup')
-    def test_header_fewer_than_body(self, mock_get_soup):
+    def test_scrape_html_table__fewer_header_cols_than_than_data_cols(self):
         html = '''
         <html>
             <table id="fantasy">
@@ -75,8 +68,8 @@ class TestProFootballReferenceScraper():
             </table>
         </html>
         '''
-        mock_get_soup.return_value = BeautifulSoup(html, 'lxml')
-        df = self.scraper.scrape_html_table("fake_url", "fake_file", "fantasy", 2023)
+        html_page_soup = BeautifulSoup(html, 'lxml')
+        df = self.scraper.scrape_html_table(html_page_soup, "fantasy", 2023)
 
         assert list(df.columns) == ["Player", "Unknown_Col_1"]
         assert df.iloc[0]["Player"] == "John Doe"
