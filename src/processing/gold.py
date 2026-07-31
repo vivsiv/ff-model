@@ -128,3 +128,47 @@ class TrainingSetBuilder:
             )
 
         return df
+
+    def _join_with_target(
+        self,
+        features_df: pd.DataFrame,
+        target_col: str,
+        player_grouping_col: str = "player_id",
+    ) -> pd.DataFrame:
+        """
+        Joins each player's season-N target value onto their most recent prior season's
+        feature row — not necessarily season N-1. A player who missed one or more seasons
+        (injury, out of the league) still gets matched to their last active season instead of
+        being dropped. Only players with at least one prior season produce an output row.
+
+        Args:
+            features_df: Output of _add_career_features (one row per player-season, with that
+                season's raw stats and career-to-date-through-that-season features)
+            target_col: Column in features_df to use as the prediction target, e.g.
+                "fantasy_points_ppr". 
+            player_grouping_col: Column identifying a unique player (default: "player_id")
+
+        Returns:
+            DataFrame of feature rows (most recent season before target_season) with
+            "target_season", "target", and "seasons_since_played" columns added
+        """
+        season_dtype = features_df["season"].dtype
+
+        target_df = features_df[[player_grouping_col, "season", target_col]].copy()
+        target_df = target_df.rename(columns={"season": "target_season", target_col: "target"})
+
+        merged = pd.merge_asof(
+            target_df.sort_values("target_season"),
+            features_df.sort_values("season"),
+            left_on="target_season",
+            right_on="season",
+            by=player_grouping_col,
+            direction="backward",
+            allow_exact_matches=False,
+        )
+        merged = merged[merged["season"].notna()].copy()
+        merged["season"] = merged["season"].astype(season_dtype)
+        merged["seasons_since_played"] = merged["target_season"] - merged["season"] - 1
+
+        feature_columns = list(features_df.columns)
+        return merged[feature_columns + ["target_season", "target", "seasons_since_played"]]

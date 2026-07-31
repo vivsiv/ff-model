@@ -132,3 +132,66 @@ class TestTrainingSetBuilder():
             0.5 * 20.0 + 0.5 * 22.0,
         ]
         assert list(result["fantasy_points_ppr_shrunk_avg"]) == expected_shrunk
+
+    def test_join_with_target__pairs_each_season_with_the_prior_seasons_features(self):
+        features_df = pd.DataFrame({
+            "player_id": ["p1", "p1", "p1"],
+            "season": [2020, 2021, 2022],
+            "fantasy_points_ppr": [10.0, 20.0, 30.0],
+            "fantasy_points_ppr_career_avg": [10.0, 15.0, 20.0],
+        })
+
+        result = self.builder._join_with_target(
+            features_df, target_col="fantasy_points_ppr"
+        ).sort_values("season").reset_index(drop=True)
+
+        # 2020's row has no prior season to be a feature source, so it only shows up as
+        # a target (paired with 2019 features, which don't exist) -> excluded entirely.
+        # 2020 features -> 2021 target; 2021 features -> 2022 target.
+        expected = pd.DataFrame({
+            "player_id": ["p1", "p1"],
+            "season": [2020, 2021],
+            "fantasy_points_ppr": [10.0, 20.0],
+            "fantasy_points_ppr_career_avg": [10.0, 15.0],
+            "target_season": [2021, 2022],
+            "target": [20.0, 30.0],
+            "seasons_since_played": [0, 0],
+        })
+        pd.testing.assert_frame_equal(result, expected)
+
+    def test_join_with_target__bridges_gap_seasons_using_most_recent_prior_data(self):
+        features_df = pd.DataFrame({
+            "player_id": ["p1", "p1", "p1"],
+            "season": [2019, 2020, 2022],  # 2021 missing entirely (e.g. hurt/out of league)
+            "fantasy_points_ppr": [10.0, 20.0, 30.0],
+        })
+
+        result = self.builder._join_with_target(
+            features_df, target_col="fantasy_points_ppr"
+        ).sort_values("season").reset_index(drop=True)
+
+        # 2019 -> 2020 pairs normally (seasons_since_played=0, no gap). 2020's features still
+        # get used to predict 2022's target even though 2021 is missing entirely
+        # (seasons_since_played=1, one season missed) -- a player who missed a season should
+        # still be predictable from their last active one.
+        assert list(result["season"]) == [2019, 2020]
+        assert list(result["target_season"]) == [2020, 2022]
+        assert list(result["target"]) == [20.0, 30.0]
+        assert list(result["seasons_since_played"]) == [0, 1]
+
+    def test_join_with_target__does_not_mix_players(self):
+        features_df = pd.DataFrame({
+            "player_id": ["p1", "p1", "p2", "p2"],
+            "season": [2020, 2021, 2020, 2021],
+            "fantasy_points_ppr": [10.0, 20.0, 100.0, 200.0],
+        })
+
+        result = self.builder._join_with_target(
+            features_df, target_col="fantasy_points_ppr"
+        ).sort_values("player_id").reset_index(drop=True)
+
+        assert list(result["player_id"]) == ["p1", "p2"]
+        assert list(result["target"]) == [20.0, 200.0]
+        # p2's 2020 feature row must never match against p1's target, even though they share
+        # a season value -- merge_asof's `by` grouping needs to actually be respected.
+        assert list(result["seasons_since_played"]) == [0, 0]

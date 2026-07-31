@@ -176,10 +176,63 @@ rookie in a bad situation" — that would need additional signal (draft
 capital, target share, etc.) as its own feature later, not something this
 estimator alone can capture.
 
-### `_shift_for_prediction` — not yet implemented
+### `_join_with_target` — IMPLEMENTED (`src/processing/gold.py`, tested in
+`test/processing/test_gold.py`; renamed from the originally-planned
+`_shift_for_prediction` — "target" is the correct/standard term for a
+regression label, so the new name says what it does)
 
-Same role as today's `join_year` logic: target year N's label pairs with
-career-to-date features computed only through year N-1.
+Same role as today's `join_year` logic: target year N's value pairs with
+career-to-date features from the player's most recent prior season — **not
+necessarily season N-1**. First implementation required an exact N-1 match
+(inner join on player + season-shifted-by-1), which turned out to be wrong:
+a player who missed an entire season (injury, out of the league) would be
+silently dropped from training for their return season, and — more
+importantly — would get **no live-set prediction at all** for a real
+"predict this year for a player who missed all of last year" case. Fixed
+using `pd.merge_asof(..., direction="backward", allow_exact_matches=False)`,
+which matches each target season to the nearest prior season with data,
+however far back that is.
+
+```python
+def _join_with_target(
+    self,
+    features_df: pd.DataFrame,
+    target_col: str,
+    player_grouping_col: str = "player_id",
+) -> pd.DataFrame:
+    """Joins each player's season-N target value onto their most recent
+    prior season's feature row (nearest-backward asof join per player), so
+    training features never include information from the season being
+    predicted, and a player with a gap season still gets matched to their
+    last active season instead of being dropped."""
+```
+
+Adds `seasons_since_played` (`target_season - season - 1`, i.e. the number of
+full seasons missed — 0 for a normal adjacent-year match, 1+ for a gap) so
+the model can tell a fresh prior-season match apart from a multi-year-stale
+comeback match, since both are now possible matches where before only
+adjacent-year matches existed.
+
+Still gets two exclusions for free without special-casing:
+- A player's first season never appears as a *target* (no prior season
+  exists at all to match backward to) — this is what naturally drops rookie
+  seasons from training, same behavior as the old pipeline's explicit "drop
+  first year" step, just as a side effect of the join instead of a separate
+  filter.
+- A player's most recent season never appears as a *feature* row in the
+  output (no target season exists yet, since it hasn't happened) — correct,
+  there's nothing to train on for it (that's `build_live_set`'s job instead).
+
+Verified end-to-end on real data through `_positional_baseline` ->
+`_add_career_features` -> `_join_with_target`: McCaffrey's full chain
+produces 8 correctly-shifted rows (e.g. `season=2020` row's features/
+`shrunk_avg` pair with `target_season=2021`, `target=127.50` — his actual
+2021 output), 10,557 total training rows in the current partial pipeline
+(single `fantasy_points_ppr` stat column, no team-shift join yet). Also
+verified the gap-bridging fix against a real gap-season player (John Allred,
+missed 2001 entirely): his 2000 season now correctly pairs with
+`target_season=2002` (`seasons_since_played=1`, one season missed) instead
+of being dropped.
 
 ### Team-stats join: capture team-change shift, not just team level
 
