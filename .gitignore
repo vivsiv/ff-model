@@ -1,6 +1,6 @@
 # Data directories
-data/bronze/
-data/silver/
+bronze/
+silver/
 data/gold/
 data/discovery/
 data/html/
