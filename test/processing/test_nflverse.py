@@ -12,7 +12,7 @@ class TestNflverseProcessor():
     @classmethod
     def setup_class(cls):
         cls.test_dir = tempfile.mkdtemp()
-        cls.bronze_dir = os.path.join(cls.test_dir, "bronze")
+        cls.bronze_dir = os.path.join(cls.test_dir, "bronze", "nflv")
         os.makedirs(cls.bronze_dir)
 
         player_stats_df = pd.DataFrame({
@@ -63,7 +63,7 @@ class TestNflverseProcessor():
         pd.testing.assert_frame_equal(result, expected)
 
     def test_build_player_stats__filters_by_position_and_saves_silver(self):
-        result = self.processor.build_player_stats(positions=["QB", "RB", "WR"]).reset_index(drop=True)
+        result = self.processor.build_player_stats().reset_index(drop=True)
 
         expected = pd.DataFrame({
             "player_id": ["p1", "p2", "p4", "p5"],

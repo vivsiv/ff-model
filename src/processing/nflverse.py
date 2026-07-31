@@ -16,46 +16,43 @@ logger = logging.getLogger(__name__)
 
 FANTASY_POSITIONS = ["QB", "RB", "WR", "TE"]
 
-
 class NflverseProcessor:
     """Generates silver layer data from nflverse bronze layer data."""
 
-    def __init__(self, data_dir: str = "../data/nflv"):
+    def __init__(self, data_dir: str = "../data"):
         """
         Initialize the processor.
 
         Args:
-            data_dir: Root directory the nflverse bronze data lives in and silver data will be saved to.
+            data_dir: Parent directory for the bronze and silver layers.
         """
-        self.bronze_dir = os.path.join(data_dir, "bronze")
+        self.bronze_dir = os.path.join(data_dir, "bronze", "nflv")
         if not os.path.exists(self.bronze_dir):
             raise FileNotFoundError(f"{self.bronze_dir} not found")
 
-        self.silver_dir = os.path.join(data_dir, "silver")
+        self.silver_dir = os.path.join(data_dir, "silver", "nflv")
         os.makedirs(self.silver_dir, exist_ok=True)
 
-    def _load_bronze(self, filename: str) -> pd.DataFrame:
+    def _load_bronze(self, file_name: str) -> pd.DataFrame:
         """
-        Loads a bronze file as-is, with no filtering. Year-range selection is a gold-layer
-        concern (so the training window can change without re-running these transformations).
+        Loads an nflverse file from the bronze layer.
 
         Args:
-            filename: The bronze file to load, e.g. "player_stats.csv"
+            file_name: The bronze file to load, e.g. "player_stats.csv"
 
         Returns:
             DataFrame with the full contents of the bronze file
         """
-        file_path = os.path.join(self.bronze_dir, filename)
+        file_path = os.path.join(self.bronze_dir, file_name)
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"{file_path} not found")
 
         return pd.read_csv(file_path, low_memory=False)
 
-    def build_player_stats(self, positions: list[str] = FANTASY_POSITIONS) -> pd.DataFrame:
+    def build_player_stats(self) -> pd.DataFrame:
         """
-        Loads nflverse player stats, filters to fantasy-relevant positions, and saves the result
-        to the silver layer. player_id is nflverse's stable join key, so no name standardization
-        is done here.
+        Loads player stats, perfornms relevant transformations, and saves the result
+        to the silver layer.
 
         Args:
             positions: Player positions to keep (default: QB, RB, WR, TE)
@@ -64,7 +61,7 @@ class NflverseProcessor:
             DataFrame with the filtered player stats
         """
         player_stats_df = self._load_bronze("player_stats.csv")
-        player_stats_df = player_stats_df[player_stats_df["position"].isin(positions)]
+        player_stats_df = player_stats_df[player_stats_df["position"].isin(FANTASY_POSITIONS)]
 
         output_path = os.path.join(self.silver_dir, "player_stats.csv")
         player_stats_df.to_csv(output_path, index=False)
@@ -74,7 +71,7 @@ class NflverseProcessor:
 
     def build_team_stats(self) -> pd.DataFrame:
         """
-        Loads nflverse team stats and saves the result to the silver layer.
+        Loads nflverse team stats, performs relevant transformations, and saves the result to the silver layer.
 
         Returns:
             DataFrame with the team stats
@@ -89,7 +86,7 @@ class NflverseProcessor:
 
     def process_all_data(self, positions: list[str] = FANTASY_POSITIONS) -> None:
         """Builds all silver layer tables from bronze layer data."""
-        self.build_player_stats(positions)
+        self.build_player_stats()
         self.build_team_stats()
 
 

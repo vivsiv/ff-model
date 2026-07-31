@@ -29,31 +29,28 @@ class NflverseDataScraper:
         self.data_dir = data_dir
         os.makedirs(self.data_dir, exist_ok=True)
 
-        self.bronze_dir = os.path.join(data_dir, "bronze")
+        self.bronze_dir = os.path.join(data_dir, "bronze", "nflv")
         os.makedirs(self.bronze_dir, exist_ok=True)
 
     def _save(self, df: pd.DataFrame, filename: str) -> None:
         """
-        Writes a dataframe covering all available seasons to a single bronze file.
+        Writes a dataframe to a single csv file in the bronze layer.
         """
         output_path = os.path.join(self.bronze_dir, filename)
         df.to_csv(output_path, index=False)
         logger.info(f"Saved {filename} to {output_path}")
 
-    def fetch_player_stats(self, summary_level: str = "reg") -> pd.DataFrame:
+    def fetch_player_stats(self) -> pd.DataFrame:
         """
-        Fetch player season stats (passing, rushing, receiving, kicking, fantasy points, etc.)
-        for all available seasons and save them to the bronze layer as a single file.
-
-        Args:
-            summary_level: One of "week", "reg", "post", "reg+post" (default: "reg")
+        Fetch player season stats for all available seasons,
+        Save them to the bronze layer as a single file.
 
         Returns:
             DataFrame with player stats for all available seasons
         """
         logger.info("Fetching nflverse player stats for all available seasons")
 
-        df = nfl.load_player_stats(seasons=True, summary_level=summary_level).to_pandas()
+        df = nfl.load_player_stats(seasons=True, summary_level="reg").to_pandas()
         if not df.empty:
             self._save(df, "player_stats.csv")
         else:
@@ -61,20 +58,17 @@ class NflverseDataScraper:
 
         return df
 
-    def fetch_team_stats(self, summary_level: str = "reg") -> pd.DataFrame:
+    def fetch_team_stats(self) -> pd.DataFrame:
         """
-        Fetch team season stats for all available seasons and save them to the bronze layer
-        as a single file.
-
-        Args:
-            summary_level: One of "week", "reg", "post", "reg+post" (default: "reg")
+        Fetch team season stats for all available seasons,
+        save them to the bronze layer as a single file.
 
         Returns:
             DataFrame with team stats for all available seasons
         """
         logger.info("Fetching nflverse team stats for all available seasons")
 
-        df = nfl.load_team_stats(seasons=True, summary_level=summary_level).to_pandas()
+        df = nfl.load_team_stats(seasons=True, summary_level="reg").to_pandas()
         if not df.empty:
             self._save(df, "team_stats.csv")
         else:

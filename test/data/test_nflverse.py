@@ -17,7 +17,7 @@ class TestNflverseDataScraper():
     def teardown_class(cls):
         shutil.rmtree(cls.test_dir)
 
-    def test_save__writes_a_single_bronze_file(self):
+    def test_save__writes_a_single_file_to_bronze(self):
         df = pd.DataFrame({
             "season": [2022, 2022, 2023],
             "player": ["Player A", "Player B", "Player C"],
