@@ -106,10 +106,57 @@ This replaces the fixed 2/3-year rolling-window features
 career aggregates, so the model has an explicit signal for how much history
 backs a given player's numbers.
 
-**Explicitly deferred: the exact `stat_columns` list.** Which raw stats get
-career features/shrinkage/trend is its own dedicated discussion, not decided
-yet. All the pieces below take `stat_columns` as a parameter rather than
-hardcoding a list.
+**`stat_columns` list — first pass done, pending your review.** Rather than a
+hardcoded list or markdown doc, this is a real registry:
+`src/processing/column_registry.yaml`, keyed by silver table name (so
+`team_stats`, and later `ff_opportunity`, can be added as sibling keys),
+each with exhaustive, mutually-exclusive `included`/`excluded` column lists.
+`src/processing/column_registry.py` exposes `get_included_columns(table)` /
+`get_excluded_columns(table)` for `gold.py` to read `stat_columns` from
+directly, rather than gold.py hardcoding it. Added `pyyaml` as an explicit
+dependency (was already present transitively via mlflow).
+
+Rule of thumb applied for `player_stats`: keep passing/rushing/receiving raw
++ advanced/efficiency stats (EPA, CPOE, PACR/RACR, opportunity-share metrics
+like `target_share`/`wopr`) and fantasy points; drop defense/kicking/punting
+(irrelevant, position already filtered to QB/RB/WR/TE) and identity/context
+columns (kept in the dataframe, just not career-averaged). Flagged a
+"borderline" group in the YAML with comments rather than silently deciding
+(return-specialist stats, possibly-redundant aggregate fumble counts,
+penalties) for you to flip if you want them included.
+
+Verified against real data: `included` (53) + `excluded` (90) = exactly the
+143 real columns in `data/silver/nflv/player_stats.csv`, with zero missing
+and zero extra — every real column is accounted for exactly once.
+
+Noted but not integrated: you mentioned "expected fantasy points" as an
+example useful metric — that exists in nflverse, but in a different table,
+`nflreadpy.load_ff_opportunity()` (confirmed via a live check: has
+`total_fantasy_points_exp`, `*_diff` vs. actual, etc.), not in
+`player_stats`. Not pulled in as part of this pass.
+
+**Added a third list: `labels`** (`fantasy_points`, `fantasy_points_ppr`) —
+tracks which columns are candidate prediction targets for `_join_with_target`'s
+`target_col`. Raised and resolved a real question along the way: is using a
+player's own *prior*-season `fantasy_points_ppr` as a feature to predict
+their *next* season leakage, since it's the same column as the target? No —
+leakage would mean a row's features include its *own* target-season value,
+which the pipeline already structurally prevents (`_add_career_features` is
+inclusive only through each row's own season; `_join_with_target`'s
+backward-only join guarantees a training row's features never include its
+target season or later). Using a player's own trailing performance to predict
+their future performance is standard autoregression, not leakage, and
+excluding it would likely hurt the model, since it's probably one of the
+strongest available signals. So `labels` is a **subset of** `included`, not
+an alternative to it — enforced as an invariant in
+`test/processing/test_column_registry.py`
+(`test_player_stats__labels_are_a_subset_of_included`), and verified
+(47 tests passing total, plus the real-data completeness check re-run).
+
+Tested in `test/processing/test_column_registry.py` (structural checks only
+— no overlap between the two lists, no duplicates, spot-checks for a few
+known columns — deliberately not dependent on the real, gitignored data
+file, so it doesn't require regenerating data to pass in a fresh checkout/CI).
 
 ### `_positional_baseline` — IMPLEMENTED (`src/processing/gold.py`, tested in
 `test/processing/test_gold.py`)
