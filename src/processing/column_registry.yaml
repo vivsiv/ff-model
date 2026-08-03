@@ -1,13 +1,8 @@
-# Registry of which raw columns from each silver table are candidates for career-feature
-# engineering (stat_columns in TrainingSetBuilder._add_career_features / _positional_baseline).
+# Registry of which raw columns from each silver table are candidates for features.
 #
-# "included" and "excluded" are exhaustive and mutually exclusive for a given table's columns:
-# a column is either a stat worth building career features for, or it isn't (identity/context
-# columns and stats judged not useful for fantasy modeling both land in "excluded" -- the
-# distinction between those two reasons is left to the comments below, not a third list).
-#
-# As more silver tables get joined in (e.g. ff_opportunity for expected fantasy points), add
-# them as sibling keys here rather than a separate registry file.
+# "included" and "excluded" are exhaustive and mutually exclusive for a given table's
+# column set.
+# "targets" are columns that will be predicted.
 
 player_stats:
   included:
@@ -29,10 +24,10 @@ player_stats:
     - passing_16
     - passing_20
     - passing_40
-    # Passing, advanced/efficiency
     - passing_epa
     - passing_cpoe
     - pacr
+
     # Rushing
     - carries
     - rushing_yards
@@ -45,8 +40,8 @@ player_stats:
     - rushing_12
     - rushing_20
     - rushing_40
-    # Rushing, advanced/efficiency
     - rushing_epa
+
     # Receiving
     - receptions
     - targets
@@ -62,29 +57,21 @@ player_stats:
     - receiving_16
     - receiving_20
     - receiving_40
-    # Receiving, advanced/efficiency/opportunity share
     - receiving_epa
     - racr
     - target_share
     - air_yards_share
     - wopr
-    # Fantasy -- also listed under "labels" below. Not a contradiction: a prior season's
-    # fantasy_points_ppr is a legitimate feature for predicting a later season (autoregression,
-    # not leakage -- _join_with_target's backward-only join already guarantees a training row's
-    # features never include its own target season or later). "labels" tracks which columns are
-    # candidate prediction targets; it doesn't remove them from "included".
+    # Fantasy
     - fantasy_points
     - fantasy_points_ppr
 
-  # Candidate prediction targets (what _join_with_target's target_col points at). A subset of
-  # "included", not an alternative to it -- see the comment above.
-  labels:
+  targets:
     - fantasy_points
     - fantasy_points_ppr
 
   excluded:
-    # Identity / context -- kept in the dataframe and used elsewhere (joins, grouping), just
-    # not career-averaged as a stat.
+    # Identity / context -- necessary columns for other operations (joins, grouping) are kept in by those operations.
     - player_id
     - player_name
     - player_display_name
@@ -96,7 +83,7 @@ player_stats:
     - games
     - headshot_url
 
-    # Defense -- irrelevant to QB/RB/WR/TE, will be all-null/zero for our filtered population
+    # Defense
     - def_tackles_solo
     - def_tackles_with_assist
     - def_tackle_assists
@@ -120,7 +107,7 @@ player_stats:
     - fumbles_forced_by_opp
     - misc_yards
 
-    # Kicking -- irrelevant, position already filtered out
+    # Special Teams
     - fg_made
     - fg_att
     - fg_missed
@@ -155,8 +142,6 @@ player_stats:
     - gwfg_missed
     - gwfg_blocked
     - gwfg_distance_list
-
-    # Punting -- irrelevant, position already filtered out
     - pt_att
     - pt_blocked
     - pt_long
@@ -170,27 +155,18 @@ player_stats:
     - pt_return_yards
     - pt_return_tds
     - pt_net_yards
-
-    # Borderline -- excluded on this first pass, flagging why in case you want to flip any of
-    # these to "included" instead of just deleting the comment.
-    # Real fantasy value in return-TD/return-yardage formats, but only matters for the handful
-    # of WR/RB return specialists; near-zero for the rest of the population.
     - special_teams_tds
     - punt_returns
     - punt_return_yards
     - kickoff_returns
     - kickoff_return_yards
-    # Appear to be aggregate fumble counts overlapping with the position-specific ones already
-    # included above (rushing_fumbles, receiving_fumbles, sack_fumbles) -- check whether these
-    # equal the sum of those before deciding if they're additive or redundant.
+
+    # Aggregate fumble counts overlapping with the position-specific ones already included above.
     - fumbles_total
     - fumbles_lost_total
     - fumbles_not_forced
     - fumbles_out_of_bounds
-    # Unclear signal for fantasy purposes.
+
+    # Penalties
     - penalties
     - penalty_yards
-
-# Not yet integrated: nflreadpy.load_ff_opportunity() has real "expected fantasy points"
-# columns (total_fantasy_points_exp, *_diff, etc.) that aren't in player_stats. Add as its own
-# top-level key here once that source is pulled into silver.

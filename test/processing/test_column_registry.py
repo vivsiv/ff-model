@@ -1,4 +1,4 @@
-from src.processing.column_registry import get_included_columns, get_excluded_columns, get_labels
+from src.processing.column_registry import get_included_columns, get_excluded_columns, get_targets
 
 
 class TestColumnRegistry():
@@ -11,11 +11,11 @@ class TestColumnRegistry():
     def test_player_stats__no_duplicates_within_any_list(self):
         included = get_included_columns("player_stats")
         excluded = get_excluded_columns("player_stats")
-        labels = get_labels("player_stats")
+        targets = get_targets("player_stats")
 
         assert len(included) == len(set(included))
         assert len(excluded) == len(set(excluded))
-        assert len(labels) == len(set(labels))
+        assert len(targets) == len(set(targets))
 
     def test_player_stats__included_has_known_fantasy_relevant_columns(self):
         included = get_included_columns("player_stats")
@@ -29,16 +29,16 @@ class TestColumnRegistry():
         for col in ["player_id", "position", "season", "def_sacks", "fg_made"]:
             assert col in excluded
 
-    def test_player_stats__labels_are_a_subset_of_included(self):
-        # labels aren't an alternative to being in "included" -- a prior season's value of a
-        # label is a legitimate feature for a later season (autoregression, not leakage), so
-        # every label must also appear in "included".
+    def test_player_stats__targets_are_a_subset_of_included(self):
+        # targets aren't an alternative to being in "included" -- a prior season's value of a
+        # target is a legitimate feature for a later season (autoregression, not leakage), so
+        # every target must also appear in "included".
         included = get_included_columns("player_stats")
-        labels = get_labels("player_stats")
+        targets = get_targets("player_stats")
 
-        assert set(labels) <= set(included)
+        assert set(targets) <= set(included)
 
-    def test_player_stats__labels_has_known_target_columns(self):
-        labels = get_labels("player_stats")
+    def test_player_stats__targets_has_known_target_columns(self):
+        targets = get_targets("player_stats")
 
-        assert set(labels) == {"fantasy_points", "fantasy_points_ppr"}
+        assert set(targets) == {"fantasy_points", "fantasy_points_ppr"}

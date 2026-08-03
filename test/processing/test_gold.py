@@ -195,3 +195,7 @@ class TestTrainingSetBuilder():
         # p2's 2020 feature row must never match against p1's target, even though they share
         # a season value -- merge_asof's `by` grouping needs to actually be respected.
         assert list(result["seasons_since_played"]) == [0, 0]
+
+    def test_build_training_set__rejects_a_target_not_in_the_registry(self):
+        with pytest.raises(AssertionError):
+            self.builder.build_training_set(target_col="not_a_real_target")

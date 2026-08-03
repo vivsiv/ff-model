@@ -40,12 +40,10 @@ def get_excluded_columns(table: str) -> List[str]:
     return _load_registry()[table]["excluded"]
 
 
-def get_labels(table: str) -> List[str]:
+def get_targets(table: str) -> List[str]:
     """
     Returns the columns from `table` that are candidate prediction targets (for
-    _join_with_target's target_col). Always a subset of get_included_columns(table), not an
-    alternative to it -- a prior season's value of a label is a legitimate feature for
-    predicting a later season (see column_registry.yaml for why this isn't leakage).
+    _join_with_target's target_col). Always a subset of get_included_columns(table).
 
     Args:
         table: Silver table name, e.g. "player_stats"
@@ -53,4 +51,4 @@ def get_labels(table: str) -> List[str]:
     Returns:
         List of column names
     """
-    return _load_registry()[table]["labels"]
+    return _load_registry()[table]["targets"]

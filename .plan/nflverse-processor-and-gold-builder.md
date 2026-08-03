@@ -135,28 +135,58 @@ example useful metric — that exists in nflverse, but in a different table,
 `total_fantasy_points_exp`, `*_diff` vs. actual, etc.), not in
 `player_stats`. Not pulled in as part of this pass.
 
-**Added a third list: `labels`** (`fantasy_points`, `fantasy_points_ppr`) —
-tracks which columns are candidate prediction targets for `_join_with_target`'s
-`target_col`. Raised and resolved a real question along the way: is using a
-player's own *prior*-season `fantasy_points_ppr` as a feature to predict
-their *next* season leakage, since it's the same column as the target? No —
-leakage would mean a row's features include its *own* target-season value,
-which the pipeline already structurally prevents (`_add_career_features` is
-inclusive only through each row's own season; `_join_with_target`'s
-backward-only join guarantees a training row's features never include its
-target season or later). Using a player's own trailing performance to predict
-their future performance is standard autoregression, not leakage, and
-excluding it would likely hurt the model, since it's probably one of the
-strongest available signals. So `labels` is a **subset of** `included`, not
-an alternative to it — enforced as an invariant in
-`test/processing/test_column_registry.py`
-(`test_player_stats__labels_are_a_subset_of_included`), and verified
-(47 tests passing total, plus the real-data completeness check re-run).
+**Added a third list: `targets`** (`fantasy_points`, `fantasy_points_ppr`,
+read via `get_targets` — renamed from an earlier `labels`/`get_labels` pass)
+— tracks which columns are candidate prediction targets for
+`_join_with_target`'s `target_col`. Raised and resolved a real question along
+the way: is using a player's own *prior*-season `fantasy_points_ppr` as a
+feature to predict their *next* season leakage, since it's the same column as
+the target? No — leakage would mean a row's features include its *own*
+target-season value, which the pipeline already structurally prevents
+(`_add_career_features` is inclusive only through each row's own season;
+`_join_with_target`'s backward-only join guarantees a training row's features
+never include its target season or later). Using a player's own trailing
+performance to predict their future performance is standard autoregression,
+not leakage, and excluding it would likely hurt the model, since it's
+probably one of the strongest available signals. So `targets` is a
+**subset of** `included`, not an alternative to it — enforced as an
+invariant in `test/processing/test_column_registry.py`
+(`test_player_stats__targets_are_a_subset_of_included`).
 
 Tested in `test/processing/test_column_registry.py` (structural checks only
-— no overlap between the two lists, no duplicates, spot-checks for a few
-known columns — deliberately not dependent on the real, gitignored data
+— no overlap between `included`/`excluded`, no duplicates, spot-checks for a
+few known columns — deliberately not dependent on the real, gitignored data
 file, so it doesn't require regenerating data to pass in a fresh checkout/CI).
+
+### Registry wired into `TrainingSetBuilder.build_training_set` — IMPLEMENTED
+
+Caught mid-session: the registry existed but nothing actually called it.
+Added `build_training_set(target_col="fantasy_points_ppr")`, which:
+validates `target_col` against `get_targets("player_stats")`, pulls
+`stat_columns` from `get_included_columns("player_stats")` (not hardcoded),
+loads `silver/nflv/player_stats.csv`, and chains
+`_positional_baseline` -> `_add_career_features` -> `_join_with_target`,
+writing the result to `gold_dir/training_set.csv`. Does **not** yet include
+the team-shift join (career features only for now — team-shift is still
+pending, see below).
+
+Also fixed a real bug hit while wiring this up: `get_targets` still read the
+YAML key `"labels"` after the section was renamed to `targets:`, which
+would have raised `KeyError` on first real use. Fixed, plus a leftover
+`get_labels` reference in the tests.
+
+Also fixed a real performance issue surfaced by testing against the *full*
+53-column registry for the first time (prior tests only ever used 1-2 stat
+columns, which never triggered it): assigning ~5 new columns per stat in a
+python loop (`df[new_col] = ...`, called ~250+ times) hits pandas'
+`PerformanceWarning: DataFrame is highly fragmented`. Fixed in both
+`_positional_baseline` and `_add_career_features` by building each batch of
+new columns as a dict and adding them with a single `pd.concat(axis=1)`
+instead of one-at-a-time assignment. Verified output is byte-identical to
+before the refactor (same shape, same McCaffrey values) with zero warnings.
+
+Verified end-to-end against real data:
+`build_training_set()` -> **11,152 rows x 518 columns**.
 
 ### `_positional_baseline` — IMPLEMENTED (`src/processing/gold.py`, tested in
 `test/processing/test_gold.py`)
