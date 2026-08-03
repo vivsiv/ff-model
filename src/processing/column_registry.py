@@ -11,44 +11,45 @@ def _load_registry() -> dict:
         return yaml.safe_load(f)
 
 
-def get_included_columns(table: str) -> List[str]:
+def get_identity_columns(source: str, table: str) -> List[str]:
     """
-    Returns the columns from `table` that are candidates for career-feature engineering
-    (stat_columns in TrainingSetBuilder._add_career_features / _positional_baseline), per
-    column_registry.yaml.
+    Returns the columns from `source`/`table` that are kept for joins/grouping/output but are
+    not career-averaged as a stat.
 
     Args:
+        source: Data source name, e.g. "nflverse"
         table: Silver table name, e.g. "player_stats"
 
     Returns:
         List of column names
     """
-    return _load_registry()[table]["included"]
+    return _load_registry()[source][table]["identity"]
 
 
-def get_excluded_columns(table: str) -> List[str]:
+def get_stat_columns(source: str, table: str) -> List[str]:
     """
-    Returns the columns from `table` that are explicitly not stat_columns candidates --
-    either identity/context columns, or stats judged not useful for fantasy modeling.
+    Returns the columns from `source`/`table` that are candidates for feature engineering.
 
     Args:
+        source: Data source name, e.g. "nflverse"
         table: Silver table name, e.g. "player_stats"
 
     Returns:
         List of column names
     """
-    return _load_registry()[table]["excluded"]
+    return _load_registry()[source][table]["stats"]
 
 
-def get_targets(table: str) -> List[str]:
+def get_targets(source: str, table: str) -> List[str]:
     """
-    Returns the columns from `table` that are candidate prediction targets (for
-    _join_with_target's target_col). Always a subset of get_included_columns(table).
+    Returns the columns from `source`/`table` that are candidate prediction targets (for
+    _join_with_target's target_col). Always a subset of get_stat_columns(source, table).
 
     Args:
+        source: Data source name, e.g. "nflverse"
         table: Silver table name, e.g. "player_stats"
 
     Returns:
         List of column names
     """
-    return _load_registry()[table]["targets"]
+    return _load_registry()[source][table]["targets"]

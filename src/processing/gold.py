@@ -1,10 +1,11 @@
 import os
 import logging
+import argparse
 from typing import List
 
 import pandas as pd
 
-from src.processing.column_registry import get_included_columns, get_targets
+from src.processing.column_registry import get_identity_columns, get_stat_columns, get_targets
 
 logging.basicConfig(
     level=logging.INFO,
@@ -196,12 +197,14 @@ class TrainingSetBuilder:
         Returns:
             DataFrame of the training set, also saved to gold_dir/training_set.csv
         """
-        targets = get_targets("player_stats")
+        targets = get_targets("nflverse", "player_stats")
         assert target_col in targets, f"{target_col} is not a registered target for player_stats: {targets}"
 
-        stat_columns = get_included_columns("player_stats")
+        identity_columns = get_identity_columns("nflverse", "player_stats")
+        stat_columns = get_stat_columns("nflverse", "player_stats")
 
         player_df = pd.read_csv(os.path.join(self.silver_dir, "player_stats.csv"), low_memory=False)
+        player_df = player_df[identity_columns + stat_columns]
 
         baseline_df = self._positional_baseline(player_df, stat_columns)
         features_df = self._add_career_features(player_df, baseline_df, stat_columns)
@@ -212,3 +215,31 @@ class TrainingSetBuilder:
         logger.info(f"Saved training set to {output_path}")
 
         return training_df
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Builds the gold training set from nflverse silver layer data"
+    )
+    parser.add_argument(
+        "--target-col",
+        type=str,
+        default="fantasy_points_ppr",
+        help="Column to predict; must be a registered target for player_stats (default: fantasy_points_ppr)"
+    )
+    parser.add_argument(
+        "--data-dir",
+        type=str,
+        default=None,
+        help="Parent directory for the silver and gold layers (default: class default)"
+    )
+
+    args = parser.parse_args()
+
+    kwargs = {"data_dir": args.data_dir} if args.data_dir is not None else {}
+    builder = TrainingSetBuilder(**kwargs)
+    builder.build_training_set(target_col=args.target_col)
+
+
+if __name__ == "__main__":
+    main()
