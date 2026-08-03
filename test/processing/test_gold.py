@@ -198,4 +198,55 @@ class TestTrainingSetBuilder():
 
     def test_build_training_set__rejects_a_target_not_in_the_registry(self):
         with pytest.raises(AssertionError):
-            self.builder.build_training_set(target_col="not_a_real_target")
+            self.builder.build_training_set(pd.DataFrame(), target_col="not_a_real_target")
+
+    def test_build_prediction_rows__keeps_only_the_most_recent_season_per_player(self):
+        features_df = pd.DataFrame({
+            "player_id": ["p1", "p1", "p1"],
+            "season": [2020, 2021, 2022],
+            "fantasy_points_ppr_career_avg": [10.0, 15.0, 20.0],
+        })
+
+        result = self.builder._build_prediction_rows(features_df, prediction_season=2023)
+
+        assert len(result) == 1
+        assert result["season"].iloc[0] == 2022
+        assert result["fantasy_points_ppr_career_avg"].iloc[0] == 20.0
+        assert result["target_season"].iloc[0] == 2023
+        assert pd.isna(result["target"].iloc[0])
+        # 2022 -> predicting 2023 is a normal adjacent-year gap (no seasons missed)
+        assert result["seasons_since_played"].iloc[0] == 0
+
+    def test_build_prediction_rows__reflects_a_real_gap_since_last_played(self):
+        features_df = pd.DataFrame({
+            "player_id": ["p1", "p1"],
+            "season": [2019, 2020],
+            "fantasy_points_ppr_career_avg": [10.0, 15.0],
+        })
+
+        result = self.builder._build_prediction_rows(features_df, prediction_season=2023)
+
+        # last played 2020, predicting 2023 -> 2021 and 2022 were missed (2 seasons)
+        assert result["season"].iloc[0] == 2020
+        assert result["target_season"].iloc[0] == 2023
+        assert result["seasons_since_played"].iloc[0] == 2
+
+    def test_build_prediction_rows__does_not_mix_players(self):
+        features_df = pd.DataFrame({
+            "player_id": ["p1", "p1", "p2", "p2", "p2"],
+            "season": [2020, 2021, 2019, 2020, 2022],
+            "fantasy_points_ppr_career_avg": [10.0, 20.0, 1.0, 2.0, 30.0],
+        })
+
+        result = self.builder._build_prediction_rows(
+            features_df, prediction_season=2023
+        ).sort_values("player_id").reset_index(drop=True)
+
+        assert list(result["player_id"]) == ["p1", "p2"]
+        assert list(result["season"]) == [2021, 2022]
+        assert list(result["fantasy_points_ppr_career_avg"]) == [20.0, 30.0]
+        assert list(result["seasons_since_played"]) == [1, 0]
+
+    def test_build_prediction_set__rejects_a_target_not_in_the_registry(self):
+        with pytest.raises(AssertionError):
+            self.builder.build_prediction_set(pd.DataFrame(), target_col="not_a_real_target", prediction_season=2026)
