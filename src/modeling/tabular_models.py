@@ -16,7 +16,7 @@ from sklearn.linear_model import LinearRegression, Ridge, Lasso
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.svm import SVR
 from sklearn.ensemble import HistGradientBoostingRegressor
-from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.model_selection import GridSearchCV
 from typing import Any, Tuple
 
 from src.processing.column_registry import get_identity_columns
@@ -71,17 +71,29 @@ class FantasyModel:
 
         return data
 
-    def split_data(self) -> dict[str, pd.DataFrame]:
-        X_train, X_test, y_train, y_test, identity_train, identity_test = train_test_split(
-            self.train_features, self.train_target, self.train_identity, test_size=0.2, random_state=42
-        )
+    def split_data(self, eval_data_years: int = 1) -> dict[str, pd.DataFrame]:
+        """
+        Splits chronologically by target_season, the most recent eval_data_years worth of 
+        seasons become the eval set, everything before that is training data.
+        This guarantees the eval set is strictly in the future relative to training.
+
+        Args:
+            eval_data_years: Number of seasons to hold out for eval (default: 1)
+
+        Returns:
+            dict with X_train/X_test, y_train/y_test, identity_train/identity_test
+        """
+        max_target_season = self.training_data["target_season"].max()
+        eval_cutoff_season = max_target_season - eval_data_years + 1
+        is_eval = self.training_data["target_season"] >= eval_cutoff_season
+
         data = {
-            "X_train": X_train,
-            "X_test": X_test,
-            "y_train": y_train,
-            "y_test": y_test,
-            "identity_train": identity_train,
-            "identity_test": identity_test,
+            "X_train": self.features_df[~is_eval],
+            "X_test": self.features_df[is_eval],
+            "y_train": self.target_df[~is_eval],
+            "y_test": self.target_df[is_eval],
+            "identity_train": self.identity_df[~is_eval],
+            "identity_test": self.identity_df[is_eval],
         }
         return data
 

@@ -15,12 +15,14 @@ class TestFantasyModel:
 
         os.makedirs(cls.gold_dir)
 
-        n = 10  # need 10 players so an 80/20 split has 8/2
+        n = 10
 
         # Must include every registry identity column, since FantasyModel selects
         # self.training_data[self.identity_cols] and would KeyError on anything missing.
         identity_data = {col: [f"{col}_{i}" for i in range(n)] for col in get_identity_columns("nflverse", "player_stats")}
-        identity_data["target_season"] = [2024] * n
+        # 8 rows spread across 2020-2023, 2 rows in the most recent season (2024), so the
+        # default eval_data_years=1 chronological split gives the same 8/2 shape as before.
+        identity_data["target_season"] = [2020, 2020, 2021, 2021, 2022, 2022, 2023, 2023, 2024, 2024]
 
         training_data = pd.DataFrame({
             **identity_data,
@@ -40,20 +42,20 @@ class TestFantasyModel:
     def test_initial_datasets(self):
         model = FantasyModel(data_dir=self.test_dir, target="target_1")
 
-        expected_train_features = pd.DataFrame({
+        expected_features = pd.DataFrame({
             'f1': [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
             'f2': [100, 50, 0, 100, 50, 0, 100, 50, 0, 100],
             'f3': [12, 0, 8, 12, 0, 8, 12, 0, 8, 12]
         })
-        expected_train_target = pd.Series([10, 11, 12, 13, 14, 15, 16, 17, 18, 19], name="target")
+        expected_target = pd.Series([10, 11, 12, 13, 14, 15, 16, 17, 18, 19], name="target")
 
-        assert model.train_features.equals(expected_train_features)
-        assert model.train_target.equals(expected_train_target)
-        assert list(model.train_identity.columns) == get_identity_columns("nflverse", "player_stats") + ["target_season"]
-        assert len(model.train_identity) == 10
+        assert model.features_df.equals(expected_features)
+        assert model.target_df.equals(expected_target)
+        assert list(model.identity_df.columns) == get_identity_columns("nflverse", "player_stats") + ["target_season"]
+        assert len(model.identity_df) == 10
         assert model.target == "target_1"
 
-    def test_split_data_has_correct_shape(self):
+    def test_split_data__holds_out_most_recent_season_by_default(self):
         data = self.model.split_data()
 
         identity_col_count = len(get_identity_columns("nflverse", "player_stats")) + 1  # + target_season
@@ -64,6 +66,18 @@ class TestFantasyModel:
         assert data['y_test'].shape == (2,)
         assert data['identity_train'].shape == (8, identity_col_count)
         assert data['identity_test'].shape == (2, identity_col_count)
+
+        # the eval set must be exactly the most recent season (2024), nothing older
+        assert set(data['identity_test']['target_season']) == {2024}
+        assert set(data['identity_train']['target_season']) == {2020, 2021, 2022, 2023}
+
+    def test_split_data__eval_data_years_controls_how_much_is_held_out(self):
+        data = self.model.split_data(eval_data_years=2)
+
+        assert data['X_train'].shape == (6, 3)
+        assert data['X_test'].shape == (4, 3)
+        assert set(data['identity_test']['target_season']) == {2023, 2024}
+        assert set(data['identity_train']['target_season']) == {2020, 2021, 2022}
 
     def test_split_data_is_deterministic(self):
         data1 = self.model.split_data()
