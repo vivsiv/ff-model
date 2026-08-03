@@ -1,15 +1,10 @@
-# Data directories
 bronze/
 silver/
-data/gold/
-data/discovery/
-data/html/
-data/mlruns/
-data/predictions/
-data/rankings/
+gold/
+html/
 
 # Jupyter Notebook
-.ipynb_checkpoints
+.ipynb_checkpoints/
 */.ipynb_checkpoints/*
 
 # Python
