@@ -32,9 +32,9 @@ class ProFootballReferenceScraper:
         """
         self.base_url = "https://www.pro-football-reference.com"
 
-        self.data_dir = data_dir 
-        self.html_dir = os.path.join(data_dir, "html")
-        self.bronze_dir = os.path.join(data_dir, "bronze")
+        self.data_dir = data_dir
+        self.html_dir = os.path.join(data_dir, "html", "pfr")
+        self.bronze_dir = os.path.join(data_dir, "bronze", "pfr")
 
         for d in [self.data_dir, self.html_dir, self.bronze_dir]:
             os.makedirs(d, exist_ok=True)

@@ -1,44 +1,44 @@
-from src.processing.column_registry import get_included_columns, get_excluded_columns, get_targets
+from src.processing.column_registry import get_identity_columns, get_stat_columns, get_targets
 
 
 class TestColumnRegistry():
-    def test_player_stats__included_and_excluded_have_no_overlap(self):
-        included = get_included_columns("player_stats")
-        excluded = get_excluded_columns("player_stats")
+    def test_nflverse_player_stats__identity_and_stats_have_no_overlap(self):
+        identity = get_identity_columns("nflverse", "player_stats")
+        stats = get_stat_columns("nflverse", "player_stats")
 
-        assert set(included) & set(excluded) == set()
+        assert set(identity) & set(stats) == set()
 
-    def test_player_stats__no_duplicates_within_any_list(self):
-        included = get_included_columns("player_stats")
-        excluded = get_excluded_columns("player_stats")
-        targets = get_targets("player_stats")
+    def test_nflverse_player_stats__no_duplicates_within_any_list(self):
+        identity = get_identity_columns("nflverse", "player_stats")
+        stats = get_stat_columns("nflverse", "player_stats")
+        targets = get_targets("nflverse", "player_stats")
 
-        assert len(included) == len(set(included))
-        assert len(excluded) == len(set(excluded))
+        assert len(identity) == len(set(identity))
+        assert len(stats) == len(set(stats))
         assert len(targets) == len(set(targets))
 
-    def test_player_stats__included_has_known_fantasy_relevant_columns(self):
-        included = get_included_columns("player_stats")
+    def test_nflverse_player_stats__stats_has_known_fantasy_relevant_columns(self):
+        stats = get_stat_columns("nflverse", "player_stats")
 
         for col in ["fantasy_points", "fantasy_points_ppr", "passing_epa", "target_share"]:
-            assert col in included
+            assert col in stats
 
-    def test_player_stats__excluded_has_known_identity_and_irrelevant_columns(self):
-        excluded = get_excluded_columns("player_stats")
+    def test_nflverse_player_stats__identity_has_known_identity_columns(self):
+        identity = get_identity_columns("nflverse", "player_stats")
 
-        for col in ["player_id", "position", "season", "def_sacks", "fg_made"]:
-            assert col in excluded
+        for col in ["player_id", "player_display_name", "position", "season", "recent_team", "games"]:
+            assert col in identity
 
-    def test_player_stats__targets_are_a_subset_of_included(self):
-        # targets aren't an alternative to being in "included" -- a prior season's value of a
+    def test_nflverse_player_stats__targets_are_a_subset_of_stats(self):
+        # targets aren't an alternative to being in "stats" -- a prior season's value of a
         # target is a legitimate feature for a later season (autoregression, not leakage), so
-        # every target must also appear in "included".
-        included = get_included_columns("player_stats")
-        targets = get_targets("player_stats")
+        # every target must also appear in "stats".
+        stats = get_stat_columns("nflverse", "player_stats")
+        targets = get_targets("nflverse", "player_stats")
 
-        assert set(targets) <= set(included)
+        assert set(targets) <= set(stats)
 
-    def test_player_stats__targets_has_known_target_columns(self):
-        targets = get_targets("player_stats")
+    def test_nflverse_player_stats__targets_has_known_target_columns(self):
+        targets = get_targets("nflverse", "player_stats")
 
         assert set(targets) == {"fantasy_points", "fantasy_points_ppr"}

@@ -16,7 +16,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-class NflverseDataScraper:
+class NflverseScraper:
     """Data source for player and team stats from the nflverse project (via nflreadpy)."""
 
     def __init__(self, data_dir: str = "../data"):
@@ -96,7 +96,7 @@ def main():
     args = parser.parse_args()
 
     kwargs = {"data_dir": args.data_dir} if args.data_dir is not None else {}
-    source = NflverseDataScraper(**kwargs)
+    source = NflverseScraper(**kwargs)
     source.fetch_all()
 
 
