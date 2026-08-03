@@ -2,6 +2,8 @@ bronze/
 silver/
 gold/
 html/
+mlruns/
+predictions/
 
 # Jupyter Notebook
 .ipynb_checkpoints/
