@@ -4,7 +4,7 @@ import os
 import shutil
 import tempfile
 
-from src.modelling import FantasyModel
+from src.modeling.tabular_models import FantasyModel
 
 
 class TestFantasyModel:
