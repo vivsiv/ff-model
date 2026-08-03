@@ -1,3 +1,100 @@
+## Phase 1 cleanup pass (per 2026_refresh_project_plan.md)
+
+Four items raised, all done:
+
+1. **Column exclusion bug fixed.** `build_training_set` was loading the full
+   143-column `player_stats.csv` and only ever *adding* derived columns for
+   `stat_columns` -- it never dropped the registry's excluded columns, so all
+   90 of them (including `headshot_url`) rode along untouched into
+   `training_set.csv`. Fixed by selecting `identity_columns + stat_columns`
+   from `player_df` before running the pipeline. Verified against real data:
+   `headshot_url`/`def_sacks`/`fg_made` gone, `player_display_name` (identity)
+   retained, shape 518 -> 437 columns.
+
+   This surfaced a registry schema gap: `excluded` conflated genuinely-useless
+   columns (defense/kicking/punting/`headshot_url`) with identity/context
+   columns gold.py actually needs (`player_id`, `position`, `season`,
+   `recent_team`, `games`, etc.), with only a comment distinguishing them.
+   Restructured `column_registry.yaml` to `identity`/`stats` (renamed from
+   `included`)/`targets` (subset of `stats`). Renamed `get_included_columns`
+   -> `get_stat_columns`, added `get_identity_columns`.
+
+   **Revised again same session**: dropped `excluded` entirely and added an
+   `nflverse:` source-namespace layer above `player_stats:` (raised as two
+   follow-up questions -- see below for the reasoning on both). Registry is
+   now `{source}.{table}.{identity,stats,targets}`, loader functions take
+   `(source, table)`. `identity`/`stats` are no longer required to be
+   exhaustive (a column judged not useful just isn't listed anywhere,
+   instead of being explicitly recorded as `excluded`) -- traded away the
+   "was this column deliberately rejected or just forgotten" audit trail and
+   the completeness-check invariant, in exchange for not maintaining a
+   90-entry list that no code actually reads (confirmed via grep: nothing
+   outside the registry's own module/tests ever called
+   `get_excluded_columns`). `test/processing/test_column_registry.py` updated
+   to match (6 tests, source-parameterized). Verified `build_training_set()`
+   output is unchanged after the restructure (same 11,152 x 437 shape,
+   `headshot_url` still absent).
+
+   On the source-namespace layer: checked first whether it was even
+   necessary for disambiguation -- it isn't yet, nflverse's table names
+   (`player_stats`, `team_stats`) don't collide with PFR's
+   (`player_fantasy_stats`, `player_receiving_stats`, `player_rushing_stats`,
+   `player_passing_stats`, `team_offense`), so a flat table-keyed registry
+   would've worked fine without it. Added it anyway for consistency with the
+   `data/bronze/{source}/`, `data/silver/{source}/` convention used
+   everywhere else in the project, and because PFR doesn't actually feed
+   `gold.py` right now anyway (per the earlier full-replacement decision) --
+   so this doesn't unblock or change anything today, it's just naming the
+   one source that exists correctly in case a second one ever needs to.
+
+2. **`NflverseDataScraper` -> `NflverseScraper`**, matching the
+   one-`*Scraper`-per-source convention stated in the plan. Mechanical rename
+   across `src/data/nflverse.py` and `test/data/test_nflverse.py`.
+
+3. **`src/processor.py` split, moved, and partially deleted.** Split into:
+   - `src/processing/pro_football_reference.py`, class
+     `ProFootballReferenceProcessor` (renamed from `DataProcessor` to match
+     `NflverseProcessor`'s convention) -- carries over exactly the
+     silver-layer methods (`standardize_name`, `standardize_team_name`,
+     `parse_awards`, `merge_multi_player_rows`, `combine_year_data`,
+     `add_ratio_stats`, `create_rollup_stats`, `write_to_silver`,
+     `build_player_*_stats`, `build_team_stats`), with `bronze_dir`/
+     `silver_dir` now namespaced under `pfr` (`data/bronze/pfr`,
+     `data/silver/pfr`) to match the per-source convention. No `gold_dir`,
+     no `current_year` -- gold is `TrainingSetBuilder`'s job now, not this
+     processor's.
+   - **Deleted, not moved**: `join_training_stats`, `join_live_stats`,
+     `clean_stats`, `collapse_duplicate_columns`, and the old
+     `build_training_set`/`build_live_set`/`process_all_data` (the parts of
+     `process_all_data` that called them). These were PFR-schema-specific
+     gold-assembly logic (joins keyed on separate pass/rush/rec tables,
+     age columns, `2TM` handling, 2-3yr rolling windows) and are functionally
+     superseded by `gold.py`'s `TrainingSetBuilder` (career features,
+     shrinkage, proper backward-only join, no leakage). No real destination
+     to move them to.
+   - Also fixed to match: `src/data/pro_football_reference.py`'s
+     `bronze_dir`/`html_dir` were still un-namespaced (`data/bronze`,
+     `data/html`, no `pfr` subfolder) despite `NflverseScraper` already using
+     `data/bronze/nflv` -- namespaced to `data/bronze/pfr`, `data/html/pfr`
+     for consistency, so the new processor reads from the right place.
+   - Test split accordingly: `test/processing/test_pro_football_reference.py`
+     (11 tests moved, silver-layer coverage) created;
+     `test/test_processor.py` deleted (its remaining 6 tests covered the
+     deleted gold-assembly methods, so they're gone, not moved).
+   - `README.md`'s Features section rewritten to describe the actual current
+     `src/data/`/`src/processing/` layout instead of the old flat
+     `scraper.py`/`processor.py` files.
+
+**Not done, flagging for later:** `notebooks/fantasy_modelling.ipynb` still
+imports `from src.data.pro_football_reference import ProFootballReferenceScraper`
+and `from src.processor import DataProcessor` (the latter no longer exists at
+all) -- fully on the old PFR pipeline, not touched in this pass. Low priority
+(exploratory notebook, not production code) but will error if run as-is.
+
+Full suite: 43 tests passing after this pass (was 49 before -- net change
+from -6 deleted gold-assembly tests, +11 moved PFR-silver tests, and the
+7 registry tests replacing the prior 6).
+
 ### Resolved during implementation (diverged from the original sketch above)
 
 - **Bronze is no longer split per year.** `NflverseDataScraper` originally wrote

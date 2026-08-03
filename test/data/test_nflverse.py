@@ -4,14 +4,14 @@ import shutil
 
 import pandas as pd
 
-from src.data.nflverse import NflverseDataScraper
+from src.data.nflverse import NflverseScraper
 
 
-class TestNflverseDataScraper():
+class TestNflverseScraper():
     @classmethod
     def setup_class(cls):
         cls.test_dir = tempfile.mkdtemp()
-        cls.scraper = NflverseDataScraper(data_dir=cls.test_dir)
+        cls.scraper = NflverseScraper(data_dir=cls.test_dir)
 
     @classmethod
     def teardown_class(cls):

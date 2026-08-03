@@ -7,17 +7,16 @@ A machine learning project to predict top fantasy football players for the 2025 
 This project collects historical NFL player and team data from Pro Football Reference and other sources, processes it, and builds machine learning models to predict fantasy performance for the upcoming season.
 
 ## Features
-scraper.py
-- Scrapes passing, receiving, rushing, and team offense stats from pro football reference year by year and saves it down
-- Built to allow the addition of more data sources
 
-processor.py
-- Takes the raw data files from the scraper and combines them all into one file per major stat
-   - Performs any transformations of cleaning needed
-- Creates ratio columns of certain stats i.e. targets_per_game
-- Creates rollup columns that are rolling averages of a stat up to 3 years. i.e. pass_yards_3_yr_avg
-- Builds the training data by joining each years fantasy point total to the previous years stats
-- Builds the live data set by joining this years top players with their stats from last year
+src/data/ -- one file per data source, each with a `*Scraper` class that saves raw data to `data/bronze/{source}/`
+- nflverse.py (`NflverseScraper`): pulls player and team season stats for all available seasons via nflreadpy
+- pro_football_reference.py (`ProFootballReferenceScraper`): legacy scraper, pro-football-reference now blocks bot traffic so this is no longer actively used
+
+src/processing/ -- one file per data source, each with a `*Processor` class that reads bronze data and saves cleaned data to `data/silver/{source}/`
+- nflverse.py (`NflverseProcessor`): filters player stats to fantasy-relevant positions (QB/RB/WR/TE)
+- pro_football_reference.py (`ProFootballReferenceProcessor`): legacy silver-layer processing (name/team standardization, rolling averages, ratio stats) for the old pro-football-reference pipeline
+- column_registry.py / column_registry.yaml: registry of which raw columns from each silver table are identity columns, candidate stat features, prediction targets, or excluded entirely -- the single source of truth `gold.py` reads from, rather than hardcoding column lists
+- gold.py (`TrainingSetBuilder`): builds the gold training set from silver data -- computes a positional baseline (trailing 5-season league average per position, to avoid an all-time average going stale as league-wide offensive output drifts), expanding career-to-date features per player (average/std/max/min/trend, and a shrinkage-adjusted average that pulls short careers toward the positional baseline so a 1-year outlier season isn't treated as equally reliable as a decade-long track record), then joins each player's next-season target onto their most recent prior season's features (bridging gap seasons, e.g. a player who missed a year to injury, rather than dropping them)
 
 analysis.py
 - Performs some sanity checks on the training and live data
