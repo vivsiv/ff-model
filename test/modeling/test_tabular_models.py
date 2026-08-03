@@ -3,11 +3,11 @@ import os
 import shutil
 import tempfile
 
-from src.modeling.tabular_models import FantasyModel
+from src.modeling.tabular_models import TabularModel
 from src.processing.column_registry import get_identity_columns
 
 
-class TestFantasyModel:
+class TestTabularModel:
     @classmethod
     def setup_class(cls):
         cls.test_dir = tempfile.mkdtemp()
@@ -17,7 +17,7 @@ class TestFantasyModel:
 
         n = 10
 
-        # Must include every registry identity column, since FantasyModel selects
+        # Must include every registry identity column, since TabularModel selects
         # self.training_data[self.identity_cols] and would KeyError on anything missing.
         identity_data = {col: [f"{col}_{i}" for i in range(n)] for col in get_identity_columns("nflverse", "player_stats")}
         # 8 rows spread across 2020-2023, 2 rows in the most recent season (2024), so the
@@ -33,14 +33,14 @@ class TestFantasyModel:
         })
         training_data.to_csv(os.path.join(cls.gold_dir, "target_1__training_set.csv"), index=False)
 
-        cls.model = FantasyModel(data_dir=cls.test_dir, target="target_1")
+        cls.model = TabularModel(data_dir=cls.test_dir, target="target_1")
 
     @classmethod
     def teardown_class(cls):
         shutil.rmtree(cls.test_dir)
 
     def test_initial_datasets(self):
-        model = FantasyModel(data_dir=self.test_dir, target="target_1")
+        model = TabularModel(data_dir=self.test_dir, target="target_1")
 
         expected_features = pd.DataFrame({
             'f1': [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
@@ -55,8 +55,8 @@ class TestFantasyModel:
         assert len(model.identity_df) == 10
         assert model.target == "target_1"
 
-    def test_split_data__holds_out_most_recent_season_by_default(self):
-        data = self.model.split_data()
+    def test_split_data__holds_out_most_recent_season(self):
+        data = self.model.split_data(eval_data_years=1)
 
         identity_col_count = len(get_identity_columns("nflverse", "player_stats")) + 1  # + target_season
 
@@ -80,8 +80,8 @@ class TestFantasyModel:
         assert set(data['identity_train']['target_season']) == {2020, 2021, 2022}
 
     def test_split_data_is_deterministic(self):
-        data1 = self.model.split_data()
-        data2 = self.model.split_data()
+        data1 = self.model.split_data(eval_data_years=1)
+        data2 = self.model.split_data(eval_data_years=1)
 
         pd.testing.assert_frame_equal(data1['X_train'], data2['X_train'])
         pd.testing.assert_frame_equal(data1['X_test'], data2['X_test'])

@@ -2,10 +2,10 @@ import os
 import logging
 import argparse
 from datetime import datetime
+from typing import Any, Optional
 
 import pandas as pd
 import mlflow
-from mlflow.tracking import MlflowClient
 from mlflow.models import infer_signature
 import numpy as np
 from sklearn.metrics import mean_squared_error
@@ -16,8 +16,6 @@ from sklearn.linear_model import LinearRegression, Ridge, Lasso
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.svm import SVR
 from sklearn.ensemble import HistGradientBoostingRegressor
-from sklearn.model_selection import GridSearchCV
-from typing import Any, Tuple
 
 from src.processing.column_registry import get_identity_columns
 from src.processing.gold import TARGET_COL
@@ -26,16 +24,15 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler("analysis.log"),
+        logging.FileHandler("tabular_models.log"),
         logging.StreamHandler()
     ]
 )
 logger = logging.getLogger(__name__)
 
 
-class FantasyModel:
-    """Loads the gold training set, splits it, and builds/tunes/logs models. Doesn't make or
-    report predictions itself -- see PredictionReporter for that."""
+class TabularModel:
+    """Loads the gold training set, splits it, and fits/evaluates/logs models."""
 
     def __init__(
             self,
@@ -71,14 +68,14 @@ class FantasyModel:
 
         return data
 
-    def split_data(self, eval_data_years: int = 1) -> dict[str, pd.DataFrame]:
+    def split_data(self, eval_data_years: int) -> dict[str, pd.DataFrame]:
         """
-        Splits chronologically by target_season, the most recent eval_data_years worth of 
+        Splits chronologically by target_season, the most recent eval_data_years worth of
         seasons become the eval set, everything before that is training data.
         This guarantees the eval set is strictly in the future relative to training.
 
         Args:
-            eval_data_years: Number of seasons to hold out for eval (default: 1)
+            eval_data_years: Number of seasons to hold out for eval
 
         Returns:
             dict with X_train/X_test, y_train/y_test, identity_train/identity_test
@@ -106,67 +103,6 @@ class FantasyModel:
 
         return pipeline
 
-    def create_model_grid_search(self) -> GridSearchCV:
-        eval_pipeline = self.create_pipeline()
-        param_grid = {
-            'model': [
-                LinearRegression(),
-                Ridge(),
-                Lasso(),
-                RandomForestRegressor(),
-                SVR(),
-                HistGradientBoostingRegressor(),
-            ]
-        }
-
-        grid_search = GridSearchCV(
-            eval_pipeline,
-            param_grid,
-            cv=5,
-            scoring={
-                'r2': 'r2',
-                'rmse': 'neg_root_mean_squared_error',
-            },
-            refit='r2',  # Use R2 for selecting best model
-            n_jobs=-1,  # Uses all available cores.
-        )
-
-        return grid_search
-
-    def log_grid_search_to_mlflow(self, grid_search: GridSearchCV) -> None:
-        mlflow.log_param("input", grid_search.param_grid)
-        mlflow.log_param("best", str(grid_search.best_params_))
-
-        cv_results_df = pd.DataFrame(grid_search.cv_results_)
-        cv_results_df['mean_test_rmse'] = -cv_results_df['mean_test_rmse']
-        cv_results_cols = [f"param_{key}" for key in grid_search.param_grid.keys()] + ['mean_test_r2', 'mean_test_rmse', 'std_test_r2']
-        cv_results_log = (
-            cv_results_df[cv_results_cols]
-            .sort_values(by=['mean_test_r2', 'mean_test_rmse'], ascending=[False, True])
-            .to_dict(orient='records')
-        )
-        mlflow.log_param("results", cv_results_log)
-
-        mlflow.log_metric("r2", grid_search.best_score_)
-        mlflow.log_metric("r2_std", grid_search.cv_results_['std_test_r2'][grid_search.best_index_])
-        mlflow.log_metric("rmse", -grid_search.cv_results_['mean_test_rmse'][grid_search.best_index_])
-        mlflow.log_metric("rmse_std", grid_search.cv_results_['std_test_rmse'][grid_search.best_index_])
-
-    def run_model_eval(self, data: dict[str, pd.DataFrame]) -> GridSearchCV:
-        grid_search = self.create_model_grid_search()
-
-        grid_search.fit(data["X_train"], data["y_train"])
-
-        mlflow.set_experiment(self.target)
-        run_name = f"model_eval_{datetime.now().strftime('%Y%m%d%H%M%S')}"
-
-        with mlflow.start_run(run_name=run_name):
-            mlflow.set_tag("phase", "eval")
-
-            self.log_grid_search_to_mlflow(grid_search)
-
-        return grid_search
-
     def get_base_model(self, model_type: str) -> Any:
         base_models = {
             'ridge': Ridge(),
@@ -178,108 +114,87 @@ class FantasyModel:
         }
         return base_models[model_type]
 
-    def get_param_grid(self, model_type: str) -> dict[str, list[Any]]:
-        master_param_grid = {
-            'ridge': {
-                'model__alpha': np.logspace(-4, 4, 10),
-            },
-            'lasso': {
-                'model__alpha': np.logspace(-4, 4, 10),
-            },
-            'random_forest': {
-                'model__n_estimators': [200, 300, 400],
-                'model__max_depth': [10, 15],
-                'model__min_samples_split': [5],
-                'model__min_samples_leaf': [2],
-            },
-            'svr': {
-                'model__C': np.logspace(-4, 4, 10),
-                'model__kernel': ['linear', 'rbf'],
-                'model__gamma': ['scale', 'auto'],
-            },
-            'hist_gradient_boosting': {
-                'model__learning_rate': [0.01, 0.05, 0.1],
-                'model__max_depth': [3, 5, 7, 9],
-                'model__min_samples_split': [2, 5, 10],
-                'model__min_samples_leaf': [1, 2, 4],
-            }
-        }
+    def setup_mlflow(self, model_type: str) -> str:
+        """
+        Sets the active mlflow experiment to {target}_{model_type} and creates a new run for
+        it, one experiment per target/model_type combination rather than lumping every model
+        type together under one experiment for the target.
 
-        return master_param_grid[model_type]
+        Args:
+            model_type: e.g. "random_forest"
 
-    def run_model_tuning(self, data: dict[str, pd.DataFrame], model_type: str) -> GridSearchCV:
-        pipeline = self.create_pipeline(self.get_base_model(model_type))
-        param_grid = self.get_param_grid(model_type)
+        Returns:
+            run_id -- pass this into fit_model and eval_model so they both resume this same
+            run (mlflow.start_run(run_id=...)) instead of each creating their own. Unlike
+            run_name, which is just a display label and creates a brand-new run every time
+            regardless of reuse, run_id is the actual identifier needed to resume a specific
+            run across multiple calls.
+        """
+        mlflow.set_experiment(f"{self.target}_{model_type}")
 
-        grid_search = GridSearchCV(
-            pipeline,
-            param_grid,
-            cv=5,
-            scoring={
-                'r2': 'r2',
-                'rmse': 'neg_root_mean_squared_error',
-            },
-            refit='r2',
-            n_jobs=-1
-        )
-        grid_search.fit(data["X_train"], data["y_train"])
-
-        mlflow.set_experiment(self.target)
-        run_name = f"{model_type}_tuning_{datetime.now().strftime('%Y%m%d%H%M%S')}"
-
-        with mlflow.start_run(run_name=run_name):
+        run_name = f"{model_type}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+        with mlflow.start_run(run_name=run_name) as run:
             mlflow.set_tag("model_type", model_type)
-            mlflow.set_tag("phase", "tuning")
+            run_id = run.info.run_id
 
-            self.log_grid_search_to_mlflow(grid_search)
+        return run_id
+
+    def fit_model(self, data: dict[str, pd.DataFrame], model_type: str, run_id: str, params: Optional[dict] = None) -> Pipeline:
+        """
+        Gets the base model for model_type, applies params (sklearn defaults if none given),
+        fits it on the training split, and registers it to mlflow under run_id.
+
+        Args:
+            data: Output of split_data
+            model_type: One of ridge, lasso, random_forest, svr, hist_gradient_boosting,
+                linear_regression
+            run_id: mlflow run_id from setup_mlflow, so the fit params/model artifact land in
+                the same run eval_model logs its metrics/predictions into
+            params: Hyperparameters to set on the base model before fitting, e.g.
+                {"n_estimators": 300} for random_forest. Uses sklearn's defaults if not given.
+
+        Returns:
+            The fitted pipeline
+        """
+        base_model = self.get_base_model(model_type)
+        base_model.set_params(**(params or {}))
+
+        pipeline = self.create_pipeline(base_model)
+        pipeline.fit(data["X_train"], data["y_train"])
+
+        with mlflow.start_run(run_id=run_id):
+            mlflow.log_params(base_model.get_params())
 
             signature = infer_signature(data["X_train"], data["y_train"])
             mlflow.sklearn.log_model(
-                sk_model=grid_search.best_estimator_,
+                sk_model=pipeline,
                 registered_model_name=f"{self.target}_{model_type}",
                 name=model_type,
                 input_example=data["X_train"],
                 signature=signature)
 
-        return grid_search
+        return pipeline
 
-    def load_model(self, model_type: str, model_version: int = None) -> Tuple[Pipeline, int]:
-        if model_version is None:
-            client = MlflowClient()
-            latest_version = client.get_latest_versions(f"{self.target}_{model_type}", stages=["None"])[0].version
-            model_version = latest_version
-        else:
-            model_version = model_version
-
-        pipeline = mlflow.sklearn.load_model(f"models:/{self.target}_{model_type}/{model_version}")
-
-        return pipeline, model_version
-
-    def view_year_test_predictions(self, preds_df: pd.DataFrame, year: int) -> pd.DataFrame:
-        return (
-            preds_df[preds_df["target_season"] == year]
-            .sort_values(by=["predictions", "actual"], ascending=False)
-        )
-
-    def eval_model(self, data: dict[str, pd.DataFrame], model_type: str, model_version: int = None, log_year: int = 2024) -> pd.DataFrame:
+    def eval_model(self, pipeline: Pipeline, data: dict[str, pd.DataFrame], run_id: str) -> pd.DataFrame:
         """
-        Loads a registered model and scores it against the test set: R2/RMSE logged to mlflow,
-        plus a per-row predictions-vs-actual csv logged as an mlflow artifact for log_year.
-        """
-        pipeline, model_version = self.load_model(model_type, model_version)
+        Scores a fitted pipeline against the eval set: R2/RMSE and the full set of
+        predictions-vs-actual logged to the same mlflow run fit_model created (run_id), rather
+        than a separate one.
 
+        Args:
+            pipeline: A fitted pipeline, e.g. returned by fit_model
+            data: Output of split_data
+            run_id: The mlflow run_id returned by fit_model, so eval metrics land in the same
+                run as the fit params/model artifact
+        """
         y_pred = pipeline.predict(data["X_test"])
-        mlflow.set_experiment(self.target)
 
         preds_df = data["identity_test"].copy()
         preds_df["predictions"] = y_pred
         preds_df["actual"] = data["y_test"]
+        preds_df = preds_df.sort_values(by=["predictions", "actual"], ascending=False)
 
-        with mlflow.start_run(run_name=f"test_{model_type}_v{model_version}"):
-            mlflow.set_tag("phase", "test")
-
-            mlflow.log_param("model_name", f"{self.target}_{model_type}_v{model_version}")
-
+        with mlflow.start_run(run_id=run_id):
             score = pipeline.score(data["X_test"], data["y_test"])
             print(f"R^2 score: {score}")
             mlflow.log_metric("r2", score)
@@ -288,21 +203,26 @@ class FantasyModel:
             print(f"RMSE: {rmse}")
             mlflow.log_metric("rmse", rmse)
 
-            log_year_preds_df = self.view_year_test_predictions(preds_df, log_year)
-            log_year_preds_df = log_year_preds_df.rename(columns={"predictions": self.target})
-            log_year_preds_df[self.target] = log_year_preds_df[self.target].round(2)
+            output_df = preds_df.rename(columns={"predictions": self.target})
+            output_df[self.target] = output_df[self.target].round(2)
 
-            csv_path = os.path.join(self.predictions_dir, f"{self.target}_{log_year}_predictions.csv")
-            log_year_preds_df[["player_display_name", "target_season", self.target, "actual"]].to_csv(csv_path, index=False)
+            csv_path = os.path.join(self.predictions_dir, f"{self.target}_eval_predictions_{run_id}.csv")
+            output_df[["player_display_name", "target_season", self.target, "actual"]].to_csv(csv_path, index=False)
 
-            mlflow.log_artifact(csv_path, f"test_predictions_{log_year}")
+            mlflow.log_artifact(csv_path, "eval_predictions")
 
         return preds_df
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Builds/tunes/logs a tabular model against a gold training set"
+        description="Fits and evaluates a tabular model against a gold training set"
+    )
+    parser.add_argument(
+        "--data-dir",
+        type=str,
+        default=None,
+        help="Parent directory for the gold/mlruns/predictions layers (default: class default)"
     )
     parser.add_argument(
         "--target",
@@ -314,17 +234,24 @@ def main():
         "--model-type",
         type=str,
         default="random_forest",
-        help="Model type to tune, one of: ridge, lasso, random_forest, svr, hist_gradient_boosting, linear_regression (default: random_forest)"
+        help="Model type to fit, one of: ridge, lasso, random_forest, svr, hist_gradient_boosting, linear_regression (default: random_forest)"
+    )
+    parser.add_argument(
+        "--eval-data-years",
+        type=int,
+        default=2,
+        help="Number of most recent seasons (by target_season) to hold out for eval (default: 2)"
     )
 
     args = parser.parse_args()
 
-    model = FantasyModel(target=args.target)
-    data = model.split_data()
+    kwargs = {"data_dir": args.data_dir} if args.data_dir is not None else {}
+    model = TabularModel(target=args.target, **kwargs)
+    data = model.split_data(eval_data_years=args.eval_data_years)
 
-    model.run_model_eval(data)
-    model.run_model_tuning(data, args.model_type)
-    model.eval_model(data, args.model_type)
+    run_id = model.setup_mlflow(args.model_type)
+    pipeline = model.fit_model(data, args.model_type, run_id)
+    model.eval_model(pipeline, data, run_id)
 
 
 if __name__ == "__main__":

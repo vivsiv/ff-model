@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 class PredictionReporter:
     """Loads a trained model and reports live predictions for the upcoming season
     (gold_dir/{target}__prediction_set.csv). Doesn't build, tune, or evaluate models itself --
-    see FantasyModel for that."""
+    see TabularModel for that."""
 
     def __init__(
             self,
@@ -34,9 +34,6 @@ class PredictionReporter:
     ):
         self.data_dir = data_dir
         self.gold_dir = os.path.join(data_dir, "gold")
-
-        # Same role as in FantasyModel: a descriptive label for naming mlflow runs/registered
-        # models/output files, and which gold_dir/{target}__prediction_set.csv to load.
         self.target = target
 
         self.tracking_dir = os.path.join(data_dir, "mlruns")
@@ -61,7 +58,7 @@ class PredictionReporter:
     def load_prediction_data(self) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """
         Loads gold_dir/{target}__prediction_set.csv and splits it into identity and feature
-        columns, the same way FantasyModel splits the training set.
+        columns, the same way TabularModel splits the training set.
 
         Returns:
             (identity_df, features_df)
