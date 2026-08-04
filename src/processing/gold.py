@@ -1,8 +1,9 @@
 import os
 import logging
 import argparse
-from typing import List
+from typing import List, Optional
 
+import numpy as np
 import pandas as pd
 
 from src.processing.column_registry import get_identity_columns, get_stat_columns, get_targets
@@ -16,6 +17,9 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+# The name every gold table uses for its target column.
+TARGET_COL = "target"
 
 
 class TrainingSetBuilder:
@@ -84,26 +88,23 @@ class TrainingSetBuilder:
         shrinkage_k: float = 3.0,
     ) -> pd.DataFrame:
         """
-        For each player, sorted by season, computes expanding career average features for each
-        stat in stat_columns. Features are inclusive of the current row's own season, 
-        so a row here always answers "as of the end of season x, what does their career look like."
+        For each player-season combo computes the expanding career average/max/min/stddev features for each
+        stat in stat_columns. Feature computations are inclusive of the current row's own season.
 
         Adds, per stat:
           - {stat}_career_avg / _career_std / _career_max / _career_min: expanding aggregates.
-            career_std is 0 for a player's first season (undefined with 1 data point) rather
-            than NaN.
+            career_std is 0 for a player's first season.
           - {stat}_trend: this season's own value minus {stat}_career_avg (how far above/below
             their own career norm this season was)
           - {stat}_shrunk_avg: {stat}_career_avg blended toward the positional baseline,
             weighted by years_played, so a short career doesn't get treated as equally reliable
             as a long one: shrunk_avg = (n / (n + k)) * career_avg + (k / (n + k)) * baseline
-
-        Also adds years_played: count of seasons with data up to and including this one.
+          - years_played: count of seasons with data up to and including this one.
 
         Args:
-            df: Dataframe of Player stats by season, must contain grouping_col, "position", and "season"
+            df: Dataframe of player stats by season.
             positional_baseline_df: Output of _positional_baseline, joined in by (position, season)
-            stat_columns: The stat columns to compute career features for
+            stat_columns: The stat columns to compute career features
             player_grouping_col: Column identifying a unique player (default: "player_id")
             shrinkage_k: Shrinkage strength constant — higher pulls harder toward the positional
                 baseline for a given years_played (default: 3.0, a starting point to tune later)
@@ -137,6 +138,23 @@ class TrainingSetBuilder:
 
         return pd.concat([df, pd.DataFrame(shrunk_columns, index=df.index)], axis=1)
 
+    def load_player_features(self) -> pd.DataFrame:
+        """
+        Loads the `player_stats` silver tables and adds computed feature values to it. Both
+        the construction of the training and prediction sets use the output.
+
+        Returns:
+            One row per player-season, with career-to-date features through that season
+        """
+        identity_columns = get_identity_columns("nflverse", "player_stats")
+        stat_columns = get_stat_columns("nflverse", "player_stats")
+
+        player_df = pd.read_csv(os.path.join(self.silver_dir, "player_stats.csv"), low_memory=False)
+        player_df = player_df[identity_columns + stat_columns]
+
+        baseline_df = self._positional_baseline(player_df, stat_columns)
+        return self._add_career_features(player_df, baseline_df, stat_columns)
+
     def _join_with_target(
         self,
         features_df: pd.DataFrame,
@@ -144,10 +162,10 @@ class TrainingSetBuilder:
         player_grouping_col: str = "player_id",
     ) -> pd.DataFrame:
         """
-        Joins each player's season-N target value onto their most recent prior season's
-        feature row — not necessarily season N-1. A player who missed one or more seasons
-        (injury, out of the league) still gets matched to their last active season instead of
-        being dropped. Only players with at least one prior season produce an output row.
+        Joins each player's season N target value onto their most recent prior season's
+        feature row (usually season N-1). A player who missed season N-1 still gets matched
+        to their last active season instead of being dropped.
+        Only players with at least one prior season produce an output row.
 
         Args:
             features_df: Output of _add_career_features (one row per player-season, with that
@@ -163,7 +181,7 @@ class TrainingSetBuilder:
         season_dtype = features_df["season"].dtype
 
         target_df = features_df[[player_grouping_col, "season", target_col]].copy()
-        target_df = target_df.rename(columns={"season": "target_season", target_col: "target"})
+        target_df = target_df.rename(columns={"season": "target_season", target_col: TARGET_COL})
 
         merged = pd.merge_asof(
             target_df.sort_values("target_season"),
@@ -179,53 +197,111 @@ class TrainingSetBuilder:
         merged["seasons_since_played"] = merged["target_season"] - merged["season"] - 1
 
         feature_columns = list(features_df.columns)
-        return merged[feature_columns + ["target_season", "target", "seasons_since_played"]]
+        return merged[feature_columns + ["target_season", TARGET_COL, "seasons_since_played"]]
 
-    def build_training_set(self, target_col: str = "fantasy_points_ppr") -> pd.DataFrame:
+    def build_training_set(self, features_df: pd.DataFrame, target_col: str = "fantasy_points_ppr") -> pd.DataFrame:
         """
-        Builds the gold training set from silver player_stats: positional baseline -> career
-        features -> joined with each player's next-season target. stat_columns comes from the
-        column registry (column_registry.yaml), not hardcoded here.
-
-        Does not yet include the team-shift join (origin/destination team, lagged to season
-        N-1 -- see the plan) -- career features only for now.
+        Builds the training set from the features dataframe and specified target
+        and saves it to the gold layer.
 
         Args:
+            features_df: Output of load_player_features
             target_col: Column to predict; must be a registered target for player_stats
                 (default: "fantasy_points_ppr")
 
         Returns:
-            DataFrame of the training set, also saved to gold_dir/training_set.csv
+            DataFrame of the training set, also saved to gold_dir/{target_col}__training_set.csv
         """
         targets = get_targets("nflverse", "player_stats")
         assert target_col in targets, f"{target_col} is not a registered target for player_stats: {targets}"
 
-        identity_columns = get_identity_columns("nflverse", "player_stats")
-        stat_columns = get_stat_columns("nflverse", "player_stats")
-
-        player_df = pd.read_csv(os.path.join(self.silver_dir, "player_stats.csv"), low_memory=False)
-        player_df = player_df[identity_columns + stat_columns]
-
-        baseline_df = self._positional_baseline(player_df, stat_columns)
-        features_df = self._add_career_features(player_df, baseline_df, stat_columns)
         training_df = self._join_with_target(features_df, target_col)
 
-        output_path = os.path.join(self.gold_dir, "training_set.csv")
+        output_path = os.path.join(self.gold_dir, f"{target_col}__training_set.csv")
         training_df.to_csv(output_path, index=False)
         logger.info(f"Saved training set to {output_path}")
 
         return training_df
 
+    def _build_prediction_rows(
+        self,
+        features_df: pd.DataFrame,
+        prediction_season: int,
+        player_grouping_col: str = "player_id",
+    ) -> pd.DataFrame:
+        """
+        Takes each player's most recent season from the features dataframe and reframes it as a row
+        for predicting next season's target values.
+
+        Includes every player with at least one season on record, final predictions need
+        to filtering down to who's actually still active/rostered for prediction_season.
+
+        Args:
+            features_df: Output of load_player_features (one row per player-season)
+            prediction_season: The season to build a prediction row for, e.g. 2026
+            player_grouping_col: Column identifying a unique player (default: "player_id")
+
+        Returns:
+            DataFrame with one row per player, "target_season" set to prediction_season,
+            "target" as NaN, and "seasons_since_played" computed the same way as
+            _join_with_target
+        """
+        latest_df = (
+            features_df.sort_values("season")
+            .groupby(player_grouping_col, as_index=False)
+            .tail(1)
+            .copy()
+        )
+        latest_df["target_season"] = prediction_season
+        latest_df["seasons_since_played"] = prediction_season - latest_df["season"] - 1
+        latest_df[TARGET_COL] = np.nan
+
+        return latest_df
+
+    def build_prediction_set(self, features_df: pd.DataFrame, target_col: str, prediction_season: int) -> pd.DataFrame:
+        """
+        Builds the gold prediction set from career-feature rows: each player's most recent
+        season reframed as a row for predicting prediction_season, with target left blank
+        (NaN).
+
+        Args:
+            features_df: Output of load_player_features
+            target_col: Column that will eventually be predicted; must be a registered target
+                for player_stats (only used for naming the output file consistently with
+                build_training_set -- the actual target values are blank)
+            prediction_season: The season to build a prediction row for, e.g. 2026
+
+        Returns:
+            DataFrame of the prediction set, also saved to
+            gold_dir/{target_col}__prediction_set.csv
+        """
+        targets = get_targets("nflverse", "player_stats")
+        assert target_col in targets, f"{target_col} is not a registered target for player_stats: {targets}"
+
+        prediction_df = self._build_prediction_rows(features_df, prediction_season)
+
+        output_path = os.path.join(self.gold_dir, f"{target_col}__prediction_set.csv")
+        prediction_df.to_csv(output_path, index=False)
+        logger.info(f"Saved prediction set to {output_path}")
+
+        return prediction_df
+
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Builds the gold training set from nflverse silver layer data"
+        description="Builds gold training/prediction sets from nflverse silver layer data"
     )
     parser.add_argument(
         "--target-col",
         type=str,
         default="fantasy_points_ppr",
         help="Column to predict; must be a registered target for player_stats (default: fantasy_points_ppr)"
+    )
+    parser.add_argument(
+        "--prediction-season",
+        type=int,
+        default=2026,
+        help="If provided, also builds a prediction set for this season (e.g. 2026)"
     )
     parser.add_argument(
         "--data-dir",
@@ -238,7 +314,10 @@ def main():
 
     kwargs = {"data_dir": args.data_dir} if args.data_dir is not None else {}
     builder = TrainingSetBuilder(**kwargs)
-    builder.build_training_set(target_col=args.target_col)
+
+    features_df = builder.load_player_features()
+    builder.build_training_set(features_df, target_col=args.target_col)
+    builder.build_prediction_set(features_df, target_col=args.target_col, prediction_season=args.prediction_season)
 
 
 if __name__ == "__main__":

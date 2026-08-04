@@ -39,16 +39,18 @@ PHASE 1. First Model [IN PROGRESS]
     - Model: similar to what was done for scrapers. Processing should exist in src/processing, each file within it should have a `Processor` class for a particular data source
         - src/processing/nflverse.py contains NflVerseProcessor
     - Data should now be saved under data/silver/{data_source}
-4. Create the training set builder. [IN PROGRESS]
+4. Create the training set builder. [DONE]
     - Only uses nflverse's "player_stats" table for now.
     - Pull out relevant columns from the silver layer.
     - Compute the positional baseline stat values and the career stat features.
     - Join the stat features with the target to be predicted (ppr_points).
     - NOTE: src/processor.py has the code both for the pro_football_reference.py processor and training set assembler in this new model.
-5. Create the first model [TODO]
+5. Create the first model [IN PROGRESS]
     - Correctly split the training and eval data.
         - Open question: Should we do 2024 and 2025 as eval or have 2024 be eval and 2025 be a test set.
     - Create a random forest regressor, fit it to the training data and see how it does on the eval/test data.
+    - Move the making of predictions to its own file modeling/tabular_predictions.py
+    - Add build_prediction set to gold.py (this should have season == last season (2025) and target season == 2026 with the target_column blank)
 
 PHASE 2. Improve the first model [TODO]
 1. View which features are contributing the most to decisions.
