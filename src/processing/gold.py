@@ -88,26 +88,23 @@ class TrainingSetBuilder:
         shrinkage_k: float = 3.0,
     ) -> pd.DataFrame:
         """
-        For each player, sorted by season, computes expanding career average features for each
-        stat in stat_columns. Features are inclusive of the current row's own season, 
-        so a row here always answers "as of the end of season x, what does their career look like."
+        For each player-season combo computes the expanding career average/max/min/stddev features for each
+        stat in stat_columns. Feature computations are inclusive of the current row's own season.
 
         Adds, per stat:
           - {stat}_career_avg / _career_std / _career_max / _career_min: expanding aggregates.
-            career_std is 0 for a player's first season (undefined with 1 data point) rather
-            than NaN.
+            career_std is 0 for a player's first season.
           - {stat}_trend: this season's own value minus {stat}_career_avg (how far above/below
             their own career norm this season was)
           - {stat}_shrunk_avg: {stat}_career_avg blended toward the positional baseline,
             weighted by years_played, so a short career doesn't get treated as equally reliable
             as a long one: shrunk_avg = (n / (n + k)) * career_avg + (k / (n + k)) * baseline
-
-        Also adds years_played: count of seasons with data up to and including this one.
+          - years_played: count of seasons with data up to and including this one.
 
         Args:
-            df: Dataframe of Player stats by season, must contain grouping_col, "position", and "season"
+            df: Dataframe of player stats by season.
             positional_baseline_df: Output of _positional_baseline, joined in by (position, season)
-            stat_columns: The stat columns to compute career features for
+            stat_columns: The stat columns to compute career features
             player_grouping_col: Column identifying a unique player (default: "player_id")
             shrinkage_k: Shrinkage strength constant — higher pulls harder toward the positional
                 baseline for a given years_played (default: 3.0, a starting point to tune later)
@@ -143,11 +140,8 @@ class TrainingSetBuilder:
 
     def load_player_features(self) -> pd.DataFrame:
         """
-        Loads silver player_stats and computes positional-baseline + career features. Shared
-        setup for both build_training_set and build_prediction_set -- call once and pass the
-        result to both if building both in the same run, rather than recomputing it twice.
-        identity/stat columns come from the column registry (column_registry.yaml), not
-        hardcoded here.
+        Loads the `player_stats` silver tables and adds computed feature values to it. Both
+        the construction of the training and prediction sets use the output.
 
         Returns:
             One row per player-season, with career-to-date features through that season
@@ -168,10 +162,10 @@ class TrainingSetBuilder:
         player_grouping_col: str = "player_id",
     ) -> pd.DataFrame:
         """
-        Joins each player's season-N target value onto their most recent prior season's
-        feature row — not necessarily season N-1. A player who missed one or more seasons
-        (injury, out of the league) still gets matched to their last active season instead of
-        being dropped. Only players with at least one prior season produce an output row.
+        Joins each player's season N target value onto their most recent prior season's
+        feature row (usually season N-1). A player who missed season N-1 still gets matched
+        to their last active season instead of being dropped.
+        Only players with at least one prior season produce an output row.
 
         Args:
             features_df: Output of _add_career_features (one row per player-season, with that
@@ -207,11 +201,8 @@ class TrainingSetBuilder:
 
     def build_training_set(self, features_df: pd.DataFrame, target_col: str = "fantasy_points_ppr") -> pd.DataFrame:
         """
-        Builds the gold training set from career-feature rows: joins each player's next-season
-        target onto their most recent prior season's features.
-
-        Does not yet include the team-shift join (origin/destination team, lagged to season
-        N-1 -- see the plan) -- career features only for now.
+        Builds the training set from the features dataframe and specified target
+        and saves it to the gold layer.
 
         Args:
             features_df: Output of load_player_features
@@ -219,8 +210,7 @@ class TrainingSetBuilder:
                 (default: "fantasy_points_ppr")
 
         Returns:
-            DataFrame of the training set, also saved to
-            gold_dir/{target_col}__training_set.csv
+            DataFrame of the training set, also saved to gold_dir/{target_col}__training_set.csv
         """
         targets = get_targets("nflverse", "player_stats")
         assert target_col in targets, f"{target_col} is not a registered target for player_stats: {targets}"
@@ -240,16 +230,11 @@ class TrainingSetBuilder:
         player_grouping_col: str = "player_id",
     ) -> pd.DataFrame:
         """
-        From career-feature rows (one per player-season), takes each player's single most
-        recent season and reframes it as a row for predicting prediction_season: target_season
-        is set to prediction_season, target is left blank (NaN) since it hasn't happened yet.
-        Same gap-bridging idea as _join_with_target -- a player whose most recent season isn't
-        immediately before prediction_season (injury, missed a year) is still included, using
-        whatever their last season on record was.
+        Takes each player's most recent season from the features dataframe and reframes it as a row
+        for predicting next season's target values.
 
-        Includes every player with at least one season on record. Filtering down to who's
-        actually still active/rostered for prediction_season is a downstream concern (e.g. a
-        current-rosters join), not this method's job.
+        Includes every player with at least one season on record, final predictions need
+        to filtering down to who's actually still active/rostered for prediction_season.
 
         Args:
             features_df: Output of load_player_features (one row per player-season)

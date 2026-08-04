@@ -17,11 +17,7 @@ class TestTabularModel:
 
         n = 10
 
-        # Must include every registry identity column, since TabularModel selects
-        # self.training_data[self.identity_cols] and would KeyError on anything missing.
         identity_data = {col: [f"{col}_{i}" for i in range(n)] for col in get_identity_columns("nflverse", "player_stats")}
-        # 8 rows spread across 2020-2023, 2 rows in the most recent season (2024), so the
-        # default eval_data_years=1 chronological split gives the same 8/2 shape as before.
         identity_data["target_season"] = [2020, 2020, 2021, 2021, 2022, 2022, 2023, 2023, 2024, 2024]
 
         training_data = pd.DataFrame({

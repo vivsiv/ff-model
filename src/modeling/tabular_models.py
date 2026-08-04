@@ -70,7 +70,7 @@ class TabularModel:
 
     def split_data(self, eval_data_years: int) -> dict[str, pd.DataFrame]:
         """
-        Splits chronologically by target_season, the most recent eval_data_years worth of
+        Splits chronologically by target_season. The most recent eval_data_years worth of
         seasons become the eval set, everything before that is training data.
         This guarantees the eval set is strictly in the future relative to training.
 
@@ -116,23 +116,17 @@ class TabularModel:
 
     def setup_mlflow(self, model_type: str) -> str:
         """
-        Sets the active mlflow experiment to {target}_{model_type} and creates a new run for
-        it, one experiment per target/model_type combination rather than lumping every model
-        type together under one experiment for the target.
+        Sets the active mlflow experiment to {target}_{model_type} and creates a new run for it.
 
         Args:
             model_type: e.g. "random_forest"
 
         Returns:
-            run_id -- pass this into fit_model and eval_model so they both resume this same
-            run (mlflow.start_run(run_id=...)) instead of each creating their own. Unlike
-            run_name, which is just a display label and creates a brand-new run every time
-            regardless of reuse, run_id is the actual identifier needed to resume a specific
-            run across multiple calls.
+            run_id - The mlflow run to tie training and eval to.
         """
         mlflow.set_experiment(f"{self.target}_{model_type}")
-
         run_name = f"{model_type}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+
         with mlflow.start_run(run_name=run_name) as run:
             mlflow.set_tag("model_type", model_type)
             run_id = run.info.run_id
@@ -154,7 +148,7 @@ class TabularModel:
                 {"n_estimators": 300} for random_forest. Uses sklearn's defaults if not given.
 
         Returns:
-            The fitted pipeline
+            The fit pipeline
         """
         base_model = self.get_base_model(model_type)
         base_model.set_params(**(params or {}))
@@ -177,12 +171,11 @@ class TabularModel:
 
     def eval_model(self, pipeline: Pipeline, data: dict[str, pd.DataFrame], run_id: str) -> pd.DataFrame:
         """
-        Scores a fitted pipeline against the eval set: R2/RMSE and the full set of
-        predictions-vs-actual logged to the same mlflow run fit_model created (run_id), rather
-        than a separate one.
+        Scores a fitted pipeline against the eval set. Logs R^2, RMSE, and the full dataset of
+        predictions vs actual for the eval set..
 
         Args:
-            pipeline: A fitted pipeline, e.g. returned by fit_model
+            pipeline: A fit pipeline.
             data: Output of split_data
             run_id: The mlflow run_id returned by fit_model, so eval metrics land in the same
                 run as the fit params/model artifact
@@ -192,7 +185,7 @@ class TabularModel:
         preds_df = data["identity_test"].copy()
         preds_df["predictions"] = y_pred
         preds_df["actual"] = data["y_test"]
-        preds_df = preds_df.sort_values(by=["predictions", "actual"], ascending=False)
+        preds_df = preds_df.sort_values(by=["target_season", "predictions", "actual"], ascending=False)
 
         with mlflow.start_run(run_id=run_id):
             score = pipeline.score(data["X_test"], data["y_test"])

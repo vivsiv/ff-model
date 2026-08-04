@@ -24,8 +24,7 @@ logger = logging.getLogger(__name__)
 
 class PredictionReporter:
     """Loads a trained model and reports live predictions for the upcoming season
-    (gold_dir/{target}__prediction_set.csv). Doesn't build, tune, or evaluate models itself --
-    see TabularModel for that."""
+    (gold_dir/{target}__prediction_set.csv)."""
 
     def __init__(
             self,
@@ -57,8 +56,7 @@ class PredictionReporter:
 
     def load_prediction_data(self) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """
-        Loads gold_dir/{target}__prediction_set.csv and splits it into identity and feature
-        columns, the same way TabularModel splits the training set.
+        Loads gold_dir/{target}__prediction_set.csv and splits it into identity and feature columns.
 
         Returns:
             (identity_df, features_df)
@@ -72,7 +70,7 @@ class PredictionReporter:
 
         return data[identity_cols], data[feature_cols]
 
-    def make_live_predictions(self, model_type: str, model_version: int = None) -> pd.DataFrame:
+    def make_predictions(self, model_type: str, model_version: int = None) -> pd.DataFrame:
         identity_df, features_df = self.load_prediction_data()
         pipeline, model_version = self.load_model(model_type, model_version)
 
@@ -84,10 +82,12 @@ class PredictionReporter:
         preds_df.rename(columns={"predictions": self.target}, inplace=True)
         preds_df[self.target] = preds_df[self.target].round(2)
 
-        csv_path = os.path.join(self.predictions_dir, f"{self.target}_live_predictions.csv")
+        csv_path = os.path.join(self.predictions_dir, f"{self.target}_{model_type}_v{model_version}_predictions.csv")
         preds_df.to_csv(csv_path, index=False)
 
-        with mlflow.start_run(run_name=f"live_{model_type}_v{model_version}"):
+        mlflow.set_experiment(f"{self.target}_{model_type}")
+
+        with mlflow.start_run(run_name=f"{model_type}_v{model_version}_predictions"):
             mlflow.set_tag("phase", "live")
             mlflow.log_param("model_name", f"{self.target}_{model_type}_v{model_version}")
 
@@ -101,6 +101,12 @@ def main():
         description="Reports live predictions for the upcoming season from a trained model"
     )
     parser.add_argument(
+        "--data-dir",
+        type=str,
+        default=None,
+        help="Parent directory for the gold/mlruns/predictions layers (default: class default)"
+    )
+    parser.add_argument(
         "--target",
         type=str,
         default="fantasy_points_ppr",
@@ -112,11 +118,19 @@ def main():
         default="random_forest",
         help="Registered model type to load, one of: ridge, lasso, random_forest, svr, hist_gradient_boosting, linear_regression (default: random_forest)"
     )
+    parser.add_argument(
+        "--model-version",
+        type=int,
+        default=None,
+        help="Specific model version to load for inference"
+    )
 
     args = parser.parse_args()
 
-    reporter = PredictionReporter(target=args.target)
-    live_preds_df = reporter.make_live_predictions(args.model_type)
+    kwargs = {"data_dir": args.data_dir} if args.data_dir is not None else {}
+    reporter = PredictionReporter(target=args.target, **kwargs)
+    live_preds_df = reporter.make_predictions(model_type=args.model_type, model_version=args.model_version)
+
     print(live_preds_df)
 
 
