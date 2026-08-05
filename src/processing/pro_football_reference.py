@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 class ProFootballReferenceProcessor:
     """Generates silver layer data from pro football reference bronze layer data."""
 
-    def __init__(self, data_dir: str = "../data"):
+    def __init__(self, data_dir: str):
         """
         Initialize the processor.
 
@@ -569,14 +569,14 @@ def main():
     parser.add_argument(
         "--data-dir",
         type=str,
-        default=None,
-        help="Root directory the pro football reference bronze data lives in and silver data will be saved to (default: class default)"
+        default="data",
+        help="Root directory the pro football reference bronze data lives in and silver data "
+             "will be saved to, relative to the repo root (default: data)"
     )
 
     args = parser.parse_args()
 
-    kwargs = {"data_dir": args.data_dir} if args.data_dir is not None else {}
-    processor = ProFootballReferenceProcessor(**kwargs)
+    processor = ProFootballReferenceProcessor(data_dir=args.data_dir)
     processor.process_all_data()
 
 

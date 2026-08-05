@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 class ProFootballReferenceScraper:
     """Raw data scraper for pro football reference's website."""
 
-    def __init__(self, data_dir: str = "../data"):
+    def __init__(self, data_dir: str):
         """
         Initialize the scraper.
 
@@ -294,14 +294,13 @@ def main():
     parser.add_argument(
         "--data-dir",
         type=str,
-        default=None,
-        help="Directory to save scraped data."
+        default="data",
+        help="Directory to save scraped data, relative to the repo root (default: data)"
     )
 
     args = parser.parse_args()
 
-    kwargs = {"data_dir": args.data_dir} if args.data_dir is not None else {}
-    scraper = ProFootballReferenceScraper(**kwargs)
+    scraper = ProFootballReferenceScraper(data_dir=args.data_dir)
 
     scraper.scrape_years(start_year=args.start_year, end_year=args.end_year)
 
