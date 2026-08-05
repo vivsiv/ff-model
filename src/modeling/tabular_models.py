@@ -40,6 +40,7 @@ class TabularModel:
             data_dir: str,
             tracking_dir: str,
             target: str = "fantasy_points_ppr",
+            excluded_features: Optional[list[str]] = None,
     ):
         self.data_dir = data_dir
         self.gold_data_dir = os.path.join(data_dir, "gold")
@@ -51,15 +52,30 @@ class TabularModel:
         self.predictions_dir = os.path.join(data_dir, "predictions")
         os.makedirs(self.predictions_dir, exist_ok=True)
 
+        self.excluded_features = excluded_features or []
         self.identity_cols = get_identity_columns("nflverse", "player_stats") + ["target_season"]
         self.feature_cols = [
             col for col in self.training_data.columns
             if col not in self.identity_cols + [TARGET_COL]
+            and not self._is_excluded_feature(col)
         ]
 
         self.identity_df = self.training_data[self.identity_cols]
         self.features_df = self.training_data[self.feature_cols]
         self.target_df = self.training_data[TARGET_COL]
+
+    def _is_excluded_feature(self, col: str) -> bool:
+        """Returns True if col matches any entry in self.excluded_features. Entries
+        ending in "*" are treated as prefixes (e.g. "f*" matches any column starting
+        with "f"); all other entries must match col exactly."""
+        for excluded in self.excluded_features:
+            if excluded.endswith("*"):
+                if col.startswith(excluded[:-1]):
+                    return True
+            elif col == excluded:
+                return True
+
+        return False
 
     def load_data(self) -> pd.DataFrame:
         filename = f"{self.target}__training_set.csv"
@@ -279,6 +295,15 @@ def main():
         help="Model type to fit, one of: ridge, lasso, random_forest, svr, hist_gradient_boosting, linear_regression (default: random_forest)"
     )
     parser.add_argument(
+        "--exclude-features",
+        type=str,
+        nargs="+",
+        default=None,
+        help="Feature names to exclude from the feature set used to train/eval. Entries "
+             "ending in '*' are treated as prefixes, e.g. 'receiving_*' excludes any feature "
+             "starting with 'receiving_'. default: none excluded)"
+    )
+    parser.add_argument(
         "--eval-data-years",
         type=int,
         default=1,
@@ -294,7 +319,12 @@ def main():
 
     args = parser.parse_args()
 
-    model = TabularModel(data_dir=args.data_dir, tracking_dir=args.tracking_dir, target=args.target)
+    model = TabularModel(
+        data_dir=args.data_dir,
+        tracking_dir=args.tracking_dir,
+        target=args.target,
+        excluded_features=args.exclude_features,
+    )
     data = model.split_data(eval_data_years=args.eval_data_years, test_data_years=args.test_data_years)
 
     run_id = model.setup_mlflow(args.model_type)

@@ -52,6 +52,41 @@ class TestTabularModel:
         assert len(model.identity_df) == 10
         assert model.target == "target_1"
 
+    def test_initial_datasets__excludes_features_by_exact_match_and_prefix(self):
+        model = TabularModel(
+            data_dir=self.test_dir,
+            tracking_dir=self.tracking_dir,
+            target="target_1",
+            excluded_features=["f1", "f3"],
+        )
+
+        expected_features = pd.DataFrame({
+            'f2': [100, 50, 0, 100, 50, 0, 100, 50, 0, 100],
+        })
+
+        assert model.features_df.equals(expected_features)
+        assert model.feature_cols == ["f2"]
+
+    def test_initial_datasets__excludes_features_by_prefix_when_denoted_with_a_star(self):
+        model = TabularModel(
+            data_dir=self.test_dir,
+            tracking_dir=self.tracking_dir,
+            target="target_1",
+            excluded_features=["f*"],  # trailing "*" should catch f1, f2, and f3
+        )
+
+        assert model.feature_cols == []
+
+    def test_initial_datasets__does_not_treat_features_as_prefixes_without_a_star(self):
+        model = TabularModel(
+            data_dir=self.test_dir,
+            tracking_dir=self.tracking_dir,
+            target="target_1",
+            excluded_features=["f"],  # no trailing "*", so this shouldn't match f1/f2/f3
+        )
+
+        assert model.feature_cols == ["f1", "f2", "f3"]
+
     def test_split_data__holds_out_most_recent_season_for_test_and_the_one_before_for_eval(self):
         data = self.model.split_data(eval_data_years=1, test_data_years=1)
 
