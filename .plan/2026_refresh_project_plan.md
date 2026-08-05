@@ -54,13 +54,13 @@ PHASE 1. First Model (Total PPR Points) [DONE]
 
 
 PHASE 2. Improve the first model [IN PROGRESS]
-1. Add Out of Bag error as a metric (what does the oob_score parameter do?) [IN PROGRESS].
-2. Try min_samples_leaf 4,8,16. Are any other hyperparams worth adjusting?
-3. Update the notebook to be able to load a saved model and inspect it
-4. View which features are contributing the most to decisions. Feature importance, partial depdendance.
-5. Add more features (team_stats, fantasy stats, per game variants of existing features).
-6. Grid search hyperparameters/auto ml.
-7. Try different model architectures (Gradient Boosting, Ridge, Lasso, Linear, etc.)
+1. Add Out of Bag error as a metric (what does the oob_score parameter do?) [DONE].
+2. Update the notebook to be able to load a saved model and inspect it [IN PROGRESS]
+3. View which features are contributing the most to decisions. Feature importance, partial depdendance.
+4. Add more features (team_stats, fantasy stats, per game variants of existing features).
+5. Grid search hyperparameters/auto ml. 
+    - Try min_samples_leaf 4,8,16. Are any other hyperparams worth adjusting?
+6. Try different model architectures (Gradient Boosting, Ridge, Lasso, Linear, etc.)
 
 PHASE 3. Second Model (PPR POINTS PER GAME) [TODO]
 1. Create new per game target column (ppr_points_per_game)
