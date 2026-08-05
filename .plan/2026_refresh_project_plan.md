@@ -28,7 +28,7 @@ overvaluing shorter careers and undervaluing longer careers.
 
 ## Project plan
 
-PHASE 1. First Model [IN PROGRESS]
+PHASE 1. First Model (Total PPR Points) [DONE]
 1. Create a data scraper for nflverse data [DONE]
 2. Refactor data collection to support multiple data sources. [DONE]
     - Model: move raw data collection into src/data each file within it should have a `Scraper` class for a particular data source.
@@ -45,24 +45,31 @@ PHASE 1. First Model [IN PROGRESS]
     - Compute the positional baseline stat values and the career stat features.
     - Join the stat features with the target to be predicted (ppr_points).
     - NOTE: src/processor.py has the code both for the pro_football_reference.py processor and training set assembler in this new model.
-5. Create the first model [IN PROGRESS]
+5. Create the first model [DONE]
     - Correctly split the training and eval data.
         - Open question: Should we do 2024 and 2025 as eval or have 2024 be eval and 2025 be a test set.
     - Create a random forest regressor, fit it to the training data and see how it does on the eval/test data.
     - Move the making of predictions to its own file modeling/tabular_predictions.py
     - Add build_prediction set to gold.py (this should have season == last season (2025) and target season == 2026 with the target_column blank)
 
-PHASE 2. Improve the first model [TODO]
-1. View which features are contributing the most to decisions.
-2. Add more features (team_stats, fantasy stats, per game variants of existing features).
-3. Predict more targets (ppr_fantasy_points_per_game)
-4. Optimize hyperparameters.
-5. Try more linear model architectures. 
 
-PHASE 3. Rankings [TODO]
+PHASE 2. Improve the first model [IN PROGRESS]
+1. Add Out of Bag error as a metric (what does the oob_score parameter do?) [IN PROGRESS].
+2. Try min_samples_leaf 4,8,16. Are any other hyperparams worth adjusting?
+3. Update the notebook to be able to load a saved model and inspect it
+4. View which features are contributing the most to decisions. Feature importance, partial depdendance.
+5. Add more features (team_stats, fantasy stats, per game variants of existing features).
+6. Grid search hyperparameters/auto ml.
+7. Try different model architectures (Gradient Boosting, Ridge, Lasso, Linear, etc.)
+
+PHASE 3. Second Model (PPR POINTS PER GAME) [TODO]
+1. Create new per game target column (ppr_points_per_game)
+2. Train a new model with the per game features and improve as done in phase 2.
+
+PHASE 4. Rankings [TODO]
 1. Re-evaluate rankings process
 
-PHASE 4. Sequential Model [TODO]
+PHASE 5. Sequential Model [TODO]
 1. Create a new training set builder that builds a sequential version of the data that can be used to feed an lstm or transformer
 2. Build an lstm model and evaluate it
 3. Build a trasformer model or finetune an existing one and evaluate it
