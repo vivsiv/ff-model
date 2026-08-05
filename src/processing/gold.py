@@ -25,7 +25,7 @@ TARGET_COL = "target"
 class TrainingSetBuilder:
     """Builds gold layer training/live data from nflverse silver layer data."""
 
-    def __init__(self, data_dir: str = "../data"):
+    def __init__(self, data_dir: str):
         """
         Initialize the builder.
 
@@ -306,14 +306,13 @@ def main():
     parser.add_argument(
         "--data-dir",
         type=str,
-        default=None,
-        help="Parent directory for the silver and gold layers (default: class default)"
+        default="data",
+        help="Parent directory for the silver and gold layers, relative to the repo root (default: data)"
     )
 
     args = parser.parse_args()
 
-    kwargs = {"data_dir": args.data_dir} if args.data_dir is not None else {}
-    builder = TrainingSetBuilder(**kwargs)
+    builder = TrainingSetBuilder(data_dir=args.data_dir)
 
     features_df = builder.load_player_features()
     builder.build_training_set(features_df, target_col=args.target_col)

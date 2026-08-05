@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 class NflverseScraper:
     """Data source for player and team stats from the nflverse project (via nflreadpy)."""
 
-    def __init__(self, data_dir: str = "../data"):
+    def __init__(self, data_dir: str):
         """
         Initialize the data source.
 
@@ -89,14 +89,13 @@ def main():
     parser.add_argument(
         "--data-dir",
         type=str,
-        default=None,
-        help="Directory to save fetched data."
+        default="data",
+        help="Directory to save fetched data, relative to the repo root (default: data)"
     )
 
     args = parser.parse_args()
 
-    kwargs = {"data_dir": args.data_dir} if args.data_dir is not None else {}
-    source = NflverseScraper(**kwargs)
+    source = NflverseScraper(data_dir=args.data_dir)
     source.fetch_all()
 
 

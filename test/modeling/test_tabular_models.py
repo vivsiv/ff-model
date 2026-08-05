@@ -12,6 +12,7 @@ class TestTabularModel:
     def setup_class(cls):
         cls.test_dir = tempfile.mkdtemp()
         cls.gold_dir = os.path.join(cls.test_dir, "gold")
+        cls.tracking_dir = os.path.join(cls.test_dir, "mlruns")
 
         os.makedirs(cls.gold_dir)
 
@@ -29,14 +30,14 @@ class TestTabularModel:
         })
         training_data.to_csv(os.path.join(cls.gold_dir, "target_1__training_set.csv"), index=False)
 
-        cls.model = TabularModel(data_dir=cls.test_dir, target="target_1")
+        cls.model = TabularModel(data_dir=cls.test_dir, tracking_dir=cls.tracking_dir, target="target_1")
 
     @classmethod
     def teardown_class(cls):
         shutil.rmtree(cls.test_dir)
 
     def test_initial_datasets(self):
-        model = TabularModel(data_dir=self.test_dir, target="target_1")
+        model = TabularModel(data_dir=self.test_dir, tracking_dir=self.tracking_dir, target="target_1")
 
         expected_features = pd.DataFrame({
             'f1': [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],

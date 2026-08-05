@@ -28,8 +28,8 @@ class PredictionReporter:
 
     def __init__(
             self,
-            data_dir: str = "../data",
-            tracking_dir: str = "../mlruns",
+            data_dir: str,
+            tracking_dir: str,
             target: str = "fantasy_points_ppr",
     ):
         self.data_dir = data_dir
@@ -96,15 +96,15 @@ def main():
     parser.add_argument(
         "--data-dir",
         type=str,
-        default=None,
-        help="Parent directory for the gold/predictions layers (default: class default)"
+        default="data",
+        help="Parent directory for the gold/predictions layers, relative to the repo root (default: data)"
     )
     parser.add_argument(
         "--tracking-dir",
         type=str,
-        default=None,
+        default="mlruns",
         help="Top-level mlruns tracking/registry store directory, not nested under "
-             "--data-dir (default: class default)"
+             "--data-dir, relative to the repo root (default: mlruns)"
     )
     parser.add_argument(
         "--target",
@@ -127,13 +127,7 @@ def main():
 
     args = parser.parse_args()
 
-    kwargs = {}
-    if args.data_dir is not None:
-        kwargs["data_dir"] = args.data_dir
-    if args.tracking_dir is not None:
-        kwargs["tracking_dir"] = args.tracking_dir
-
-    reporter = PredictionReporter(target=args.target, **kwargs)
+    reporter = PredictionReporter(data_dir=args.data_dir, tracking_dir=args.tracking_dir, target=args.target)
     live_preds_df = reporter.make_predictions(model_type=args.model_type, model_version=args.model_version)
 
     print(live_preds_df)
