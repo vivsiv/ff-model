@@ -152,6 +152,9 @@ class TabularModel:
         Gets the base model for model_type, applies params (sklearn defaults if none given),
         fits it on the training split, and registers it to mlflow under run_id.
 
+        For bagging-based models (e.g. random_forest) that support it, oob_score is turned
+        on, so the out-of-bag R^2/RMSE can be logged.
+
         Args:
             data: Output of split_data
             model_type: One of ridge, lasso, random_forest, svr, hist_gradient_boosting,
@@ -167,11 +170,34 @@ class TabularModel:
         base_model = self.get_base_model(model_type)
         base_model.set_params(**(params or {}))
 
+        model_params = base_model.get_params()
+        if "oob_score" in model_params and model_params.get("bootstrap", True):
+            base_model.set_params(oob_score=True)
+
         pipeline = self.create_pipeline(base_model)
         pipeline.fit(data["X_train"], data["y_train"])
 
         with mlflow.start_run(run_id=run_id):
             mlflow.log_params(base_model.get_params())
+
+            if getattr(base_model, "oob_score_", None) is not None:
+                mlflow.log_metric("oob_r2", base_model.oob_score_)
+
+                oob_pred = base_model.oob_prediction_
+                has_oob_pred = ~np.isnan(oob_pred)
+                num_no_oob_pred = (~has_oob_pred).sum()
+                if num_no_oob_pred > 0:
+                    logger.warning(
+                        f"{num_no_oob_pred}/{len(oob_pred)} training rows had no out-of-bag "
+                        "prediction; excluding them from oob_rmse"
+                    )
+
+                if has_oob_pred.any():
+                    oob_rmse = np.sqrt(mean_squared_error(data["y_train"][has_oob_pred], oob_pred[has_oob_pred]))
+                    print(f"OOB RMSE: {oob_rmse}")
+                    mlflow.log_metric("oob_rmse", oob_rmse)
+                else:
+                    logger.warning("No valid out-of-bag predictions available; skipping oob_rmse")
 
             signature = infer_signature(data["X_train"], data["y_train"])
             mlflow.sklearn.log_model(
