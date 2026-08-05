@@ -68,29 +68,43 @@ class TabularModel:
 
         return data
 
-    def split_data(self, eval_data_years: int) -> dict[str, pd.DataFrame]:
+    def split_data(self, eval_data_years: int = 1, test_data_years: int = 1) -> dict[str, pd.DataFrame]:
         """
-        Splits chronologically by target_season. The most recent eval_data_years worth of
-        seasons become the eval set, everything before that is training data.
-        This guarantees the eval set is strictly in the future relative to training.
+        Splits chronologically by target_season into train/eval/test. The most recent
+        test_data_years worth of seasons become the test set. The most recent
+        eval_data_years worth of seasons not already claimed by the test set become the
+        eval set. Everything older than that is training data. This guarantees the eval
+        set is strictly in the future relative to training, and the test set is strictly
+        in the future relative to both training and eval.
 
         Args:
-            eval_data_years: Number of seasons to hold out for eval
+            eval_data_years: Number of seasons (immediately preceding the test set) to
+                hold out for eval (default: 1)
+            test_data_years: Number of most recent seasons to hold out for test (default: 1)
 
         Returns:
-            dict with X_train/X_test, y_train/y_test, identity_train/identity_test
+            dict with X_train/X_eval/X_test, y_train/y_eval/y_test,
+            identity_train/identity_eval/identity_test
         """
         max_target_season = self.training_data["target_season"].max()
-        eval_cutoff_season = max_target_season - eval_data_years + 1
-        is_eval = self.training_data["target_season"] >= eval_cutoff_season
+        test_cutoff_season = max_target_season - test_data_years + 1
+        eval_cutoff_season = test_cutoff_season - eval_data_years
+
+        target_season = self.training_data["target_season"]
+        is_test = target_season >= test_cutoff_season
+        is_eval = (target_season >= eval_cutoff_season) & ~is_test
+        is_train = ~is_eval & ~is_test
 
         data = {
-            "X_train": self.features_df[~is_eval],
-            "X_test": self.features_df[is_eval],
-            "y_train": self.target_df[~is_eval],
-            "y_test": self.target_df[is_eval],
-            "identity_train": self.identity_df[~is_eval],
-            "identity_test": self.identity_df[is_eval],
+            "X_train": self.features_df[is_train],
+            "X_eval": self.features_df[is_eval],
+            "X_test": self.features_df[is_test],
+            "y_train": self.target_df[is_train],
+            "y_eval": self.target_df[is_eval],
+            "y_test": self.target_df[is_test],
+            "identity_train": self.identity_df[is_train],
+            "identity_eval": self.identity_df[is_eval],
+            "identity_test": self.identity_df[is_test],
         }
         return data
 
@@ -180,19 +194,19 @@ class TabularModel:
             run_id: The mlflow run_id returned by fit_model, so eval metrics land in the same
                 run as the fit params/model artifact
         """
-        y_pred = pipeline.predict(data["X_test"])
+        y_pred = pipeline.predict(data["X_eval"])
 
-        preds_df = data["identity_test"].copy()
+        preds_df = data["identity_eval"].copy()
         preds_df["predictions"] = y_pred
-        preds_df["actual"] = data["y_test"]
+        preds_df["actual"] = data["y_eval"]
         preds_df = preds_df.sort_values(by=["target_season", "predictions", "actual"], ascending=False)
 
         with mlflow.start_run(run_id=run_id):
-            score = pipeline.score(data["X_test"], data["y_test"])
+            score = pipeline.score(data["X_eval"], data["y_eval"])
             print(f"R^2 score: {score}")
             mlflow.log_metric("r2", score)
 
-            rmse = np.sqrt(mean_squared_error(data["y_test"], y_pred))
+            rmse = np.sqrt(mean_squared_error(data["y_eval"], y_pred))
             print(f"RMSE: {rmse}")
             mlflow.log_metric("rmse", rmse)
 
@@ -232,15 +246,22 @@ def main():
     parser.add_argument(
         "--eval-data-years",
         type=int,
-        default=2,
-        help="Number of most recent seasons (by target_season) to hold out for eval (default: 2)"
+        default=1,
+        help="Number of most recent seasons (by target_season) not already claimed by the "
+             "test set to hold out for eval (default: 1)"
+    )
+    parser.add_argument(
+        "--test-data-years",
+        type=int,
+        default=1,
+        help="Number of most recent seasons (by target_season) to hold out for test (default: 1)"
     )
 
     args = parser.parse_args()
 
     kwargs = {"data_dir": args.data_dir} if args.data_dir is not None else {}
     model = TabularModel(target=args.target, **kwargs)
-    data = model.split_data(eval_data_years=args.eval_data_years)
+    data = model.split_data(eval_data_years=args.eval_data_years, test_data_years=args.test_data_years)
 
     run_id = model.setup_mlflow(args.model_type)
     pipeline = model.fit_model(data, args.model_type, run_id)

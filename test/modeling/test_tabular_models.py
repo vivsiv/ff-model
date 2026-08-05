@@ -51,37 +51,64 @@ class TestTabularModel:
         assert len(model.identity_df) == 10
         assert model.target == "target_1"
 
-    def test_split_data__holds_out_most_recent_season(self):
-        data = self.model.split_data(eval_data_years=1)
+    def test_split_data__holds_out_most_recent_season_for_test_and_the_one_before_for_eval(self):
+        data = self.model.split_data(eval_data_years=1, test_data_years=1)
 
         identity_col_count = len(get_identity_columns("nflverse", "player_stats")) + 1  # + target_season
 
-        assert data['X_train'].shape == (8, 3)
+        assert data['X_train'].shape == (6, 3)
+        assert data['X_eval'].shape == (2, 3)
         assert data['X_test'].shape == (2, 3)
-        assert data['y_train'].shape == (8,)
+        assert data['y_train'].shape == (6,)
+        assert data['y_eval'].shape == (2,)
         assert data['y_test'].shape == (2,)
-        assert data['identity_train'].shape == (8, identity_col_count)
+        assert data['identity_train'].shape == (6, identity_col_count)
+        assert data['identity_eval'].shape == (2, identity_col_count)
         assert data['identity_test'].shape == (2, identity_col_count)
 
-        # the eval set must be exactly the most recent season (2024), nothing older
+        # test must be exactly the most recent season (2024), eval the one before it (2023),
+        # nothing older
         assert set(data['identity_test']['target_season']) == {2024}
-        assert set(data['identity_train']['target_season']) == {2020, 2021, 2022, 2023}
+        assert set(data['identity_eval']['target_season']) == {2023}
+        assert set(data['identity_train']['target_season']) == {2020, 2021, 2022}
 
     def test_split_data__eval_data_years_controls_how_much_is_held_out(self):
-        data = self.model.split_data(eval_data_years=2)
+        data = self.model.split_data(eval_data_years=2, test_data_years=1)
 
-        assert data['X_train'].shape == (6, 3)
+        assert data['X_train'].shape == (4, 3)
+        assert data['X_eval'].shape == (4, 3)
+        assert data['X_test'].shape == (2, 3)
+        assert set(data['identity_test']['target_season']) == {2024}
+        assert set(data['identity_eval']['target_season']) == {2022, 2023}
+        assert set(data['identity_train']['target_season']) == {2020, 2021}
+
+    def test_split_data__test_data_years_controls_how_much_is_held_out(self):
+        data = self.model.split_data(eval_data_years=1, test_data_years=2)
+
+        assert data['X_train'].shape == (4, 3)
+        assert data['X_eval'].shape == (2, 3)
         assert data['X_test'].shape == (4, 3)
         assert set(data['identity_test']['target_season']) == {2023, 2024}
+        assert set(data['identity_eval']['target_season']) == {2022}
+        assert set(data['identity_train']['target_season']) == {2020, 2021}
+
+    def test_split_data__uses_defaults_of_one_year_each(self):
+        data = self.model.split_data()
+
+        assert set(data['identity_test']['target_season']) == {2024}
+        assert set(data['identity_eval']['target_season']) == {2023}
         assert set(data['identity_train']['target_season']) == {2020, 2021, 2022}
 
     def test_split_data_is_deterministic(self):
-        data1 = self.model.split_data(eval_data_years=1)
-        data2 = self.model.split_data(eval_data_years=1)
+        data1 = self.model.split_data(eval_data_years=1, test_data_years=1)
+        data2 = self.model.split_data(eval_data_years=1, test_data_years=1)
 
         pd.testing.assert_frame_equal(data1['X_train'], data2['X_train'])
+        pd.testing.assert_frame_equal(data1['X_eval'], data2['X_eval'])
         pd.testing.assert_frame_equal(data1['X_test'], data2['X_test'])
         pd.testing.assert_series_equal(data1['y_train'], data2['y_train'])
+        pd.testing.assert_series_equal(data1['y_eval'], data2['y_eval'])
         pd.testing.assert_series_equal(data1['y_test'], data2['y_test'])
         pd.testing.assert_frame_equal(data1['identity_train'], data2['identity_train'])
+        pd.testing.assert_frame_equal(data1['identity_eval'], data2['identity_eval'])
         pd.testing.assert_frame_equal(data1['identity_test'], data2['identity_test'])
