@@ -17,6 +17,7 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.svm import SVR
 from sklearn.ensemble import HistGradientBoostingRegressor
 
+from src.modeling.utils import setup_mlflow_run
 from src.processing.column_registry import get_identity_columns
 from src.processing.gold import TARGET_COL
 
@@ -37,6 +38,7 @@ class TabularModel:
     def __init__(
             self,
             data_dir: str = "../data",
+            tracking_dir: str = "../mlruns",
             target: str = "fantasy_points_ppr",
     ):
         self.data_dir = data_dir
@@ -44,9 +46,7 @@ class TabularModel:
         self.target = target
         self.training_data = self.load_data()
 
-        self.tracking_dir = os.path.join(data_dir, "mlruns")
-        os.makedirs(self.tracking_dir, exist_ok=True)
-        mlflow.set_tracking_uri(self.tracking_dir)
+        self.tracking_dir = tracking_dir
 
         self.predictions_dir = os.path.join(data_dir, "predictions")
         os.makedirs(self.predictions_dir, exist_ok=True)
@@ -130,7 +130,9 @@ class TabularModel:
 
     def setup_mlflow(self, model_type: str) -> str:
         """
-        Sets the active mlflow experiment to {target}_{model_type} and creates a new run for it.
+        Sets the active mlflow experiment to {target}_tabular (shared across all model types
+        for this target, so they're directly comparable in mlflow) and creates a new run for
+        it, tagged with model_type and phase=train.
 
         Args:
             model_type: e.g. "random_forest"
@@ -138,14 +140,14 @@ class TabularModel:
         Returns:
             run_id - The mlflow run to tie training and eval to.
         """
-        mlflow.set_experiment(f"{self.target}_{model_type}")
         run_name = f"{model_type}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
 
-        with mlflow.start_run(run_name=run_name) as run:
-            mlflow.set_tag("model_type", model_type)
-            run_id = run.info.run_id
-
-        return run_id
+        return setup_mlflow_run(
+            experiment_name=f"{self.target}_tabular",
+            run_name=run_name,
+            tracking_dir=self.tracking_dir,
+            tags={"model_type": model_type, "phase": "train"},
+        )
 
     def fit_model(self, data: dict[str, pd.DataFrame], model_type: str, run_id: str, params: Optional[dict] = None) -> Pipeline:
         """
@@ -255,7 +257,14 @@ def main():
         "--data-dir",
         type=str,
         default=None,
-        help="Parent directory for the gold/mlruns/predictions layers (default: class default)"
+        help="Parent directory for the gold/predictions layers (default: class default)"
+    )
+    parser.add_argument(
+        "--tracking-dir",
+        type=str,
+        default=None,
+        help="Top-level mlruns tracking/registry store directory, not nested under "
+             "--data-dir (default: class default)"
     )
     parser.add_argument(
         "--target",
@@ -285,7 +294,12 @@ def main():
 
     args = parser.parse_args()
 
-    kwargs = {"data_dir": args.data_dir} if args.data_dir is not None else {}
+    kwargs = {}
+    if args.data_dir is not None:
+        kwargs["data_dir"] = args.data_dir
+    if args.tracking_dir is not None:
+        kwargs["tracking_dir"] = args.tracking_dir
+
     model = TabularModel(target=args.target, **kwargs)
     data = model.split_data(eval_data_years=args.eval_data_years, test_data_years=args.test_data_years)
 

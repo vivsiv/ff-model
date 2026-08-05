@@ -5,9 +5,9 @@ from typing import Tuple
 
 import pandas as pd
 import mlflow
-from mlflow.tracking import MlflowClient
 from sklearn.pipeline import Pipeline
 
+from src.modeling.utils import load_mlflow_model, setup_mlflow_run
 from src.processing.column_registry import get_identity_columns
 from src.processing.gold import TARGET_COL
 
@@ -29,30 +29,20 @@ class PredictionReporter:
     def __init__(
             self,
             data_dir: str = "../data",
+            tracking_dir: str = "../mlruns",
             target: str = "fantasy_points_ppr",
     ):
         self.data_dir = data_dir
         self.gold_dir = os.path.join(data_dir, "gold")
         self.target = target
 
-        self.tracking_dir = os.path.join(data_dir, "mlruns")
-        os.makedirs(self.tracking_dir, exist_ok=True)
-        mlflow.set_tracking_uri(self.tracking_dir)
+        self.tracking_dir = tracking_dir
 
         self.predictions_dir = os.path.join(data_dir, "predictions")
         os.makedirs(self.predictions_dir, exist_ok=True)
 
     def load_model(self, model_type: str, model_version: int = None) -> Tuple[Pipeline, int]:
-        if model_version is None:
-            client = MlflowClient()
-            latest_version = client.get_latest_versions(f"{self.target}_{model_type}", stages=["None"])[0].version
-            model_version = latest_version
-        else:
-            model_version = model_version
-
-        pipeline = mlflow.sklearn.load_model(f"models:/{self.target}_{model_type}/{model_version}")
-
-        return pipeline, model_version
+        return load_mlflow_model(self.target, model_type, model_version, tracking_dir=self.tracking_dir)
 
     def load_prediction_data(self) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """
@@ -85,12 +75,15 @@ class PredictionReporter:
         csv_path = os.path.join(self.predictions_dir, f"{self.target}_{model_type}_v{model_version}_predictions.csv")
         preds_df.to_csv(csv_path, index=False)
 
-        mlflow.set_experiment(f"{self.target}_{model_type}")
+        run_id = setup_mlflow_run(
+            experiment_name=f"{self.target}_tabular",
+            run_name=f"{model_type}_v{model_version}_predictions",
+            tracking_dir=self.tracking_dir,
+            tags={"model_type": model_type, "phase": "predict"},
+        )
 
-        with mlflow.start_run(run_name=f"{model_type}_v{model_version}_predictions"):
-            mlflow.set_tag("phase", "live")
+        with mlflow.start_run(run_id=run_id):
             mlflow.log_param("model_name", f"{self.target}_{model_type}_v{model_version}")
-
             mlflow.log_artifact(csv_path, "predictions")
 
         return preds_df
@@ -104,7 +97,14 @@ def main():
         "--data-dir",
         type=str,
         default=None,
-        help="Parent directory for the gold/mlruns/predictions layers (default: class default)"
+        help="Parent directory for the gold/predictions layers (default: class default)"
+    )
+    parser.add_argument(
+        "--tracking-dir",
+        type=str,
+        default=None,
+        help="Top-level mlruns tracking/registry store directory, not nested under "
+             "--data-dir (default: class default)"
     )
     parser.add_argument(
         "--target",
@@ -127,7 +127,12 @@ def main():
 
     args = parser.parse_args()
 
-    kwargs = {"data_dir": args.data_dir} if args.data_dir is not None else {}
+    kwargs = {}
+    if args.data_dir is not None:
+        kwargs["data_dir"] = args.data_dir
+    if args.tracking_dir is not None:
+        kwargs["tracking_dir"] = args.tracking_dir
+
     reporter = PredictionReporter(target=args.target, **kwargs)
     live_preds_df = reporter.make_predictions(model_type=args.model_type, model_version=args.model_version)
 
