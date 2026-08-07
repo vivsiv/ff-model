@@ -55,9 +55,14 @@ PHASE 1. First Model (Total PPR Points) [DONE]
 
 PHASE 2. Improve the first model [IN PROGRESS]
 1. Add Out of Bag error as a metric (what does the oob_score parameter do?) [DONE].
-2. Update the notebook to be able to load a saved model and inspect it [IN PROGRESS]
-3. View which features are contributing the most to decisions. Feature importance, partial depdendance.
-4. Add more features (team_stats, fantasy stats, per game variants of existing features).
+2. Update the notebook to be able to load a saved model and inspect it [DONE]
+3. View which features are contributing the most to decisions. Feature importance, partial depdendance. [DONE]
+4. Add more features:
+    - team_stats [IN PROGRESS]
+    - per game variants
+    - snap counts (pfr_id)
+    - draft picks (pfr_id) (has all_pro, allpro, probowls)
+    - fantasy_stats (regular id)
 5. Grid search hyperparameters/auto ml. 
     - Try min_samples_leaf 4,8,16. Are any other hyperparams worth adjusting?
 6. Try different model architectures (Gradient Boosting, Ridge, Lasso, Linear, etc.)

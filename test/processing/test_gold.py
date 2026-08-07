@@ -253,6 +253,21 @@ class TestTrainingSetBuilder():
                 pd.DataFrame(), pd.DataFrame(), target_col="not_a_real_target", prediction_season=2026
             )
 
+    def test_league_average_team_stats__single_season_mean_not_trailing_window(self):
+        team_features_df = pd.DataFrame({
+            "team": ["KC", "SF", "DAL"],
+            "season": [2020, 2020, 2021],
+            "passing_yards": [4000.0, 3000.0, 5000.0],
+        })
+
+        result = self.builder._league_average_team_stats(team_features_df, ["passing_yards"])
+
+        expected = pd.DataFrame({
+            "season": [2020, 2021],
+            "passing_yards_league_avg": [3500.0, 5000.0],
+        })
+        pd.testing.assert_frame_equal(result, expected)
+
     def test_join_team_features__no_team_change_has_zero_shift(self):
         df = pd.DataFrame({
             "player_id": ["p1"],
@@ -273,9 +288,10 @@ class TestTrainingSetBuilder():
 
         result = self.builder._join_team_features(df, features_df, team_features_df, ["passing_yards"])
 
+        # league avg for 2020 = mean(4000, 3500) = 3750; destination (KC) = 4000
         assert "origin_team" not in result.columns
         assert "destination_team" not in result.columns
-        assert result["team_passing_yards"].iloc[0] == 4000.0
+        assert result["team_passing_yards"].iloc[0] == 250.0
         assert result["team_shift_passing_yards"].iloc[0] == 0.0
 
     def test_join_team_features__team_change_looks_up_destination_team_from_origin_season(self):
@@ -301,9 +317,11 @@ class TestTrainingSetBuilder():
 
         result = self.builder._join_team_features(df, features_df, team_features_df, ["passing_yards"])
 
+        # league avg for the *origin* season (2022) = mean(3000, 4200) = 3600, using only
+        # 2022 rows -- LA's 9999 in 2023 must not leak into it. destination (LA, 2022) = 4200.
         assert "origin_team" not in result.columns
         assert "destination_team" not in result.columns
-        assert result["team_passing_yards"].iloc[0] == 4200.0
+        assert result["team_passing_yards"].iloc[0] == 600.0
         assert result["team_shift_passing_yards"].iloc[0] == 1200.0
 
     def test_join_team_features__falls_back_to_origin_team_when_target_season_is_unmatched(self):
@@ -354,6 +372,7 @@ class TestTrainingSetBuilder():
             df, features_df, team_features_df, ["passing_yards"]
         ).sort_values("player_id").reset_index(drop=True)
 
+        # league avg for 2020 = mean(4000, 3500, 3000) = 3500.
         # p1 didn't change teams -> shift 0; p2 (SF -> DAL) shouldn't pick up p1's KC lookup.
-        assert list(result["team_passing_yards"]) == [4000.0, 3000.0]
+        assert list(result["team_passing_yards"]) == [500.0, -500.0]
         assert list(result["team_shift_passing_yards"]) == [0.0, -500.0]

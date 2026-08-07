@@ -165,7 +165,9 @@ class TrainingSetBuilder:
 
         Returns:
             One row per team-season, with only the registered identity/stat columns kept.
-            Drops the league-total row nflverse includes with a missing team code.
+            Drops a garbage row nflverse includes with a missing team code -- confirmed this
+            isn't a usable league total/average (e.g. its 1999 passing_yards is 0 vs. a real
+            112,757 sum / ~3,524 mean across that season's 32 real teams), just noise.
         """
         identity_columns = get_identity_columns("nflverse", "team_stats")
         stat_columns = get_stat_columns("nflverse", "team_stats")
@@ -173,6 +175,29 @@ class TrainingSetBuilder:
         team_df = pd.read_csv(os.path.join(self.silver_dir, "team_stats.csv"), low_memory=False)
         team_df = team_df[team_df["team"].notna()]
         return team_df[identity_columns + stat_columns]
+
+    def _league_average_team_stats(self, team_features_df: pd.DataFrame, stat_columns: List[str]) -> pd.DataFrame:
+        """
+        Computes each season's league-wide average of every stat in stat_columns, using only
+        that season's own teams -- deliberately a single-season mean, not a trailing window
+        like _positional_baseline uses for player stats. Team offensive output has trended
+        up over nflverse's history (more passing volume, etc.), so blending in prior seasons
+        would make every recent team look above-average purely from that drift, which is the
+        opposite of what "relative to that season's league" is supposed to isolate.
+
+        Args:
+            team_features_df: Output of load_team_features (one row per team-season)
+            stat_columns: The team stat columns to average
+
+        Returns:
+            One row per season, with a "{stat}_league_avg" column per stat in stat_columns
+        """
+        return (
+            team_features_df.groupby("season")[stat_columns]
+            .mean()
+            .add_suffix("_league_avg")
+            .reset_index()
+        )
 
     def _join_team_features(
         self,
@@ -194,17 +219,23 @@ class TrainingSetBuilder:
         Each row of df (output of _join_with_target or _build_prediction_rows) already has
         a "season" (the feature/origin season, e.g. year N-1) and a team_col value (the team
         the player produced that season's stats with, i.e. their origin team). This adds:
-          - "team_{stat}": the player's *destination* team's stat -- the actual team_col
-            value in target_season (year N), looked up from `features_df`, falling back to
-            the origin team when target_season hasn't happened yet or has no matching row
-            (e.g. prediction rows, where a player's future team isn't knowable from this
-            data) -- i.e. assumes no team change absent better information.
+          - "team_{stat}": how much better/worse the player's *destination* team's stat was
+            than the average team that same (origin) season -- destination_team_stat minus
+            that season's league average (see _league_average_team_stats) -- rather than a
+            raw count, so it's comparable across eras of league-wide offensive output.
+            Destination team is the actual team_col value in target_season (year N), looked
+            up from `features_df`, falling back to the origin team when target_season hasn't
+            happened yet or has no matching row (e.g. prediction rows, where a player's
+            future team isn't knowable from this data) -- i.e. assumes no team change absent
+            better information.
           - "team_shift_{stat}" = destination team's stat - origin team's stat (zero for
-            players who didn't change teams).
-          - Both the destination and origin lookups use `team_features_df` for the *origin*
-            season only, never target_season -- a team's performance in the season being
-            predicted doesn't exist yet at real prediction time, so using it would be a
-            look-ahead leak.
+            players who didn't change teams). Equivalent to the difference of each team's
+            stat relative to the league average, since both are relative to the same
+            season's average -- it cancels out, so this is left as a plain difference.
+          - The destination, origin, and league-average lookups all use `team_features_df`
+            for the *origin* season only, never target_season -- a team's performance in the
+            season being predicted doesn't exist yet at real prediction time, so using it
+            would be a look-ahead leak.
 
         The team_col value used to resolve the destination team, and the resolved
         destination team itself, are join-only intermediates and are not present in the
@@ -236,6 +267,7 @@ class TrainingSetBuilder:
         df["destination_team"] = df["destination_team"].fillna(origin_team)
 
         team_lookup = team_features_df[["team", "season"] + team_stat_columns]
+        league_avg_df = self._league_average_team_stats(team_features_df, team_stat_columns)
 
         origin_stats = team_lookup.rename(
             columns={"team": team_col, **{stat: f"_origin_team_{stat}" for stat in team_stat_columns}}
@@ -243,17 +275,30 @@ class TrainingSetBuilder:
         df = df.merge(origin_stats, on=[team_col, "season"], how="left")
 
         destination_stats = team_lookup.rename(
-            columns={"team": "destination_team", **{stat: f"team_{stat}" for stat in team_stat_columns}}
+            columns={"team": "destination_team", **{stat: f"_destination_team_{stat}" for stat in team_stat_columns}}
         )
         df = df.merge(destination_stats, on=["destination_team", "season"], how="left")
 
-        shift_columns = {
-            f"team_shift_{stat}": df[f"team_{stat}"] - df[f"_origin_team_{stat}"]
+        df = df.merge(league_avg_df, on="season", how="left")
+
+        team_columns = {
+            f"team_{stat}": df[f"_destination_team_{stat}"] - df[f"{stat}_league_avg"]
             for stat in team_stat_columns
         }
-        df = pd.concat([df, pd.DataFrame(shift_columns, index=df.index)], axis=1)
+        shift_columns = {
+            f"team_shift_{stat}": df[f"_destination_team_{stat}"] - df[f"_origin_team_{stat}"]
+            for stat in team_stat_columns
+        }
+        df = pd.concat(
+            [df, pd.DataFrame(team_columns, index=df.index), pd.DataFrame(shift_columns, index=df.index)], axis=1
+        )
 
-        drop_columns = ["destination_team"] + [f"_origin_team_{stat}" for stat in team_stat_columns]
+        drop_columns = (
+            ["destination_team"]
+            + [f"_origin_team_{stat}" for stat in team_stat_columns]
+            + [f"_destination_team_{stat}" for stat in team_stat_columns]
+            + [f"{stat}_league_avg" for stat in team_stat_columns]
+        )
         return df.drop(columns=drop_columns)
 
     def _join_with_target(
