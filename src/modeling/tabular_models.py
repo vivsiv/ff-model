@@ -40,6 +40,7 @@ class TabularModel:
             data_dir: str,
             tracking_dir: str,
             target: str = "fantasy_points_ppr",
+            excluded_features: Optional[list[str]] = None,
     ):
         self.data_dir = data_dir
         self.gold_data_dir = os.path.join(data_dir, "gold")
@@ -51,15 +52,30 @@ class TabularModel:
         self.predictions_dir = os.path.join(data_dir, "predictions")
         os.makedirs(self.predictions_dir, exist_ok=True)
 
+        self.excluded_features = excluded_features or []
         self.identity_cols = get_identity_columns("nflverse", "player_stats") + ["target_season"]
         self.feature_cols = [
             col for col in self.training_data.columns
             if col not in self.identity_cols + [TARGET_COL]
+            and not self._is_excluded_feature(col)
         ]
 
         self.identity_df = self.training_data[self.identity_cols]
         self.features_df = self.training_data[self.feature_cols]
         self.target_df = self.training_data[TARGET_COL]
+
+    def _is_excluded_feature(self, col: str) -> bool:
+        """Returns True if col matches any entry in self.excluded_features. Entries
+        ending in "*" are treated as prefixes (e.g. "f*" matches any column starting
+        with "f"); all other entries must match col exactly."""
+        for excluded in self.excluded_features:
+            if excluded.endswith("*"):
+                if col.startswith(excluded[:-1]):
+                    return True
+            elif col == excluded:
+                return True
+
+        return False
 
     def load_data(self) -> pd.DataFrame:
         filename = f"{self.target}__training_set.csv"
@@ -68,32 +84,59 @@ class TabularModel:
 
         return data
 
-    def split_data(self, eval_data_years: int = 1, test_data_years: int = 1) -> dict[str, pd.DataFrame]:
+    def split_data(
+            self,
+            eval_data_years: int = 1,
+            test_data_years: int = 1,
+            num_training_seasons: Optional[int] = None,
+    ) -> dict[str, pd.DataFrame]:
         """
         Splits chronologically by target_season into train/eval/test. The most recent
         test_data_years worth of seasons become the test set. The most recent
         eval_data_years worth of seasons not already claimed by the test set become the
-        eval set. Everything older than that is training data. This guarantees the eval
-        set is strictly in the future relative to training, and the test set is strictly
-        in the future relative to both training and eval.
+        eval set. The remaining seasons are training data, the number of seasons used
+        for training can be limited with num_training_seasons.
 
         Args:
             eval_data_years: Number of seasons (immediately preceding the test set) to
                 hold out for eval (default: 1)
             test_data_years: Number of most recent seasons to hold out for test (default: 1)
+            num_training_seasons: Number of most recent seasons (immediately preceding the
+                eval set) to keep for training; older seasons are dropped. (default: None)
 
         Returns:
             dict with X_train/X_eval/X_test, y_train/y_eval/y_test,
             identity_train/identity_eval/identity_test
+
+        Raises:
+            ValueError: If num_training_seasons + eval_data_years + test_data_years exceeds
+                the total number of distinct seasons in the training set.
         """
-        max_target_season = self.training_data["target_season"].max()
+        target_season = self.training_data["target_season"]
+        total_seasons = target_season.nunique()
+
+        if num_training_seasons is not None:
+            requested_seasons = num_training_seasons + eval_data_years + test_data_years
+            if requested_seasons > total_seasons:
+                raise ValueError(
+                    f"num_training_seasons ({num_training_seasons}) + eval_data_years "
+                    f"({eval_data_years}) + test_data_years ({test_data_years}) = "
+                    f"{requested_seasons}, which exceeds the {total_seasons} distinct "
+                    "season(s) available in the training set"
+                )
+
+        max_target_season = target_season.max()
         test_cutoff_season = max_target_season - test_data_years + 1
         eval_cutoff_season = test_cutoff_season - eval_data_years
 
-        target_season = self.training_data["target_season"]
         is_test = target_season >= test_cutoff_season
         is_eval = (target_season >= eval_cutoff_season) & ~is_test
-        is_train = ~is_eval & ~is_test
+
+        if num_training_seasons is None:
+            is_train = ~is_eval & ~is_test
+        else:
+            train_cutoff_season = eval_cutoff_season - num_training_seasons
+            is_train = (target_season >= train_cutoff_season) & ~is_eval & ~is_test
 
         data = {
             "X_train": self.features_df[is_train],
@@ -128,7 +171,7 @@ class TabularModel:
         }
         return base_models[model_type]
 
-    def setup_mlflow(self, model_type: str) -> str:
+    def setup_mlflow(self, model_type: str, extra_params: Optional[dict] = None) -> str:
         """
         Sets the active mlflow experiment to {target}_tabular (shared across all model types
         for this target, so they're directly comparable in mlflow) and creates a new run for
@@ -136,6 +179,8 @@ class TabularModel:
 
         Args:
             model_type: e.g. "random_forest"
+            extra_params: Optional params to log on the run alongside the model's own
+                hyperparameters, e.g. {"eval_data_years": 1, "test_data_years": 1}
 
         Returns:
             run_id - The mlflow run to tie training and eval to.
@@ -147,6 +192,7 @@ class TabularModel:
             run_name=run_name,
             tracking_dir=self.tracking_dir,
             tags={"model_type": model_type, "phase": "train"},
+            params=extra_params,
         )
 
     def fit_model(self, data: dict[str, pd.DataFrame], model_type: str, run_id: str, params: Optional[dict] = None) -> Pipeline:
@@ -279,6 +325,15 @@ def main():
         help="Model type to fit, one of: ridge, lasso, random_forest, svr, hist_gradient_boosting, linear_regression (default: random_forest)"
     )
     parser.add_argument(
+        "--exclude-features",
+        type=str,
+        nargs="+",
+        default=None,
+        help="Feature names to exclude from the feature set used to train/eval. Entries "
+             "ending in '*' are treated as prefixes, e.g. 'receiving_*' excludes any feature "
+             "starting with 'receiving_'. default: none excluded)"
+    )
+    parser.add_argument(
         "--eval-data-years",
         type=int,
         default=1,
@@ -291,13 +346,35 @@ def main():
         default=1,
         help="Number of most recent seasons (by target_season) to hold out for test (default: 1)"
     )
+    parser.add_argument(
+        "--num-training-seasons",
+        type=int,
+        default=None,
+        help="Number of most recent seasons (immediately preceding the eval set) to keep for "
+             "training; older seasons are dropped entirely. (default: None)"
+    )
 
     args = parser.parse_args()
 
-    model = TabularModel(data_dir=args.data_dir, tracking_dir=args.tracking_dir, target=args.target)
-    data = model.split_data(eval_data_years=args.eval_data_years, test_data_years=args.test_data_years)
+    model = TabularModel(
+        data_dir=args.data_dir,
+        tracking_dir=args.tracking_dir,
+        target=args.target,
+        excluded_features=args.exclude_features,
+    )
+    data = model.split_data(
+        eval_data_years=args.eval_data_years,
+        test_data_years=args.test_data_years,
+        num_training_seasons=args.num_training_seasons,
+    )
 
-    run_id = model.setup_mlflow(args.model_type)
+    split_params = {
+        "excluded_features": args.exclude_features,
+        "eval_data_years": args.eval_data_years,
+        "test_data_years": args.test_data_years,
+        "num_training_seasons": args.num_training_seasons if args.num_training_seasons is not None else "all",
+    }
+    run_id = model.setup_mlflow(args.model_type, extra_params=split_params)
     pipeline = model.fit_model(data, args.model_type, run_id)
     model.eval_model(pipeline, data, run_id)
 

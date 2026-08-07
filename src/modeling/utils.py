@@ -26,19 +26,21 @@ def setup_mlflow_run(
     run_name: str,
     tracking_dir: str = "../mlruns",
     tags: Optional[dict] = None,
+    params: Optional[dict] = None,
 ) -> str:
     """
     Points mlflow at tracking_dir, sets/creates the active experiment, and creates a new run
-    under it (tagging it with tags if given), then immediately ends it.
+    under it (tagging it with tags and logging params if given), then immediately ends it.
 
     Downstream code reopens the run by run_id (mlflow.start_run(run_id=run_id)) to log
-    params/metrics/artifacts into it.
+    additional params/metrics/artifacts into it.
 
     Args:
         experiment_name: e.g. "{target}_{model_type}"
         run_name: e.g. "{model_type}_{timestamp}"
         tracking_dir: The mlruns tracking/registry store directory (default: "../mlruns")
         tags: Optional tags to set on the run, e.g. {"model_type": "random_forest"}
+        params: Optional params to log on the run, e.g. {"eval_data_years": 1}
 
     Returns:
         run_id - the created run's ID
@@ -49,6 +51,8 @@ def setup_mlflow_run(
     with mlflow.start_run(run_name=run_name) as run:
         if tags:
             mlflow.set_tags(tags)
+        if params:
+            mlflow.log_params(params)
         run_id = run.info.run_id
 
     return run_id
