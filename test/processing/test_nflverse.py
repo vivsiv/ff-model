@@ -92,3 +92,47 @@ class TestNflverseProcessor():
         silver_path = os.path.join(self.processor.silver_dir, "team_stats.csv")
         assert os.path.exists(silver_path)
         pd.testing.assert_frame_equal(pd.read_csv(silver_path), expected)
+
+    def test_build_player_stats__normalizes_renamed_team_codes(self):
+        test_dir = tempfile.mkdtemp()
+        try:
+            bronze_dir = os.path.join(test_dir, "bronze", "nflv")
+            os.makedirs(bronze_dir)
+            player_stats_df = pd.DataFrame({
+                "player_id": ["p1", "p1", "p1"],
+                "player_display_name": ["Player One", "Player One", "Player One"],
+                "position": ["RB", "RB", "RB"],
+                "recent_team": ["OAK", "LV", "SD"],
+                "season": [2001, 2003, 2001],
+                "fantasy_points": [50.0, 60.0, 70.0],
+            })
+            player_stats_df.to_csv(os.path.join(bronze_dir, "player_stats.csv"), index=False)
+            processor = NflverseProcessor(data_dir=test_dir)
+
+            result = processor.build_player_stats().reset_index(drop=True)
+
+            # OAK (retired 2002) and LV (used from 2003) are the same Raiders franchise; SD
+            # (retired 2002) is the Chargers, now LAC -- both normalize to their current
+            # code so a franchise uses one consistent team code across its whole history.
+            assert list(result["recent_team"]) == ["LV", "LV", "LAC"]
+        finally:
+            shutil.rmtree(test_dir)
+
+    def test_build_team_stats__normalizes_renamed_team_codes(self):
+        test_dir = tempfile.mkdtemp()
+        try:
+            bronze_dir = os.path.join(test_dir, "bronze", "nflv")
+            os.makedirs(bronze_dir)
+            team_stats_df = pd.DataFrame({
+                "team": ["OAK", "LV", "STL", "JAC", "JAX"],
+                "season": [2002, 2003, 2002, 2001, 2003],
+                "team_points": [300, 310, 320, 330, 340],
+            })
+            team_stats_df.to_csv(os.path.join(bronze_dir, "team_stats.csv"), index=False)
+            processor = NflverseProcessor(data_dir=test_dir)
+
+            result = processor.build_team_stats().reset_index(drop=True)
+
+            assert list(result["team"]) == ["LV", "LV", "LA", "JAX", "JAX"]
+        finally:
+            shutil.rmtree(test_dir)

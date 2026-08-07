@@ -2,6 +2,7 @@ import os
 import tempfile
 import shutil
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -132,6 +133,44 @@ class TestTrainingSetBuilder():
             0.5 * 20.0 + 0.5 * 22.0,
         ]
         assert list(result["fantasy_points_ppr_shrunk_avg"]) == expected_shrunk
+
+    def test_round_significant_figures__rounds_to_requested_precision(self):
+        df = pd.DataFrame({"stat": [22.35634, 0.0123123, 1234567.0, -9.87654]})
+
+        result = self.builder._round_significant_figures(df, sig_figs=4)
+
+        assert list(result["stat"]) == pytest.approx([22.36, 0.01231, 1235000.0, -9.877])
+
+    def test_round_significant_figures__preserves_zero_and_nan(self):
+        df = pd.DataFrame({"stat": [0.0, np.nan, 5.55555]})
+
+        result = self.builder._round_significant_figures(df, sig_figs=4)
+
+        assert result["stat"].iloc[0] == 0.0
+        assert pd.isna(result["stat"].iloc[1])
+        assert result["stat"].iloc[2] == pytest.approx(5.556)
+
+    def test_round_significant_figures__leaves_excluded_columns_untouched(self):
+        df = pd.DataFrame({"season": [1999.0], "stat": [22.35634]})
+
+        result = self.builder._round_significant_figures(df, sig_figs=4, exclude_columns=["season"])
+
+        assert result["season"].iloc[0] == 1999.0
+        assert result["stat"].iloc[0] == pytest.approx(22.36)
+
+    def test_round_significant_figures__leaves_non_numeric_columns_untouched(self):
+        df = pd.DataFrame({"player_id": ["p1"], "stat": [22.35634]})
+
+        result = self.builder._round_significant_figures(df, sig_figs=4)
+
+        assert result["player_id"].iloc[0] == "p1"
+
+    def test_round_significant_figures__does_not_mutate_input(self):
+        df = pd.DataFrame({"stat": [22.35634]})
+
+        self.builder._round_significant_figures(df, sig_figs=4)
+
+        assert df["stat"].iloc[0] == 22.35634
 
     def test_join_with_target__pairs_each_season_with_the_prior_seasons_features(self):
         features_df = pd.DataFrame({
