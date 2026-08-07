@@ -1,5 +1,6 @@
 import pandas as pd
 import os
+import pytest
 import shutil
 import tempfile
 
@@ -134,6 +135,28 @@ class TestTabularModel:
         assert set(data['identity_test']['target_season']) == {2024}
         assert set(data['identity_eval']['target_season']) == {2023}
         assert set(data['identity_train']['target_season']) == {2020, 2021, 2022}
+
+    def test_split_data__num_training_seasons_limits_training_to_most_recent_n_seasons(self):
+        data = self.model.split_data(eval_data_years=1, test_data_years=1, num_training_seasons=2)
+
+        assert data['X_train'].shape == (4, 3)
+        assert set(data['identity_test']['target_season']) == {2024}
+        assert set(data['identity_eval']['target_season']) == {2023}
+        # only the 2 most recent training seasons (2021, 2022) are kept; 2020 is dropped
+        assert set(data['identity_train']['target_season']) == {2021, 2022}
+
+    def test_split_data__num_training_seasons_none_keeps_every_older_season(self):
+        data = self.model.split_data(eval_data_years=1, test_data_years=1, num_training_seasons=None)
+
+        assert set(data['identity_train']['target_season']) == {2020, 2021, 2022}
+
+    def test_split_data__raises_if_requested_seasons_exceed_available_seasons(self):
+        # 5 distinct seasons available (2020-2024); requesting 3 + 1 + 1 = 5 is fine...
+        self.model.split_data(eval_data_years=1, test_data_years=1, num_training_seasons=3)
+
+        # ...but 4 + 1 + 1 = 6 exceeds the 5 available
+        with pytest.raises(ValueError):
+            self.model.split_data(eval_data_years=1, test_data_years=1, num_training_seasons=4)
 
     def test_split_data_is_deterministic(self):
         data1 = self.model.split_data(eval_data_years=1, test_data_years=1)
