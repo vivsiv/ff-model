@@ -198,7 +198,7 @@ class TestTrainingSetBuilder():
 
     def test_build_training_set__rejects_a_target_not_in_the_registry(self):
         with pytest.raises(AssertionError):
-            self.builder.build_training_set(pd.DataFrame(), target_col="not_a_real_target")
+            self.builder.build_training_set(pd.DataFrame(), pd.DataFrame(), target_col="not_a_real_target")
 
     def test_build_prediction_rows__keeps_only_the_most_recent_season_per_player(self):
         features_df = pd.DataFrame({
@@ -249,4 +249,111 @@ class TestTrainingSetBuilder():
 
     def test_build_prediction_set__rejects_a_target_not_in_the_registry(self):
         with pytest.raises(AssertionError):
-            self.builder.build_prediction_set(pd.DataFrame(), target_col="not_a_real_target", prediction_season=2026)
+            self.builder.build_prediction_set(
+                pd.DataFrame(), pd.DataFrame(), target_col="not_a_real_target", prediction_season=2026
+            )
+
+    def test_join_team_features__no_team_change_has_zero_shift(self):
+        df = pd.DataFrame({
+            "player_id": ["p1"],
+            "season": [2020],
+            "target_season": [2021],
+            "recent_team": ["KC"],
+        })
+        features_df = pd.DataFrame({
+            "player_id": ["p1", "p1"],
+            "season": [2020, 2021],
+            "recent_team": ["KC", "KC"],
+        })
+        team_features_df = pd.DataFrame({
+            "team": ["KC", "SF"],
+            "season": [2020, 2020],
+            "passing_yards": [4000.0, 3500.0],
+        })
+
+        result = self.builder._join_team_features(df, features_df, team_features_df, ["passing_yards"])
+
+        assert "origin_team" not in result.columns
+        assert "destination_team" not in result.columns
+        assert result["team_passing_yards"].iloc[0] == 4000.0
+        assert result["team_shift_passing_yards"].iloc[0] == 0.0
+
+    def test_join_team_features__team_change_looks_up_destination_team_from_origin_season(self):
+        # Mirrors the Davante Adams motivation: player's own feature season (2022) was with
+        # the Raiders, but they're actually on the Rams by target_season (2023). Destination
+        # stats must come from the Rams' 2022 (origin season) performance, not 2023's.
+        df = pd.DataFrame({
+            "player_id": ["p1"],
+            "season": [2022],
+            "target_season": [2023],
+            "recent_team": ["LV"],
+        })
+        features_df = pd.DataFrame({
+            "player_id": ["p1", "p1"],
+            "season": [2022, 2023],
+            "recent_team": ["LV", "LA"],
+        })
+        team_features_df = pd.DataFrame({
+            "team": ["LV", "LA", "LA"],
+            "season": [2022, 2022, 2023],
+            "passing_yards": [3000.0, 4200.0, 9999.0],
+        })
+
+        result = self.builder._join_team_features(df, features_df, team_features_df, ["passing_yards"])
+
+        assert "origin_team" not in result.columns
+        assert "destination_team" not in result.columns
+        assert result["team_passing_yards"].iloc[0] == 4200.0
+        assert result["team_shift_passing_yards"].iloc[0] == 1200.0
+
+    def test_join_team_features__falls_back_to_origin_team_when_target_season_is_unmatched(self):
+        # Prediction rows: target_season hasn't happened yet, so there's no features_df row
+        # for it -- destination_team should fall back to the player's own current team
+        # (assume no team change) rather than producing a NaN shift.
+        df = pd.DataFrame({
+            "player_id": ["p1"],
+            "season": [2025],
+            "target_season": [2026],
+            "recent_team": ["KC"],
+        })
+        features_df = pd.DataFrame({
+            "player_id": ["p1"],
+            "season": [2025],
+            "recent_team": ["KC"],
+        })
+        team_features_df = pd.DataFrame({
+            "team": ["KC"],
+            "season": [2025],
+            "passing_yards": [4000.0],
+        })
+
+        result = self.builder._join_team_features(df, features_df, team_features_df, ["passing_yards"])
+
+        assert "destination_team" not in result.columns
+        assert result["team_shift_passing_yards"].iloc[0] == 0.0
+
+    def test_join_team_features__does_not_mix_players(self):
+        df = pd.DataFrame({
+            "player_id": ["p1", "p2"],
+            "season": [2020, 2020],
+            "target_season": [2021, 2021],
+            "recent_team": ["KC", "SF"],
+        })
+        features_df = pd.DataFrame({
+            "player_id": ["p1", "p1", "p2", "p2"],
+            "season": [2020, 2021, 2020, 2021],
+            "recent_team": ["KC", "KC", "SF", "DAL"],
+        })
+        team_features_df = pd.DataFrame({
+            "team": ["KC", "SF", "DAL"],
+            "season": [2020, 2020, 2020],
+            "passing_yards": [4000.0, 3500.0, 3000.0],
+        })
+
+        result = self.builder._join_team_features(
+            df, features_df, team_features_df, ["passing_yards"]
+        ).sort_values("player_id").reset_index(drop=True)
+
+        # p1 didn't change teams -> shift 0; p2 (SF -> DAL) shouldn't pick up p1's KC lookup.
+        assert list(result["team_passing_yards"]) == [4000.0, 3000.0]
+        assert list(result["team_shift_passing_yards"]) == [0.0, -500.0]

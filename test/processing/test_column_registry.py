@@ -42,3 +42,28 @@ class TestColumnRegistry():
         targets = get_targets("nflverse", "player_stats")
 
         assert set(targets) == {"fantasy_points", "fantasy_points_ppr"}
+
+    def test_nflverse_team_stats__identity_and_stats_have_no_overlap(self):
+        identity = get_identity_columns("nflverse", "team_stats")
+        stats = get_stat_columns("nflverse", "team_stats")
+
+        assert set(identity) & set(stats) == set()
+
+    def test_nflverse_team_stats__no_duplicates_within_any_list(self):
+        identity = get_identity_columns("nflverse", "team_stats")
+        stats = get_stat_columns("nflverse", "team_stats")
+
+        assert len(identity) == len(set(identity))
+        assert len(stats) == len(set(stats))
+
+    def test_nflverse_team_stats__stats_has_known_offense_relevant_columns(self):
+        stats = get_stat_columns("nflverse", "team_stats")
+
+        for col in ["passing_yards", "rushing_yards", "receiving_yards", "passing_epa"]:
+            assert col in stats
+
+    def test_nflverse_team_stats__identity_has_known_identity_columns(self):
+        identity = get_identity_columns("nflverse", "team_stats")
+
+        for col in ["team", "season", "season_type", "games"]:
+            assert col in identity

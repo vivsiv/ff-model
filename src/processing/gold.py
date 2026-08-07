@@ -155,6 +155,107 @@ class TrainingSetBuilder:
         baseline_df = self._positional_baseline(player_df, stat_columns)
         return self._add_career_features(player_df, baseline_df, stat_columns)
 
+    def load_team_features(self) -> pd.DataFrame:
+        """
+        Loads the `team_stats` silver table, filtered to the registered identity/stat columns.
+
+        Unlike load_player_features, no career-to-date aggregates are computed here --
+        `_join_team_features` only ever needs a team's own single-season stats for the
+        season immediately before a target season, not that team's career history.
+
+        Returns:
+            One row per team-season, with only the registered identity/stat columns kept.
+            Drops the league-total row nflverse includes with a missing team code.
+        """
+        identity_columns = get_identity_columns("nflverse", "team_stats")
+        stat_columns = get_stat_columns("nflverse", "team_stats")
+
+        team_df = pd.read_csv(os.path.join(self.silver_dir, "team_stats.csv"), low_memory=False)
+        team_df = team_df[team_df["team"].notna()]
+        return team_df[identity_columns + stat_columns]
+
+    def _join_team_features(
+        self,
+        df: pd.DataFrame,
+        features_df: pd.DataFrame,
+        team_features_df: pd.DataFrame,
+        team_stat_columns: List[str],
+        player_grouping_col: str = "player_id",
+        team_col: str = "recent_team",
+    ) -> pd.DataFrame:
+        """
+        Adds team-context features to each row of df, capturing not just the level of a
+        player's new team but the shift in team quality when a player changes teams. Since
+        the player is no longer on their origin team by target_season, only the destination
+        team's level and the shift relative to origin are kept as features -- the origin
+        team's raw stats are an intermediate used only to compute the shift, not a feature
+        themselves.
+
+        Each row of df (output of _join_with_target or _build_prediction_rows) already has
+        a "season" (the feature/origin season, e.g. year N-1) and a team_col value (the team
+        the player produced that season's stats with, i.e. their origin team). This adds:
+          - "team_{stat}": the player's *destination* team's stat -- the actual team_col
+            value in target_season (year N), looked up from `features_df`, falling back to
+            the origin team when target_season hasn't happened yet or has no matching row
+            (e.g. prediction rows, where a player's future team isn't knowable from this
+            data) -- i.e. assumes no team change absent better information.
+          - "team_shift_{stat}" = destination team's stat - origin team's stat (zero for
+            players who didn't change teams).
+          - Both the destination and origin lookups use `team_features_df` for the *origin*
+            season only, never target_season -- a team's performance in the season being
+            predicted doesn't exist yet at real prediction time, so using it would be a
+            look-ahead leak.
+
+        The team_col value used to resolve the destination team, and the resolved
+        destination team itself, are join-only intermediates and are not present in the
+        returned columns.
+
+        Args:
+            df: Output of _join_with_target or _build_prediction_rows (must have
+                player_grouping_col, "season", "target_season", and team_col columns)
+            features_df: Output of load_player_features (one row per player-season, used to
+                look up each player's actual team in target_season)
+            team_features_df: Output of load_team_features (one row per team-season)
+            team_stat_columns: Team stat columns to join in and compute a shift for
+            player_grouping_col: Column identifying a unique player (default: "player_id")
+            team_col: Column identifying a player's team on a given row (default:
+                "recent_team")
+
+        Returns:
+            df with "team_{stat}"/"team_shift_{stat}" columns added per stat in
+            team_stat_columns
+        """
+        df = df.copy()
+        origin_team = df[team_col]
+
+        destination_lookup = (
+            features_df[[player_grouping_col, "season", team_col]]
+            .rename(columns={"season": "target_season", team_col: "destination_team"})
+        )
+        df = df.merge(destination_lookup, on=[player_grouping_col, "target_season"], how="left")
+        df["destination_team"] = df["destination_team"].fillna(origin_team)
+
+        team_lookup = team_features_df[["team", "season"] + team_stat_columns]
+
+        origin_stats = team_lookup.rename(
+            columns={"team": team_col, **{stat: f"_origin_team_{stat}" for stat in team_stat_columns}}
+        )
+        df = df.merge(origin_stats, on=[team_col, "season"], how="left")
+
+        destination_stats = team_lookup.rename(
+            columns={"team": "destination_team", **{stat: f"team_{stat}" for stat in team_stat_columns}}
+        )
+        df = df.merge(destination_stats, on=["destination_team", "season"], how="left")
+
+        shift_columns = {
+            f"team_shift_{stat}": df[f"team_{stat}"] - df[f"_origin_team_{stat}"]
+            for stat in team_stat_columns
+        }
+        df = pd.concat([df, pd.DataFrame(shift_columns, index=df.index)], axis=1)
+
+        drop_columns = ["destination_team"] + [f"_origin_team_{stat}" for stat in team_stat_columns]
+        return df.drop(columns=drop_columns)
+
     def _join_with_target(
         self,
         features_df: pd.DataFrame,
@@ -199,13 +300,19 @@ class TrainingSetBuilder:
         feature_columns = list(features_df.columns)
         return merged[feature_columns + ["target_season", TARGET_COL, "seasons_since_played"]]
 
-    def build_training_set(self, features_df: pd.DataFrame, target_col: str = "fantasy_points_ppr") -> pd.DataFrame:
+    def build_training_set(
+        self,
+        features_df: pd.DataFrame,
+        team_features_df: pd.DataFrame,
+        target_col: str = "fantasy_points_ppr",
+    ) -> pd.DataFrame:
         """
         Builds the training set from the features dataframe and specified target
         and saves it to the gold layer.
 
         Args:
             features_df: Output of load_player_features
+            team_features_df: Output of load_team_features
             target_col: Column to predict; must be a registered target for player_stats
                 (default: "fantasy_points_ppr")
 
@@ -215,7 +322,10 @@ class TrainingSetBuilder:
         targets = get_targets("nflverse", "player_stats")
         assert target_col in targets, f"{target_col} is not a registered target for player_stats: {targets}"
 
+        team_stat_columns = get_stat_columns("nflverse", "team_stats")
+
         training_df = self._join_with_target(features_df, target_col)
+        training_df = self._join_team_features(training_df, features_df, team_features_df, team_stat_columns)
 
         output_path = os.path.join(self.gold_dir, f"{target_col}__training_set.csv")
         training_df.to_csv(output_path, index=False)
@@ -258,7 +368,13 @@ class TrainingSetBuilder:
 
         return latest_df
 
-    def build_prediction_set(self, features_df: pd.DataFrame, target_col: str, prediction_season: int) -> pd.DataFrame:
+    def build_prediction_set(
+        self,
+        features_df: pd.DataFrame,
+        team_features_df: pd.DataFrame,
+        target_col: str,
+        prediction_season: int,
+    ) -> pd.DataFrame:
         """
         Builds the gold prediction set from career-feature rows: each player's most recent
         season reframed as a row for predicting prediction_season, with target left blank
@@ -266,6 +382,7 @@ class TrainingSetBuilder:
 
         Args:
             features_df: Output of load_player_features
+            team_features_df: Output of load_team_features
             target_col: Column that will eventually be predicted; must be a registered target
                 for player_stats (only used for naming the output file consistently with
                 build_training_set -- the actual target values are blank)
@@ -278,7 +395,10 @@ class TrainingSetBuilder:
         targets = get_targets("nflverse", "player_stats")
         assert target_col in targets, f"{target_col} is not a registered target for player_stats: {targets}"
 
+        team_stat_columns = get_stat_columns("nflverse", "team_stats")
+
         prediction_df = self._build_prediction_rows(features_df, prediction_season)
+        prediction_df = self._join_team_features(prediction_df, features_df, team_features_df, team_stat_columns)
 
         output_path = os.path.join(self.gold_dir, f"{target_col}__prediction_set.csv")
         prediction_df.to_csv(output_path, index=False)
@@ -315,8 +435,11 @@ def main():
     builder = TrainingSetBuilder(data_dir=args.data_dir)
 
     features_df = builder.load_player_features()
-    builder.build_training_set(features_df, target_col=args.target_col)
-    builder.build_prediction_set(features_df, target_col=args.target_col, prediction_season=args.prediction_season)
+    team_features_df = builder.load_team_features()
+    builder.build_training_set(features_df, team_features_df, target_col=args.target_col)
+    builder.build_prediction_set(
+        features_df, team_features_df, target_col=args.target_col, prediction_season=args.prediction_season
+    )
 
 
 if __name__ == "__main__":
