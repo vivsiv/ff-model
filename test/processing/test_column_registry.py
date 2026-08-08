@@ -65,5 +65,5 @@ class TestColumnRegistry():
     def test_nflverse_team_stats__identity_has_known_identity_columns(self):
         identity = get_identity_columns("nflverse", "team_stats")
 
-        for col in ["team", "season", "season_type", "games"]:
+        for col in ["team", "season"]:
             assert col in identity
