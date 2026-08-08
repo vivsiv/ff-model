@@ -93,7 +93,7 @@ class TestNflverseProcessor():
         assert os.path.exists(silver_path)
         pd.testing.assert_frame_equal(pd.read_csv(silver_path), expected)
 
-    def test_build_player_stats__normalizes_renamed_team_codes(self):
+    def test_build_player_stats__normalizes_relocated_teams(self):
         test_dir = tempfile.mkdtemp()
         try:
             bronze_dir = os.path.join(test_dir, "bronze", "nflv")
@@ -111,14 +111,11 @@ class TestNflverseProcessor():
 
             result = processor.build_player_stats().reset_index(drop=True)
 
-            # OAK (retired 2002) and LV (used from 2003) are the same Raiders franchise; SD
-            # (retired 2002) is the Chargers, now LAC -- both normalize to their current
-            # code so a franchise uses one consistent team code across its whole history.
             assert list(result["recent_team"]) == ["LV", "LV", "LAC"]
         finally:
             shutil.rmtree(test_dir)
 
-    def test_build_team_stats__normalizes_renamed_team_codes(self):
+    def test_build_team_stats__normalizes_relocated_teams(self):
         test_dir = tempfile.mkdtemp()
         try:
             bronze_dir = os.path.join(test_dir, "bronze", "nflv")

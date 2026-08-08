@@ -1,13 +1,12 @@
 # Registry of which raw columns from each source's silver tables are candidates for use in training.
-# Keyed by data source (matching the data/bronze/{source}/, data/silver/{source}/ convention),
-# then by table name within that source.
+# Keyed by data source then by table name within that source.
 #
-# "identity" and "stats" are mutually exclusive for a given table's column set.
-# "targets" are columns that will be predicted -- always a subset of "stats" .
+# "identity" - columns used for joins/grouping/output.
+# "stats" - columns used as features or to compute features.
+# "targets" - columns that will be predicted.
 
 nflverse:
   player_stats:
-    # Kept in the dataframe for joins/grouping/output, but not career-averaged as a stat.
     identity:
       - player_id
       - player_name
@@ -81,22 +80,17 @@ nflverse:
       - fantasy_points
       - fantasy_points_ppr
 
-    # Candidate prediction targets 
     targets:
       - fantasy_points
       - fantasy_points_ppr
 
   team_stats:
-    # Kept in the dataframe for joins/grouping/output, but not treated as a shiftable stat.
     identity:
       - team
       - season
       - season_type
       - games
 
-    # Team-level counterparts of player_stats' offensive stats. No fantasy points and no
-    # opportunity-share metrics (target_share/air_yards_share/wopr/pacr/racr) -- those are
-    # only meaningful relative to an individual player's usage, not at the team level.
     stats:
       # Passing
       - completions

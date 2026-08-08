@@ -16,20 +16,11 @@ logger = logging.getLogger(__name__)
 
 FANTASY_POSITIONS = ["QB", "RB", "WR", "TE"]
 
-# nflverse team codes that were renamed partway through its history (all 4 cut over exactly
-# at the 2002/2003 season boundary, except JAX/JAC which flips twice -- verified by checking
-# every team code's season range in team_stats.csv for gaps: every real code's coverage is
-# contiguous except these). Maps each retired code to the current one, so every silver row
-# for a given franchise uses one consistent code across its whole history. Without this,
-# gold.py's team-shift join (which looks up a team's *prior*-season stats using the team
-# code from a *later* season's row) would wrongly treat a pure code relabeling as a missing
-# team, since e.g. "LV" wasn't used in team_stats until 2003 even though it's the same
-# Raiders franchise as "OAK" in 2002.
-TEAM_CODE_ALIASES = {
-    "STL": "LA",   # Rams: nflverse recodes retroactively starting 2003
-    "SD": "LAC",   # Chargers: nflverse recodes retroactively starting 2003
-    "OAK": "LV",   # Raiders: nflverse recodes retroactively starting 2003
-    "JAC": "JAX",  # Jacksonville: nflverse uses "JAC" only for 2001-2002
+TEAM_RELOCATIONS = {
+    "STL": "LA",   # Rams
+    "SD": "LAC",   # Chargers
+    "OAK": "LV",   # Raiders
+    "JAC": "JAX",  # Jacksonville
 }
 
 class NflverseProcessor:
@@ -75,11 +66,11 @@ class NflverseProcessor:
 
         Returns:
             DataFrame with the filtered player stats, with "recent_team" normalized to a
-            single code per franchise across its whole history (see TEAM_CODE_ALIASES)
+            single code per franchise across its history.
         """
         player_stats_df = self._load_bronze("player_stats.csv")
         player_stats_df = player_stats_df[player_stats_df["position"].isin(FANTASY_POSITIONS)]
-        player_stats_df["recent_team"] = player_stats_df["recent_team"].replace(TEAM_CODE_ALIASES)
+        player_stats_df["recent_team"] = player_stats_df["recent_team"].replace(TEAM_RELOCATIONS)
 
         output_path = os.path.join(self.silver_dir, "player_stats.csv")
         player_stats_df.to_csv(output_path, index=False)
@@ -93,10 +84,10 @@ class NflverseProcessor:
 
         Returns:
             DataFrame with the team stats, with "team" normalized to a single code per
-            franchise across its whole history (see TEAM_CODE_ALIASES)
+            franchise across its history.
         """
         team_stats_df = self._load_bronze("team_stats.csv")
-        team_stats_df["team"] = team_stats_df["team"].replace(TEAM_CODE_ALIASES)
+        team_stats_df["team"] = team_stats_df["team"].replace(TEAM_RELOCATIONS)
 
         output_path = os.path.join(self.silver_dir, "team_stats.csv")
         team_stats_df.to_csv(output_path, index=False)

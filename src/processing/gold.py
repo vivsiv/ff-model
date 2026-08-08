@@ -18,13 +18,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# The name every gold table uses for its target column.
 TARGET_COL = "target"
-
-# Numeric columns that are keys/counts rather than continuous stats -- excluded from the
-# significant-figure rounding applied when gold CSVs are written, since rounding a count
-# like "games" or a year like "season" wouldn't shrink the file meaningfully and would only
-# make them harder to read as plain integers.
 ROUNDING_EXCLUDED_COLUMNS = ["season", "target_season", "seasons_since_played", "years_played", "games"]
 
 
@@ -151,18 +145,12 @@ class TrainingSetBuilder:
         exclude_columns: Optional[List[str]] = None,
     ) -> pd.DataFrame:
         """
-        Rounds every numeric column to `sig_figs` significant figures -- e.g. 22.35634 ->
-        22.36 -- rather than a fixed number of decimal places, so values keep the same
-        number of meaningful digits regardless of scale (plain round(x, 2) would zero out a
-        small value like 0.012345 entirely). Uses np.round's standard round-half-to-even for
-        exact ties, same as the rest of the codebase.
+        Rounds every numeric column to `sig_figs` significant figures.
 
         Args:
-            df: DataFrame to round (not modified in place)
+            df: DataFrame to round
             sig_figs: Number of significant figures to keep (default: 4)
-            exclude_columns: Numeric columns to leave untouched (e.g. identity/count
-                columns like "season" or "games", where rounding wouldn't help and would
-                just make them harder to read as plain integers)
+            exclude_columns: Numeric columns to leave untouched.
 
         Returns:
             A copy of df with eligible numeric columns rounded to sig_figs significant
@@ -209,15 +197,8 @@ class TrainingSetBuilder:
         """
         Loads the `team_stats` silver table, filtered to the registered identity/stat columns.
 
-        Unlike load_player_features, no career-to-date aggregates are computed here --
-        `_join_team_features` only ever needs a team's own single-season stats for the
-        season immediately before a target season, not that team's career history.
-
         Returns:
             One row per team-season, with only the registered identity/stat columns kept.
-            Drops a garbage row nflverse includes with a missing team code -- confirmed this
-            isn't a usable league total/average (e.g. its 1999 passing_yards is 0 vs. a real
-            112,757 sum / ~3,524 mean across that season's 32 real teams), just noise.
         """
         identity_columns = get_identity_columns("nflverse", "team_stats")
         stat_columns = get_stat_columns("nflverse", "team_stats")
@@ -228,12 +209,7 @@ class TrainingSetBuilder:
 
     def _league_average_team_stats(self, team_features_df: pd.DataFrame, stat_columns: List[str]) -> pd.DataFrame:
         """
-        Computes each season's league-wide average of every stat in stat_columns, using only
-        that season's own teams -- deliberately a single-season mean, not a trailing window
-        like _positional_baseline uses for player stats. Team offensive output has trended
-        up over nflverse's history (more passing volume, etc.), so blending in prior seasons
-        would make every recent team look above-average purely from that drift, which is the
-        opposite of what "relative to that season's league" is supposed to isolate.
+        Computes each season's league-wide average of every stat in stat_columns.
 
         Args:
             team_features_df: Output of load_team_features (one row per team-season)
@@ -252,61 +228,35 @@ class TrainingSetBuilder:
     def _join_team_features(
         self,
         df: pd.DataFrame,
-        features_df: pd.DataFrame,
+        player_team_by_season: pd.DataFrame,
         team_features_df: pd.DataFrame,
         team_stat_columns: List[str],
         player_grouping_col: str = "player_id",
         team_col: str = "recent_team",
     ) -> pd.DataFrame:
         """
-        Adds team-context features to each row of df, capturing not just the level of a
-        player's new team but the shift in team quality when a player changes teams. Since
-        the player is no longer on their origin team by target_season, only the destination
-        team's level and the shift relative to origin are kept as features -- the origin
-        team's raw stats are an intermediate used only to compute the shift, not a feature
-        themselves.
+        Adds team-context features to each row of df, capturing the level of a
+        player's team relative to league avg and the shift in team quality when a player changes teams.
 
-        Each row of df (output of _join_with_target or _build_prediction_rows) already has
-        a "season" (the feature/origin season, e.g. year N-1) and a team_col value (the team
-        the player produced that season's stats with, i.e. their origin team). This adds:
-          - "team_{stat}": how much better/worse the player's *destination* team's stat was
-            than the average team that same (origin) season -- destination_team_stat minus
-            that season's league average (see _league_average_team_stats) -- rather than a
-            raw count, so it's comparable across eras of league-wide offensive output.
-            Destination team is the actual team_col value in target_season (year N), looked
-            up from `features_df`, falling back to the origin team when target_season hasn't
-            happened yet or has no matching row (e.g. prediction rows, where a player's
-            future team isn't knowable from this data) -- i.e. assumes no team change absent
-            better information.
-          - "team_shift_{stat}" = destination team's stat - origin team's stat (zero for
-            players who didn't change teams). Equivalent to the difference of each team's
-            stat relative to the league average, since both are relative to the same
-            season's average -- it cancels out, so this is left as a plain difference.
-          - The destination, origin, and league-average lookups all use `team_features_df`
-            for the *origin* season only, never target_season -- a team's performance in the
-            season being predicted doesn't exist yet at real prediction time, so using it
-            would be a look-ahead leak.
+        The "season" column in df is used to join with the "season" column in team_features_df
+        (along with "team") as only the team's stats prior to "target_season" can be in a training row.
 
-        The team_col value used to resolve the destination team, and the resolved
-        destination team itself, are join-only intermediates and are not present in the
-        returned columns.
-
-        Assumes team codes are stable across a franchise's whole history (relies on
-        NflverseProcessor.build_team_stats/build_player_stats having already normalized the
-        handful of nflverse codes that were renamed partway through, e.g. "OAK" -> "LV" --
-        otherwise a franchise whose code changed between the origin and target seasons would
-        wrongly look like a missing team in the origin season's table).
+        Adds the following types of columns:
+          - "team_{stat}": how much better/worse at {stat} the player's team in "target_season" was than leage avg.
+          - "team_shift_{stat}" = How much better/worse at {stat} the player's team in "target_season" was than
+            the player's team in "season".
 
         Args:
-            df: Output of _join_with_target or _build_prediction_rows (must have
-                player_grouping_col, "season", "target_season", and team_col columns)
-            features_df: Output of load_player_features (one row per player-season, used to
-                look up each player's actual team in target_season)
-            team_features_df: Output of load_team_features (one row per team-season)
+            df: Dataframe with player_stats.
+            player_team_by_season: One row per player-season, with at least
+                [player_grouping_col, "season", team_col] columns -- used only to look up
+                each player's actual team in target_season (e.g.
+                features_df[[player_grouping_col, "season", team_col]]; doesn't need the
+                full feature set)
+            team_features_df: Output of load_team_features.
             team_stat_columns: Team stat columns to join in and compute a shift for
             player_grouping_col: Column identifying a unique player (default: "player_id")
-            team_col: Column identifying a player's team on a given row (default:
-                "recent_team")
+            team_col: Column identifying a player's team on a given row (default: "recent_team")
 
         Returns:
             df with "team_{stat}"/"team_shift_{stat}" columns added per stat in
@@ -315,29 +265,30 @@ class TrainingSetBuilder:
         df = df.copy()
 
         destination_lookup = (
-            features_df[[player_grouping_col, "season", team_col]]
+            player_team_by_season[[player_grouping_col, "season", team_col]]
             .rename(columns={"season": "target_season", team_col: "destination_team"})
         )
-        # pd.merge resets the index, so filling from a Series captured before the merge
-        # (e.g. df[team_col] saved off beforehand) would silently misalign and leave rows
-        # NaN wherever the old and new indexes don't happen to match up. Filling from
-        # df[team_col] *after* the merge keeps both sides on the same (fresh) index.
+
         df = df.merge(destination_lookup, on=[player_grouping_col, "target_season"], how="left")
+        # Fill rows with no destination team with the player's current team.
         df["destination_team"] = df["destination_team"].fillna(df[team_col])
 
         team_lookup = team_features_df[["team", "season"] + team_stat_columns]
-        league_avg_df = self._league_average_team_stats(team_features_df, team_stat_columns)
 
         origin_stats = team_lookup.rename(
-            columns={"team": team_col, **{stat: f"_origin_team_{stat}" for stat in team_stat_columns}}
+            columns={"team": team_col, **{stat: f"_origin_team_{stat}"
+            for stat in team_stat_columns}}
         )
         df = df.merge(origin_stats, on=[team_col, "season"], how="left")
 
         destination_stats = team_lookup.rename(
-            columns={"team": "destination_team", **{stat: f"_destination_team_{stat}" for stat in team_stat_columns}}
+            columns={"team": "destination_team", **{stat: f"_destination_team_{stat}"
+            for stat in team_stat_columns}}
         )
         df = df.merge(destination_stats, on=["destination_team", "season"], how="left")
 
+
+        league_avg_df = self._league_average_team_stats(team_features_df, team_stat_columns)
         df = df.merge(league_avg_df, on="season", how="left")
 
         team_columns = {
@@ -421,10 +372,8 @@ class TrainingSetBuilder:
                 (default: "fantasy_points_ppr")
 
         Returns:
-            DataFrame of the training set (full precision), also saved to
-            gold_dir/{target_col}__training_set.csv (rounded to 4 significant figures, see
-            _round_significant_figures -- only the saved file is rounded, not the returned
-            DataFrame, so any in-session downstream use keeps full precision)
+            DataFrame of the training set, rounded to four sig figs and saved to
+            gold_dir/{target_col}__training_set.csv.
         """
         targets = get_targets("nflverse", "player_stats")
         assert target_col in targets, f"{target_col} is not a registered target for player_stats: {targets}"
@@ -432,7 +381,10 @@ class TrainingSetBuilder:
         team_stat_columns = get_stat_columns("nflverse", "team_stats")
 
         training_df = self._join_with_target(features_df, target_col)
-        training_df = self._join_team_features(training_df, features_df, team_features_df, team_stat_columns)
+        player_team_by_season_df = features_df[["player_id", "season", "recent_team"]]
+        training_df = self._join_team_features(
+            training_df, player_team_by_season_df, team_features_df, team_stat_columns
+        )
 
         output_path = os.path.join(self.gold_dir, f"{target_col}__training_set.csv")
         self._round_significant_figures(training_df, exclude_columns=ROUNDING_EXCLUDED_COLUMNS).to_csv(
@@ -498,10 +450,8 @@ class TrainingSetBuilder:
             prediction_season: The season to build a prediction row for, e.g. 2026
 
         Returns:
-            DataFrame of the prediction set (full precision), also saved to
-            gold_dir/{target_col}__prediction_set.csv (rounded to 4 significant figures,
-            see _round_significant_figures -- only the saved file is rounded, not the
-            returned DataFrame)
+            DataFrame of the prediction set, rounded to 4 sigfigs, and saved to
+            gold_dir/{target_col}__prediction_set.csv.
         """
         targets = get_targets("nflverse", "player_stats")
         assert target_col in targets, f"{target_col} is not a registered target for player_stats: {targets}"
@@ -509,7 +459,14 @@ class TrainingSetBuilder:
         team_stat_columns = get_stat_columns("nflverse", "team_stats")
 
         prediction_df = self._build_prediction_rows(features_df, prediction_season)
-        prediction_df = self._join_team_features(prediction_df, features_df, team_features_df, team_stat_columns)
+
+        # TODO: This is wrong, this method should actually take a df of players for whom we want to make predictions
+        # along with their teams for the current season. For now we pass an empty df which has the effect of assuming
+        # everyone stayed on the same team.
+        no_destination_teams_df = pd.DataFrame(columns=["player_id", "season", "recent_team"])
+        prediction_df = self._join_team_features(
+            prediction_df, no_destination_teams_df, team_features_df, team_stat_columns
+        )
 
         output_path = os.path.join(self.gold_dir, f"{target_col}__prediction_set.csv")
         self._round_significant_figures(prediction_df, exclude_columns=ROUNDING_EXCLUDED_COLUMNS).to_csv(
