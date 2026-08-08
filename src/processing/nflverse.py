@@ -16,6 +16,13 @@ logger = logging.getLogger(__name__)
 
 FANTASY_POSITIONS = ["QB", "RB", "WR", "TE"]
 
+TEAM_RELOCATIONS = {
+    "STL": "LA",   # Rams
+    "SD": "LAC",   # Chargers
+    "OAK": "LV",   # Raiders
+    "JAC": "JAX",  # Jacksonville
+}
+
 class NflverseProcessor:
     """Generates silver layer data from nflverse bronze layer data."""
 
@@ -58,10 +65,12 @@ class NflverseProcessor:
             positions: Player positions to keep (default: QB, RB, WR, TE)
 
         Returns:
-            DataFrame with the filtered player stats
+            DataFrame with the filtered player stats, with "recent_team" normalized to a
+            single code per franchise across its history.
         """
         player_stats_df = self._load_bronze("player_stats.csv")
         player_stats_df = player_stats_df[player_stats_df["position"].isin(FANTASY_POSITIONS)]
+        player_stats_df["recent_team"] = player_stats_df["recent_team"].replace(TEAM_RELOCATIONS)
 
         output_path = os.path.join(self.silver_dir, "player_stats.csv")
         player_stats_df.to_csv(output_path, index=False)
@@ -74,9 +83,11 @@ class NflverseProcessor:
         Loads nflverse team stats, performs relevant transformations, and saves the result to the silver layer.
 
         Returns:
-            DataFrame with the team stats
+            DataFrame with the team stats, with "team" normalized to a single code per
+            franchise across its history.
         """
         team_stats_df = self._load_bronze("team_stats.csv")
+        team_stats_df["team"] = team_stats_df["team"].replace(TEAM_RELOCATIONS)
 
         output_path = os.path.join(self.silver_dir, "team_stats.csv")
         team_stats_df.to_csv(output_path, index=False)

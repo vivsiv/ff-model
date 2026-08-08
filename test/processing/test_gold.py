@@ -2,6 +2,7 @@ import os
 import tempfile
 import shutil
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -133,6 +134,44 @@ class TestTrainingSetBuilder():
         ]
         assert list(result["fantasy_points_ppr_shrunk_avg"]) == expected_shrunk
 
+    def test_round_significant_figures__rounds_to_requested_precision(self):
+        df = pd.DataFrame({"stat": [22.35634, 0.0123123, 1234567.0, -9.87654]})
+
+        result = self.builder._round_significant_figures(df, sig_figs=4)
+
+        assert list(result["stat"]) == pytest.approx([22.36, 0.01231, 1235000.0, -9.877])
+
+    def test_round_significant_figures__preserves_zero_and_nan(self):
+        df = pd.DataFrame({"stat": [0.0, np.nan, 5.55555]})
+
+        result = self.builder._round_significant_figures(df, sig_figs=4)
+
+        assert result["stat"].iloc[0] == 0.0
+        assert pd.isna(result["stat"].iloc[1])
+        assert result["stat"].iloc[2] == pytest.approx(5.556)
+
+    def test_round_significant_figures__leaves_excluded_columns_untouched(self):
+        df = pd.DataFrame({"season": [1999.0], "stat": [22.35634]})
+
+        result = self.builder._round_significant_figures(df, sig_figs=4, exclude_columns=["season"])
+
+        assert result["season"].iloc[0] == 1999.0
+        assert result["stat"].iloc[0] == pytest.approx(22.36)
+
+    def test_round_significant_figures__leaves_non_numeric_columns_untouched(self):
+        df = pd.DataFrame({"player_id": ["p1"], "stat": [22.35634]})
+
+        result = self.builder._round_significant_figures(df, sig_figs=4)
+
+        assert result["player_id"].iloc[0] == "p1"
+
+    def test_round_significant_figures__does_not_mutate_input(self):
+        df = pd.DataFrame({"stat": [22.35634]})
+
+        self.builder._round_significant_figures(df, sig_figs=4)
+
+        assert df["stat"].iloc[0] == 22.35634
+
     def test_join_with_target__pairs_each_season_with_the_prior_seasons_features(self):
         features_df = pd.DataFrame({
             "player_id": ["p1", "p1", "p1"],
@@ -198,7 +237,7 @@ class TestTrainingSetBuilder():
 
     def test_build_training_set__rejects_a_target_not_in_the_registry(self):
         with pytest.raises(AssertionError):
-            self.builder.build_training_set(pd.DataFrame(), target_col="not_a_real_target")
+            self.builder.build_training_set(pd.DataFrame(), pd.DataFrame(), target_col="not_a_real_target")
 
     def test_build_prediction_rows__keeps_only_the_most_recent_season_per_player(self):
         features_df = pd.DataFrame({
@@ -249,4 +288,130 @@ class TestTrainingSetBuilder():
 
     def test_build_prediction_set__rejects_a_target_not_in_the_registry(self):
         with pytest.raises(AssertionError):
-            self.builder.build_prediction_set(pd.DataFrame(), target_col="not_a_real_target", prediction_season=2026)
+            self.builder.build_prediction_set(
+                pd.DataFrame(), pd.DataFrame(), target_col="not_a_real_target", prediction_season=2026
+            )
+
+    def test_league_average_team_stats__single_season_mean_not_trailing_window(self):
+        team_features_df = pd.DataFrame({
+            "team": ["KC", "SF", "DAL"],
+            "season": [2020, 2020, 2021],
+            "passing_yards": [4000.0, 3000.0, 5000.0],
+        })
+
+        result = self.builder._league_average_team_stats(team_features_df, ["passing_yards"])
+
+        expected = pd.DataFrame({
+            "season": [2020, 2021],
+            "passing_yards_league_avg": [3500.0, 5000.0],
+        })
+        pd.testing.assert_frame_equal(result, expected)
+
+    def test_join_team_features__no_team_change_has_zero_shift(self):
+        df = pd.DataFrame({
+            "player_id": ["p1"],
+            "season": [2020],
+            "target_season": [2021],
+            "recent_team": ["KC"],
+        })
+        features_df = pd.DataFrame({
+            "player_id": ["p1", "p1"],
+            "season": [2020, 2021],
+            "recent_team": ["KC", "KC"],
+        })
+        team_features_df = pd.DataFrame({
+            "team": ["KC", "SF"],
+            "season": [2020, 2020],
+            "passing_yards": [4000.0, 3500.0],
+        })
+
+        result = self.builder._join_team_features(df, features_df, team_features_df, ["passing_yards"])
+
+        # league avg for 2020 = mean(4000, 3500) = 3750; destination (KC) = 4000
+        assert "origin_team" not in result.columns
+        assert "destination_team" not in result.columns
+        assert result["team_passing_yards"].iloc[0] == 250.0
+        assert result["team_shift_passing_yards"].iloc[0] == 0.0
+
+    def test_join_team_features__team_change_looks_up_destination_team_from_origin_season(self):
+        # Mirrors the Davante Adams motivation: player's own feature season (2022) was with
+        # the Raiders, but they're actually on the Rams by target_season (2023). Destination
+        # stats must come from the Rams' 2022 (origin season) performance, not 2023's.
+        df = pd.DataFrame({
+            "player_id": ["p1"],
+            "season": [2022],
+            "target_season": [2023],
+            "recent_team": ["LV"],
+        })
+        features_df = pd.DataFrame({
+            "player_id": ["p1", "p1"],
+            "season": [2022, 2023],
+            "recent_team": ["LV", "LA"],
+        })
+        team_features_df = pd.DataFrame({
+            "team": ["LV", "LA", "LA"],
+            "season": [2022, 2022, 2023],
+            "passing_yards": [3000.0, 4200.0, 9999.0],
+        })
+
+        result = self.builder._join_team_features(df, features_df, team_features_df, ["passing_yards"])
+
+        # league avg for the *origin* season (2022) = mean(3000, 4200) = 3600, using only
+        # 2022 rows -- LA's 9999 in 2023 must not leak into it. destination (LA, 2022) = 4200.
+        assert "origin_team" not in result.columns
+        assert "destination_team" not in result.columns
+        assert result["team_passing_yards"].iloc[0] == 600.0
+        assert result["team_shift_passing_yards"].iloc[0] == 1200.0
+
+    def test_join_team_features__falls_back_to_origin_team_when_target_season_is_unmatched(self):
+        # Prediction rows: target_season hasn't happened yet, so there's no features_df row
+        # for it -- destination_team should fall back to the player's own current team
+        # (assume no team change) rather than producing a NaN shift.
+        df = pd.DataFrame({
+            "player_id": ["p1"],
+            "season": [2025],
+            "target_season": [2026],
+            "recent_team": ["KC"],
+        })
+        features_df = pd.DataFrame({
+            "player_id": ["p1"],
+            "season": [2025],
+            "recent_team": ["KC"],
+        })
+        team_features_df = pd.DataFrame({
+            "team": ["KC"],
+            "season": [2025],
+            "passing_yards": [4000.0],
+        })
+
+        result = self.builder._join_team_features(df, features_df, team_features_df, ["passing_yards"])
+
+        assert "destination_team" not in result.columns
+        assert result["team_shift_passing_yards"].iloc[0] == 0.0
+
+    def test_join_team_features__does_not_mix_players(self):
+        df = pd.DataFrame({
+            "player_id": ["p1", "p2"],
+            "season": [2020, 2020],
+            "target_season": [2021, 2021],
+            "recent_team": ["KC", "SF"],
+        })
+        features_df = pd.DataFrame({
+            "player_id": ["p1", "p1", "p2", "p2"],
+            "season": [2020, 2021, 2020, 2021],
+            "recent_team": ["KC", "KC", "SF", "DAL"],
+        })
+        team_features_df = pd.DataFrame({
+            "team": ["KC", "SF", "DAL"],
+            "season": [2020, 2020, 2020],
+            "passing_yards": [4000.0, 3500.0, 3000.0],
+        })
+
+        result = self.builder._join_team_features(
+            df, features_df, team_features_df, ["passing_yards"]
+        ).sort_values("player_id").reset_index(drop=True)
+
+        # league avg for 2020 = mean(4000, 3500, 3000) = 3500.
+        # p1 didn't change teams -> shift 0; p2 (SF -> DAL) shouldn't pick up p1's KC lookup.
+        assert list(result["team_passing_yards"]) == [500.0, -500.0]
+        assert list(result["team_shift_passing_yards"]) == [0.0, -500.0]

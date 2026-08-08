@@ -55,19 +55,27 @@ PHASE 1. First Model (Total PPR Points) [DONE]
 
 PHASE 2. Improve the first model [IN PROGRESS]
 1. Add Out of Bag error as a metric (what does the oob_score parameter do?) [DONE].
-2. Update the notebook to be able to load a saved model and inspect it [IN PROGRESS]
-3. View which features are contributing the most to decisions. Feature importance, partial depdendance.
-4. Add more features (team_stats, fantasy stats, per game variants of existing features).
+2. Update the notebook to be able to load a saved model and inspect it [DONE]
+3. View which features are contributing the most to decisions. Feature importance, partial depdendance. [DONE]
+4. Add more features:
+    - team_stats [IN PROGRESS]
+    - games should be a feature!!
+    - snap counts (pfr_id)
+    - draft picks (pfr_id) (has all_pro, allpro, probowls)
+    - fantasy_stats (regular id)
 5. Grid search hyperparameters/auto ml. 
     - Try min_samples_leaf 4,8,16. Are any other hyperparams worth adjusting?
 6. Try different model architectures (Gradient Boosting, Ridge, Lasso, Linear, etc.)
 
 PHASE 3. Second Model (PPR POINTS PER GAME) [TODO]
-1. Create new per game target column (ppr_points_per_game)
-2. Train a new model with the per game features and improve as done in phase 2.
+1. Create new per game target column (ppr_points_per_game), see how the existing feature set does predicting new target.
+2. Add per game variants of existing features.
+3. Train a new model with the per game features and improve as done in phase 2.
 
-PHASE 4. Rankings [TODO]
-1. Re-evaluate rankings process
+PHASE 4. Predictions & Rankings [TODO]
+1. Generate list of players and teams to predict for 2026
+2. Generate rankings process based on current code.
+3. Re-evaluate rankings process
 
 PHASE 5. Sequential Model [TODO]
 1. Create a new training set builder that builds a sequential version of the data that can be used to feed an lstm or transformer
