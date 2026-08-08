@@ -76,10 +76,29 @@ class NflverseScraper:
 
         return df
 
+    def fetch_draft_picks(self) -> pd.DataFrame:
+        """
+        Fetch draft pick data for all available seasons,
+        save them to the bronze layer as a single file.
+
+        Returns:
+            DataFrame with draft pick data for all available seasons
+        """
+        logger.info("Fetching nflverse draft picks for all available seasons")
+
+        df = nfl.load_draft_picks(seasons=True).to_pandas()
+        if not df.empty:
+            self._save(df, "draft_picks.csv")
+        else:
+            logger.warning("No draft picks returned")
+
+        return df
+
     def fetch_all(self) -> None:
-        """Fetch player and team stats for all available seasons."""
+        """Fetch player, team, and draft pick data for all available seasons."""
         self.fetch_player_stats()
         self.fetch_team_stats()
+        self.fetch_draft_picks()
 
 
 def main():
