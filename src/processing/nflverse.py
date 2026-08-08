@@ -106,6 +106,8 @@ class NflverseProcessor:
               - "team", "position": only needed to filter to fantasy-relevant positions;
                 not needed downstream since player_stats already has its own (current,
                 season-specific) "recent_team"/"position" to join in.
+              - "category" (redundant with "position") and "side" (constant "O" once
+                filtered to offensive fantasy positions).
               - "car_av" and defensive-only stat columns: always null/not applicable for
                 fantasy-relevant positions.
               - "pfr_player_id", "cfb_player_id", "pfr_player_name", "college": identifying
@@ -141,7 +143,7 @@ class NflverseProcessor:
         draft_picks_df = draft_picks_df[draft_picks_df["position"].isin(FANTASY_POSITIONS)]
         draft_picks_df["draft_pick"] = (draft_picks_df["round"] - 1) * DRAFT_TEAMS + draft_picks_df["pick"]
         draft_picks_df = draft_picks_df.drop(columns=[
-            "round", "pick", "team", "position",
+            "round", "pick", "team", "position", "category", "side",
             "car_av", "def_solo_tackles", "def_ints", "def_sacks",
             "pfr_player_id", "cfb_player_id", "pfr_player_name", "college",
             "games", "pass_completions", "pass_attempts", "pass_yards", "pass_tds",

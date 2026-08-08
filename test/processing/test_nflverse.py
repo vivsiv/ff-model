@@ -43,6 +43,8 @@ class TestNflverseProcessor():
             "pfr_player_name": ["Player One", "Player Two", "Player Three", "Player Six"],
             "college": ["State", "Tech", "U", "A&M"],
             "position": ["QB", "K", "WR", "DE"],
+            "category": ["QB", "K", "WR", "DL"],
+            "side": ["O", "S", "O", "D"],
             "age": [22.0, 23.0, 21.0, 24.0],
             "hof": [False, False, False, False],
             "to": [2030.0, 2025.0, 2032.0, 2028.0],
@@ -136,7 +138,8 @@ class TestNflverseProcessor():
 
         # Of the 4 rows in the fixture, "K" (not fantasy relevant) and "DE" (defensive,
         # also carries the dropped def_* columns) should be filtered out, leaving QB/WR.
-        # Identifying metadata (pfr_player_id/cfb_player_id/pfr_player_name/college),
+        # "team"/"position" (only needed for the position filter), "category"/"side",
+        # identifying metadata (pfr_player_id/cfb_player_id/pfr_player_name/college),
         # career counting stats (games/pass_*/rush_*/receptions/rec_*), and career-final
         # totals (hof/to/allpro/probowls/seasons_started/w_av/dr_av) are all dropped,
         # leaving only identity + draft-time-safe stat columns. "gsis_id" is renamed to
@@ -145,9 +148,7 @@ class TestNflverseProcessor():
         # row2 (round 2, pick 33) = (2-1)*32+33 = 65.
         expected = pd.DataFrame({
             "season": [2022, 2022],
-            "team": ["ARI", "DAL"],
             "player_id": ["p1", "p3"],
-            "position": ["QB", "WR"],
             "age_at_draft": [22.0, 21.0],
             "draft_pick": [1, 65],
         })
@@ -158,11 +159,14 @@ class TestNflverseProcessor():
         assert os.path.exists(silver_path)
         pd.testing.assert_frame_equal(pd.read_csv(silver_path), expected)
 
-    def test_build_draft_picks__does_not_normalize_team_codes(self):
-        # "STL" is intentionally left alone (see build_draft_picks docstring) even though
-        # build_player_stats/build_team_stats would normalize it to "LA".
-        result = self.processor.build_draft_picks().reset_index(drop=True)
-        assert "STL" not in result["team"].values  # the only STL row is position="DE", filtered out
+    def test_build_draft_picks__drops_team_and_position(self):
+        # "team" and "position" are only used to filter to fantasy-relevant positions and
+        # aren't needed downstream (player_stats has its own up-to-date versions of both).
+        result = self.processor.build_draft_picks()
+        assert "team" not in result.columns
+        assert "position" not in result.columns
+        assert "category" not in result.columns
+        assert "side" not in result.columns
 
     def test_build_draft_picks__deduplicates_players_drafted_more_than_once(self):
         # A player drafted, not signed, and re-drafted later (e.g. Bo Jackson) should end
@@ -182,6 +186,8 @@ class TestNflverseProcessor():
                 "pfr_player_name": ["Bo Jackson", "Bo Jackson", "Other Player"],
                 "college": ["Auburn", "Auburn", "State"],
                 "position": ["RB", "RB", "WR"],
+                "category": ["RB", "RB", "WR"],
+                "side": ["O", "O", "O"],
                 "age": [23.0, 24.0, 21.0],
                 "hof": [True, True, False],
                 "to": [1990.0, 1990.0, 2029.0],
@@ -215,7 +221,6 @@ class TestNflverseProcessor():
             assert len(result) == 2
             bo_row = result[result["player_id"] == "bo_jackson"].iloc[0]
             assert bo_row["season"] == 1987
-            assert bo_row["team"] == "OAK"
             assert bo_row["draft_pick"] == 193  # (7 - 1) * 32 + 1
         finally:
             shutil.rmtree(test_dir)
@@ -238,6 +243,8 @@ class TestNflverseProcessor():
                 "pfr_player_name": ["Bust A", "Bust B"],
                 "college": ["State", "Tech"],
                 "position": ["WR", "WR"],
+                "category": ["WR", "WR"],
+                "side": ["O", "O"],
                 "age": [None, None],
                 "hof": [False, False],
                 "to": [None, None],

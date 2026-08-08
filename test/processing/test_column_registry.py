@@ -84,7 +84,7 @@ class TestColumnRegistry():
     def test_nflverse_draft_picks__identity_has_known_identity_columns(self):
         identity = get_identity_columns("nflverse", "draft_picks")
 
-        for col in ["season", "team", "player_id", "position"]:
+        for col in ["season", "player_id"]:
             assert col in identity
 
     def test_nflverse_draft_picks__stats_has_known_draft_relevant_columns(self):
@@ -98,11 +98,11 @@ class TestColumnRegistry():
         stats = get_stat_columns("nflverse", "draft_picks")
 
         excluded_columns = [
-            "category", "side", "pfr_player_id", "cfb_player_id", "pfr_player_name",
-            "college", "games", "pass_completions", "pass_attempts", "pass_yards",
-            "pass_tds", "pass_ints", "rush_atts", "rush_yards", "rush_tds", "receptions",
-            "rec_yards", "rec_tds", "round", "pick", "age", "hof", "to", "allpro",
-            "probowls", "seasons_started", "w_av", "dr_av",
+            "team", "position", "category", "side", "pfr_player_id", "cfb_player_id",
+            "pfr_player_name", "college", "games", "pass_completions", "pass_attempts",
+            "pass_yards", "pass_tds", "pass_ints", "rush_atts", "rush_yards", "rush_tds",
+            "receptions", "rec_yards", "rec_tds", "round", "pick", "age", "hof", "to",
+            "allpro", "probowls", "seasons_started", "w_av", "dr_av",
         ]
         for col in excluded_columns:
             assert col not in identity
