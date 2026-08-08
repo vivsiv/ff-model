@@ -9,16 +9,15 @@ nflverse:
   player_stats:
     identity:
       - player_id
-      - player_name
       - player_display_name
       - position
-      - position_group
       - season
-      - season_type
       - recent_team
-      - games
 
     stats:
+      # Overall
+      - games
+
       # Passing
       - completions
       - attempts
@@ -88,8 +87,6 @@ nflverse:
     identity:
       - team
       - season
-      - season_type
-      - games
 
     stats:
       # Passing
