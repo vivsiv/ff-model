@@ -16,9 +16,11 @@ nflverse:
       - season
       - season_type
       - recent_team
-      - games
 
     stats:
+      # Overall
+      - games
+
       # Passing
       - completions
       - attempts

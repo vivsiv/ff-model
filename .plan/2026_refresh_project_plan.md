@@ -58,8 +58,8 @@ PHASE 2. Improve the first model [IN PROGRESS]
 2. Update the notebook to be able to load a saved model and inspect it [DONE]
 3. View which features are contributing the most to decisions. Feature importance, partial depdendance. [DONE]
 4. Add more features:
-    - team_stats [IN PROGRESS]
-    - games should be a feature!!
+    - team_stats [DONE]
+    - games should be a feature!! [DONE]
     - snap counts (pfr_id)
     - draft picks (pfr_id) (has all_pro, allpro, probowls)
     - fantasy_stats (regular id)

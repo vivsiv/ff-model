@@ -20,13 +20,13 @@ class TestColumnRegistry():
     def test_nflverse_player_stats__stats_has_known_fantasy_relevant_columns(self):
         stats = get_stat_columns("nflverse", "player_stats")
 
-        for col in ["fantasy_points", "fantasy_points_ppr", "passing_epa", "target_share"]:
+        for col in ["fantasy_points", "fantasy_points_ppr", "passing_epa", "target_share", "games"]:
             assert col in stats
 
     def test_nflverse_player_stats__identity_has_known_identity_columns(self):
         identity = get_identity_columns("nflverse", "player_stats")
 
-        for col in ["player_id", "player_display_name", "position", "season", "recent_team", "games"]:
+        for col in ["player_id", "player_display_name", "position", "season", "recent_team"]:
             assert col in identity
 
     def test_nflverse_player_stats__targets_are_a_subset_of_stats(self):
