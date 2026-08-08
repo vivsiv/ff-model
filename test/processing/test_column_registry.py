@@ -67,3 +67,43 @@ class TestColumnRegistry():
 
         for col in ["team", "season"]:
             assert col in identity
+
+    def test_nflverse_draft_picks__identity_and_stats_have_no_overlap(self):
+        identity = get_identity_columns("nflverse", "draft_picks")
+        stats = get_stat_columns("nflverse", "draft_picks")
+
+        assert set(identity) & set(stats) == set()
+
+    def test_nflverse_draft_picks__no_duplicates_within_any_list(self):
+        identity = get_identity_columns("nflverse", "draft_picks")
+        stats = get_stat_columns("nflverse", "draft_picks")
+
+        assert len(identity) == len(set(identity))
+        assert len(stats) == len(set(stats))
+
+    def test_nflverse_draft_picks__identity_has_known_identity_columns(self):
+        identity = get_identity_columns("nflverse", "draft_picks")
+
+        for col in ["season", "team", "player_id", "position"]:
+            assert col in identity
+
+    def test_nflverse_draft_picks__stats_has_known_draft_relevant_columns(self):
+        stats = get_stat_columns("nflverse", "draft_picks")
+
+        for col in ["draft_pick", "age_at_draft"]:
+            assert col in stats
+
+    def test_nflverse_draft_picks__redundant_and_leakage_risk_columns_are_excluded(self):
+        identity = get_identity_columns("nflverse", "draft_picks")
+        stats = get_stat_columns("nflverse", "draft_picks")
+
+        excluded_columns = [
+            "category", "side", "pfr_player_id", "cfb_player_id", "pfr_player_name",
+            "college", "games", "pass_completions", "pass_attempts", "pass_yards",
+            "pass_tds", "pass_ints", "rush_atts", "rush_yards", "rush_tds", "receptions",
+            "rec_yards", "rec_tds", "round", "pick", "age", "hof", "to", "allpro",
+            "probowls", "seasons_started", "w_av", "dr_av",
+        ]
+        for col in excluded_columns:
+            assert col not in identity
+            assert col not in stats

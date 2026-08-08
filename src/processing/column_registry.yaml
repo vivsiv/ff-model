@@ -140,3 +140,12 @@ nflverse:
       - receiving_20
       - receiving_40
       - receiving_epa
+
+  draft_picks:
+    identity:
+      - player_id
+      - season
+
+    stats:
+      - draft_pick    # (round - 1) * 32 + pick, computed in build_draft_picks from "round"/"pick"
+      - age_at_draft  # renamed from "age" in build_draft_picks
