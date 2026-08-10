@@ -90,3 +90,26 @@ class TestColumnRegistry():
         stats = get_stat_columns("nflverse", "draft_picks")
 
         assert set(stats) == {"draft_pick", "age_at_draft"}
+
+    def test_nflverse_snap_counts__identity_and_stats_have_no_overlap(self):
+        identity = get_identity_columns("nflverse", "snap_counts")
+        stats = get_stat_columns("nflverse", "snap_counts")
+
+        assert set(identity) & set(stats) == set()
+
+    def test_nflverse_snap_counts__no_duplicates_within_any_list(self):
+        identity = get_identity_columns("nflverse", "snap_counts")
+        stats = get_stat_columns("nflverse", "snap_counts")
+
+        assert len(identity) == len(set(identity))
+        assert len(stats) == len(set(stats))
+
+    def test_nflverse_snap_counts__identity_has_exactly_the_expected_columns(self):
+        identity = get_identity_columns("nflverse", "snap_counts")
+
+        assert set(identity) == {"player_id", "season"}
+
+    def test_nflverse_snap_counts__stats_has_exactly_the_expected_columns(self):
+        stats = get_stat_columns("nflverse", "snap_counts")
+
+        assert set(stats) == {"offense_snaps", "offense_pct"}
