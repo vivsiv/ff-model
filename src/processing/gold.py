@@ -198,21 +198,21 @@ class TrainingSetBuilder:
     def load_draft_features(self) -> pd.DataFrame:
         """
         Loads the `draft_picks` silver table, filtered to the registered identity/stat
-        columns. The silver layer already guarantees at most one row per player_id.
+        columns. The silver layer already guarantees exactly one row per player_id and no
+        rows with a missing player_id.
 
         "season" (the draft year) is renamed to "draft_season" to avoid colliding with
         player_stats'/the training set's own "season"/"target_season" columns once joined
         in by _join_draft_features.
 
         Returns:
-            One row per drafted player with a known player_id: "draft_season",
-            "player_id", "draft_pick", "age_at_draft".
+            One row per drafted player: "draft_season", "player_id", "draft_pick",
+            "age_at_draft".
         """
         identity_columns = get_identity_columns("nflverse", "draft_picks")
         stat_columns = get_stat_columns("nflverse", "draft_picks")
 
         draft_df = pd.read_csv(os.path.join(self.silver_dir, "draft_picks.csv"), low_memory=False)
-        draft_df = draft_df[draft_df["player_id"].notna()]
         draft_df = draft_df[identity_columns + stat_columns]
         return draft_df.rename(columns={"season": "draft_season"})
 

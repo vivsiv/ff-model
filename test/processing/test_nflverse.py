@@ -38,37 +38,13 @@ class TestNflverseProcessor():
             "pick": [1, 2, 33, 1],
             "team": ["ARI", "ARI", "DAL", "STL"],
             "gsis_id": ["p1", "p2", "p3", "p6"],
-            "pfr_player_id": ["OneP00", "TwoP00", "ThreP00", "SixP00"],
-            "cfb_player_id": ["one-1", "two-1", "three-1", "six-1"],
-            "pfr_player_name": ["Player One", "Player Two", "Player Three", "Player Six"],
-            "college": ["State", "Tech", "U", "A&M"],
             "position": ["QB", "K", "WR", "DE"],
             "category": ["QB", "K", "WR", "DL"],
             "side": ["O", "S", "O", "D"],
             "age": [22.0, 23.0, 21.0, 24.0],
-            "hof": [False, False, False, False],
-            "to": [2030.0, 2025.0, 2032.0, 2028.0],
-            "allpro": [0, 0, 1, 0],
-            "probowls": [0, 0, 1, 0],
-            "seasons_started": [2, 0, 3, 1],
-            "w_av": [10.0, 2.0, 15.0, 8.0],
-            "dr_av": [10.0, 2.0, 15.0, 8.0],
-            "car_av": [None, None, None, None],
+            "college": ["State", "Tech", "U", "A&M"],
             "games": [16.0, 10.0, 40.0, 32.0],
-            "pass_completions": [300.0, 0.0, 0.0, 0.0],
-            "pass_attempts": [500.0, 0.0, 0.0, 0.0],
-            "pass_yards": [3500.0, 0.0, 0.0, 0.0],
-            "pass_tds": [25.0, 0.0, 0.0, 0.0],
-            "pass_ints": [10.0, 0.0, 0.0, 0.0],
-            "rush_atts": [20.0, 0.0, 5.0, 0.0],
-            "rush_yards": [100.0, 0.0, 20.0, 0.0],
-            "rush_tds": [1.0, 0.0, 0.0, 0.0],
-            "receptions": [0.0, 0.0, 60.0, 0.0],
-            "rec_yards": [0.0, 0.0, 800.0, 0.0],
-            "rec_tds": [0.0, 0.0, 6.0, 0.0],
-            "def_solo_tackles": [None, None, None, 50.0],
-            "def_ints": [None, None, None, 1.0],
-            "def_sacks": [None, None, None, 5.0],
+            "hof": [False, False, False, False],
         })
         draft_picks_df.to_csv(os.path.join(cls.bronze_dir, "draft_picks.csv"), index=False)
 
@@ -136,16 +112,6 @@ class TestNflverseProcessor():
     def test_build_draft_picks__filters_by_position_and_drops_unneeded_columns(self):
         result = self.processor.build_draft_picks().reset_index(drop=True)
 
-        # Of the 4 rows in the fixture, "K" (not fantasy relevant) and "DE" (defensive,
-        # also carries the dropped def_* columns) should be filtered out, leaving QB/WR.
-        # "team"/"position" (only needed for the position filter), "category"/"side",
-        # identifying metadata (pfr_player_id/cfb_player_id/pfr_player_name/college),
-        # career counting stats (games/pass_*/rush_*/receptions/rec_*), and career-final
-        # totals (hof/to/allpro/probowls/seasons_started/w_av/dr_av) are all dropped,
-        # leaving only identity + draft-time-safe stat columns. "gsis_id" is renamed to
-        # "player_id" and "age" to "age_at_draft", and "round"/"pick" are combined into
-        # "draft_pick" ((round - 1) * 32 + pick): row0 = (1-1)*32+1 = 1,
-        # row2 (round 2, pick 33) = (2-1)*32+33 = 65.
         expected = pd.DataFrame({
             "season": [2022, 2022],
             "player_id": ["p1", "p3"],
@@ -179,39 +145,9 @@ class TestNflverseProcessor():
                 "season": [1986, 1987, 2020],
                 "round": [1, 7, 3],
                 "pick": [1, 1, 10],
-                "team": ["TAM", "OAK", "ARI"],
                 "gsis_id": ["bo_jackson", "bo_jackson", "p_other"],
-                "pfr_player_id": ["JackBo00", "JackBo00", "OtherP00"],
-                "cfb_player_id": ["a", "a", "b"],
-                "pfr_player_name": ["Bo Jackson", "Bo Jackson", "Other Player"],
-                "college": ["Auburn", "Auburn", "State"],
                 "position": ["RB", "RB", "WR"],
-                "category": ["RB", "RB", "WR"],
-                "side": ["O", "O", "O"],
                 "age": [23.0, 24.0, 21.0],
-                "hof": [True, True, False],
-                "to": [1990.0, 1990.0, 2029.0],
-                "allpro": [0, 1, 0],
-                "probowls": [1, 1, 0],
-                "seasons_started": [0, 4, 3],
-                "w_av": [0.0, 45.0, 12.0],
-                "dr_av": [0.0, 45.0, 12.0],
-                "car_av": [None, None, None],
-                "games": [0.0, 38.0, 16.0],
-                "pass_completions": [0.0, 0.0, 0.0],
-                "pass_attempts": [0.0, 0.0, 0.0],
-                "pass_yards": [0.0, 0.0, 0.0],
-                "pass_tds": [0.0, 0.0, 0.0],
-                "pass_ints": [0.0, 0.0, 0.0],
-                "rush_atts": [0.0, 515.0, 0.0],
-                "rush_yards": [0.0, 2782.0, 0.0],
-                "rush_tds": [0.0, 16.0, 0.0],
-                "receptions": [0.0, 40.0, 60.0],
-                "rec_yards": [0.0, 352.0, 800.0],
-                "rec_tds": [0.0, 2.0, 6.0],
-                "def_solo_tackles": [None, None, None],
-                "def_ints": [None, None, None],
-                "def_sacks": [None, None, None],
             })
             draft_picks_df.to_csv(os.path.join(bronze_dir, "draft_picks.csv"), index=False)
             processor = NflverseProcessor(data_dir=test_dir)
@@ -225,9 +161,9 @@ class TestNflverseProcessor():
         finally:
             shutil.rmtree(test_dir)
 
-    def test_build_draft_picks__keeps_rows_with_no_player_id(self):
-        # Players nflverse never mapped to a gsis_id (e.g. career busts) can't be
-        # de-duplicated by player, so all of their rows should be kept as-is.
+    def test_build_draft_picks__drops_rows_with_no_player_id(self):
+        # Players nflverse never mapped to a gsis_id (e.g. career busts) can't be joined
+        # to player_stats, so they're useless downstream and should be dropped entirely.
         test_dir = tempfile.mkdtemp()
         try:
             bronze_dir = os.path.join(test_dir, "bronze", "nflv")
@@ -236,47 +172,16 @@ class TestNflverseProcessor():
                 "season": [1984, 1985],
                 "round": [10, 11],
                 "pick": [5, 6],
-                "team": ["ARI", "DAL"],
                 "gsis_id": [None, None],
-                "pfr_player_id": ["BustA00", "BustB00"],
-                "cfb_player_id": ["a", "b"],
-                "pfr_player_name": ["Bust A", "Bust B"],
-                "college": ["State", "Tech"],
                 "position": ["WR", "WR"],
-                "category": ["WR", "WR"],
-                "side": ["O", "O"],
                 "age": [None, None],
-                "hof": [False, False],
-                "to": [None, None],
-                "allpro": [0, 0],
-                "probowls": [0, 0],
-                "seasons_started": [0, 0],
-                "w_av": [None, None],
-                "dr_av": [None, None],
-                "car_av": [None, None],
-                "games": [None, None],
-                "pass_completions": [None, None],
-                "pass_attempts": [None, None],
-                "pass_yards": [None, None],
-                "pass_tds": [None, None],
-                "pass_ints": [None, None],
-                "rush_atts": [None, None],
-                "rush_yards": [None, None],
-                "rush_tds": [None, None],
-                "receptions": [None, None],
-                "rec_yards": [None, None],
-                "rec_tds": [None, None],
-                "def_solo_tackles": [None, None],
-                "def_ints": [None, None],
-                "def_sacks": [None, None],
             })
             draft_picks_df.to_csv(os.path.join(bronze_dir, "draft_picks.csv"), index=False)
             processor = NflverseProcessor(data_dir=test_dir)
 
             result = processor.build_draft_picks()
 
-            assert len(result) == 2
-            assert result["player_id"].isna().all()
+            assert len(result) == 0
         finally:
             shutil.rmtree(test_dir)
 

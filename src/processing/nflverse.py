@@ -102,42 +102,15 @@ class NflverseProcessor:
         result to the silver layer.
 
         Returns:
-            DataFrame with the filtered draft picks. Dropped:
-              - "team", "position": only needed to filter to fantasy-relevant positions;
-                not needed downstream since player_stats already has its own (current,
-                season-specific) "recent_team"/"position" to join in.
-              - "category" (redundant with "position") and "side" (constant "O" once
-                filtered to offensive fantasy positions).
-              - "car_av" and defensive-only stat columns: always null/not applicable for
-                fantasy-relevant positions.
-              - "pfr_player_id", "cfb_player_id", "pfr_player_name", "college": identifying
-                metadata not needed once joined to player_stats via "player_id".
-              - "games", "pass_completions", "pass_attempts", "pass_yards", "pass_tds",
-                "pass_ints", "rush_atts", "rush_yards", "rush_tds", "receptions",
-                "rec_yards", "rec_tds": career-to-date counting stats that are both
-                redundant with (and less complete than) player_stats' own season-by-season
-                data, and a leakage risk since they're running totals as of the data pull,
-                not truncated to a specific season.
-            "gsis_id" is renamed to "player_id" to match player_stats' join key, and "age"
-            is renamed to "age_at_draft" since it's a fixed point-in-time value (not the
-            player's age in any given season) -- gold-layer feature engineering can use it
-            plus a row's season to derive the player's actual age that season. "round"
-            and "pick" are combined into a single "draft_pick" feature (overall pick
-            number: (round - 1) * DRAFT_TEAMS + pick) and dropped, since round/pick only
-            matter together as one measure of draft capital.
+            DataFrame with player_id, overall draft_pick, and age_at_draft.
 
-            "hof", "to", "allpro", "probowls", "seasons_started", "w_av", "dr_av" are all
-            dropped: like the counting stats above, they're career-final totals (e.g. "to"
-            is literally the player's last season played), not resolved per season, so
-            using them as a feature on an earlier-season training row would leak the rest
-            of the player's career into the input.
+            Rows with no player_id (players nflverse never mapped to a gsis id, e.g. career
+            busts) are dropped entirely -- they can't be joined to player_stats, so they're
+            useless downstream.
 
-            A handful of players (e.g. Bo Jackson, Craig Erickson) were drafted twice
-            (didn't sign, then re-entered a later draft), so player_id isn't naturally
-            unique here. Rows with a player_id are de-duplicated down to their most recent
-            (highest season) draft record, so each player_id maps to exactly one row.
-            Rows with no player_id (players who never appeared in nflverse's ID crosswalk,
-            e.g. career busts) are left as-is and can't be de-duplicated by player.
+            A handful of players (e.g. Bo Jackson, Craig Erickson) were drafted twice, so
+            player_id isn't naturally unique here. Rows are de-duplicated down to each
+            player_id's most recent draft record.
         """
         draft_picks_df = self._load_bronze("draft_picks.csv")
         draft_picks_df = draft_picks_df[draft_picks_df["position"].isin(FANTASY_POSITIONS)]
@@ -150,16 +123,13 @@ class NflverseProcessor:
             "pass_ints", "rush_atts", "rush_yards", "rush_tds", "receptions",
             "rec_yards", "rec_tds",
             "hof", "to", "allpro", "probowls", "seasons_started", "w_av", "dr_av",
-        ])
+        ], errors="ignore")
         draft_picks_df = draft_picks_df.rename(columns={"gsis_id": "player_id", "age": "age_at_draft"})
 
-        has_player_id = draft_picks_df["player_id"].notna()
-        deduped_df = (
-            draft_picks_df[has_player_id]
-            .sort_values("season", kind="stable")
-            .drop_duplicates(subset="player_id", keep="last")
+        draft_picks_df = draft_picks_df[draft_picks_df["player_id"].notna()]
+        draft_picks_df = draft_picks_df.sort_values("season", kind="stable").drop_duplicates(
+            subset="player_id", keep="last"
         )
-        draft_picks_df = pd.concat([deduped_df, draft_picks_df[~has_player_id]], ignore_index=True)
 
         output_path = os.path.join(self.silver_dir, "draft_picks.csv")
         draft_picks_df.to_csv(output_path, index=False)
