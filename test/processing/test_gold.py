@@ -237,7 +237,9 @@ class TestTrainingSetBuilder():
 
     def test_build_training_set__rejects_a_target_not_in_the_registry(self):
         with pytest.raises(AssertionError):
-            self.builder.build_training_set(pd.DataFrame(), pd.DataFrame(), target_col="not_a_real_target")
+            self.builder.build_training_set(
+                pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), target_col="not_a_real_target"
+            )
 
     def test_build_prediction_rows__keeps_only_the_most_recent_season_per_player(self):
         features_df = pd.DataFrame({
@@ -289,7 +291,8 @@ class TestTrainingSetBuilder():
     def test_build_prediction_set__rejects_a_target_not_in_the_registry(self):
         with pytest.raises(AssertionError):
             self.builder.build_prediction_set(
-                pd.DataFrame(), pd.DataFrame(), target_col="not_a_real_target", prediction_season=2026
+                pd.DataFrame(), pd.DataFrame(), pd.DataFrame(),
+                target_col="not_a_real_target", prediction_season=2026
             )
 
     def test_league_average_team_stats__single_season_mean_not_trailing_window(self):
@@ -415,3 +418,77 @@ class TestTrainingSetBuilder():
         # p1 didn't change teams -> shift 0; p2 (SF -> DAL) shouldn't pick up p1's KC lookup.
         assert list(result["team_passing_yards"]) == [500.0, -500.0]
         assert list(result["team_shift_passing_yards"]) == [0.0, -500.0]
+
+    def test_join_draft_features__computes_age_as_of_target_season(self):
+        df = pd.DataFrame({
+            "player_id": ["p1", "p1"],
+            "target_season": [2021, 2022],
+        })
+        draft_features_df = pd.DataFrame({
+            "player_id": ["p1"],
+            "draft_season": [2018],
+            "age_at_draft": [21],
+            "draft_pick": [15],
+        })
+
+        result = self.builder._join_draft_features(df, draft_features_df)
+
+        # age = age_at_draft + (target_season - draft_season): 21 + (2021-2018) = 24,
+        # 21 + (2022-2018) = 25 -- age changes year over year, draft_pick never does.
+        assert list(result["age"]) == [24, 25]
+        assert list(result["draft_pick"]) == [15, 15]
+        assert "draft_season" not in result.columns
+        assert "age_at_draft" not in result.columns
+
+    def test_join_draft_features__draft_pick_is_static_across_a_players_rows(self):
+        # Explicitly guards against draft_pick ever being run through career-averaging --
+        # it must come through untouched and identical for every row of the same player.
+        df = pd.DataFrame({
+            "player_id": ["p1", "p1", "p1"],
+            "target_season": [2019, 2020, 2021],
+        })
+        draft_features_df = pd.DataFrame({
+            "player_id": ["p1"],
+            "draft_season": [2017],
+            "age_at_draft": [22],
+            "draft_pick": [88],
+        })
+
+        result = self.builder._join_draft_features(df, draft_features_df)
+
+        assert result["draft_pick"].nunique() == 1
+        assert list(result["draft_pick"]) == [88, 88, 88]
+
+    def test_join_draft_features__undrafted_players_get_nan(self):
+        df = pd.DataFrame({
+            "player_id": ["p1"],
+            "target_season": [2021],
+        })
+        draft_features_df = pd.DataFrame({
+            "player_id": ["p_other"],
+            "draft_season": [2018],
+            "age_at_draft": [21],
+            "draft_pick": [15],
+        })
+
+        result = self.builder._join_draft_features(df, draft_features_df)
+
+        assert pd.isna(result["draft_pick"].iloc[0])
+        assert pd.isna(result["age"].iloc[0])
+
+    def test_join_draft_features__does_not_mix_players(self):
+        df = pd.DataFrame({
+            "player_id": ["p1", "p2"],
+            "target_season": [2021, 2021],
+        })
+        draft_features_df = pd.DataFrame({
+            "player_id": ["p1", "p2"],
+            "draft_season": [2018, 2015],
+            "age_at_draft": [21, 23],
+            "draft_pick": [15, 200],
+        })
+
+        result = self.builder._join_draft_features(df, draft_features_df).sort_values("player_id").reset_index(drop=True)
+
+        assert list(result["draft_pick"]) == [15, 200]
+        assert list(result["age"]) == [24, 29]  # 21+(2021-2018)=24, 23+(2021-2015)=29

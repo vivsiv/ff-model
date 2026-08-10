@@ -63,9 +63,10 @@ PHASE 2. Improve the first model [IN PROGRESS]
     - snap counts (pfr_id)
     - draft picks (pfr_id) (has all_pro, allpro, probowls)
     - fantasy_stats (regular id)
-5. Grid search hyperparameters/auto ml. 
+5. Reduce shrinkage constant.
+6. Grid search hyperparameters/auto ml.
     - Try min_samples_leaf 4,8,16. Are any other hyperparams worth adjusting?
-6. Try different model architectures (Gradient Boosting, Ridge, Lasso, Linear, etc.)
+7. Try different model architectures (Gradient Boosting, Ridge, Lasso, Linear, etc.)
 
 PHASE 3. Second Model (PPR POINTS PER GAME) [TODO]
 1. Create new per game target column (ppr_points_per_game), see how the existing feature set does predicting new target.

@@ -19,7 +19,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 TARGET_COL = "target"
-ROUNDING_EXCLUDED_COLUMNS = ["season", "target_season", "seasons_since_played", "years_played", "games"]
+ROUNDING_EXCLUDED_COLUMNS = [
+    "season", "target_season", "seasons_since_played", "years_played", "games", "age", "draft_pick",
+]
 
 
 class TrainingSetBuilder:
@@ -193,6 +195,59 @@ class TrainingSetBuilder:
         baseline_df = self._positional_baseline(player_df, stat_columns)
         return self._add_career_features(player_df, baseline_df, stat_columns)
 
+    def load_draft_features(self) -> pd.DataFrame:
+        """
+        Loads the `draft_picks` silver table, filtered to the registered identity/stat
+        columns. The silver layer already guarantees exactly one row per player_id and no
+        rows with a missing player_id.
+
+        "season" (the draft year) is renamed to "draft_season" to avoid colliding with
+        player_stats'/the training set's own "season"/"target_season" columns once joined
+        in by _join_draft_features.
+
+        Returns:
+            One row per drafted player: "draft_season", "player_id", "draft_pick",
+            "age_at_draft".
+        """
+        identity_columns = get_identity_columns("nflverse", "draft_picks")
+        stat_columns = get_stat_columns("nflverse", "draft_picks")
+
+        draft_df = pd.read_csv(os.path.join(self.silver_dir, "draft_picks.csv"), low_memory=False)
+        draft_df = draft_df[identity_columns + stat_columns]
+        return draft_df.rename(columns={"season": "draft_season"})
+
+    def _join_draft_features(
+        self,
+        df: pd.DataFrame,
+        draft_features_df: pd.DataFrame,
+        player_grouping_col: str = "player_id",
+    ) -> pd.DataFrame:
+        """
+        Adds draft-derived features to each row of df by player_grouping_col:
+          - "draft_pick": static -- identical across every row for a given player, never
+            career-averaged/shrunk the way player_stats' own stat columns are.
+          - "age": age_at_draft + (target_season - draft_season), i.e. the player's age
+            during target_season specifically. Unlike performance stats, age is a
+            deterministic fact we can compute for any future season with no leakage risk,
+            so (unique among this training set's features) it's computed as of
+            target_season rather than the feature row's own "season".
+
+        Players with no draft record (e.g. undrafted free agents) get NaN for both
+        "draft_pick" and "age" -- left for the modeling pipeline's imputer to handle.
+
+        Args:
+            df: Dataframe with player_grouping_col and "target_season" columns.
+            draft_features_df: Output of load_draft_features.
+            player_grouping_col: Column identifying a unique player (default: "player_id")
+
+        Returns:
+            df with "draft_pick" and "age" columns added; "draft_season"/"age_at_draft"
+            (only needed to compute "age") are dropped.
+        """
+        df = df.merge(draft_features_df, on=player_grouping_col, how="left")
+        df["age"] = df["age_at_draft"] + (df["target_season"] - df["draft_season"])
+        return df.drop(columns=["draft_season", "age_at_draft"])
+
     def load_team_features(self) -> pd.DataFrame:
         """
         Loads the `team_stats` silver table, filtered to the registered identity/stat columns.
@@ -359,6 +414,7 @@ class TrainingSetBuilder:
         self,
         features_df: pd.DataFrame,
         team_features_df: pd.DataFrame,
+        draft_features_df: pd.DataFrame,
         target_col: str = "fantasy_points_ppr",
     ) -> pd.DataFrame:
         """
@@ -368,6 +424,7 @@ class TrainingSetBuilder:
         Args:
             features_df: Output of load_player_features
             team_features_df: Output of load_team_features
+            draft_features_df: Output of load_draft_features
             target_col: Column to predict; must be a registered target for player_stats
                 (default: "fantasy_points_ppr")
 
@@ -385,6 +442,7 @@ class TrainingSetBuilder:
         training_df = self._join_team_features(
             training_df, player_team_by_season_df, team_features_df, team_stat_columns
         )
+        training_df = self._join_draft_features(training_df, draft_features_df)
 
         output_path = os.path.join(self.gold_dir, f"{target_col}__training_set.csv")
         self._round_significant_figures(training_df, exclude_columns=ROUNDING_EXCLUDED_COLUMNS).to_csv(
@@ -433,6 +491,7 @@ class TrainingSetBuilder:
         self,
         features_df: pd.DataFrame,
         team_features_df: pd.DataFrame,
+        draft_features_df: pd.DataFrame,
         target_col: str,
         prediction_season: int,
     ) -> pd.DataFrame:
@@ -444,6 +503,7 @@ class TrainingSetBuilder:
         Args:
             features_df: Output of load_player_features
             team_features_df: Output of load_team_features
+            draft_features_df: Output of load_draft_features
             target_col: Column that will eventually be predicted; must be a registered target
                 for player_stats (only used for naming the output file consistently with
                 build_training_set -- the actual target values are blank)
@@ -467,6 +527,7 @@ class TrainingSetBuilder:
         prediction_df = self._join_team_features(
             prediction_df, no_destination_teams_df, team_features_df, team_stat_columns
         )
+        prediction_df = self._join_draft_features(prediction_df, draft_features_df)
 
         output_path = os.path.join(self.gold_dir, f"{target_col}__prediction_set.csv")
         self._round_significant_figures(prediction_df, exclude_columns=ROUNDING_EXCLUDED_COLUMNS).to_csv(
@@ -506,9 +567,11 @@ def main():
 
     features_df = builder.load_player_features()
     team_features_df = builder.load_team_features()
-    builder.build_training_set(features_df, team_features_df, target_col=args.target_col)
+    draft_features_df = builder.load_draft_features()
+    builder.build_training_set(features_df, team_features_df, draft_features_df, target_col=args.target_col)
     builder.build_prediction_set(
-        features_df, team_features_df, target_col=args.target_col, prediction_season=args.prediction_season
+        features_df, team_features_df, draft_features_df,
+        target_col=args.target_col, prediction_season=args.prediction_season
     )
 
 
