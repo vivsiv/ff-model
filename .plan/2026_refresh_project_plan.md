@@ -60,9 +60,9 @@ PHASE 2. Improve the first model [IN PROGRESS]
 4. Add more features:
     - team_stats [DONE]
     - games should be a feature!! [DONE]
-    - snap counts (pfr_id) [IN PROGRESS]
+    - snap counts (pfr_id) [DONE]
     - draft picks (pfr_id) (has all_pro, allpro, probowls) [DONE]
-    - fantasy_stats (regular id)
+    - fantasy_opportunity_stats (regular id) [DEFERRING]
 5. Reduce shrinkage constant.
 6. Grid search hyperparameters/auto ml.
     - Try min_samples_leaf 4,8,16. Are any other hyperparams worth adjusting?

@@ -113,6 +113,26 @@ class NflverseScraper:
 
         return df
 
+    def fetch_fantasy_opportunity_stats(self) -> pd.DataFrame:
+        """
+        Fetch weekly fantasy opportunity data (expected fantasy points based on the quality
+        of a player's opportunities, e.g. air yards/red zone context, and actual-vs-expected)
+        for all available seasons, save it to the bronze layer as a single file.
+
+        Returns:
+            DataFrame with one row per player per game, identified by "player_id" (gsis id,
+            same scheme as player_stats -- no id-crosswalk needed to join them).
+        """
+        logger.info("Fetching nflverse fantasy opportunity stats for all available seasons")
+
+        df = nfl.load_ff_opportunity(seasons=True, stat_type="weekly").to_pandas()
+        if not df.empty:
+            self._save(df, "fantasy_opportunity_stats.csv")
+        else:
+            logger.warning("No fantasy opportunity stats returned")
+
+        return df
+
     def fetch_players(self) -> pd.DataFrame:
         """
         Fetch the nflverse player ID dictionary (one row per player, mapping "gsis_id" to
@@ -136,11 +156,12 @@ class NflverseScraper:
         return df
 
     def fetch_all(self) -> None:
-        """Fetch player, team, draft pick, snap count, and player ID data for all available seasons."""
+        """Fetch player, team, draft pick, snap count, fantasy opportunity, and player ID data for all available seasons."""
         self.fetch_player_stats()
         self.fetch_team_stats()
         self.fetch_draft_picks()
         self.fetch_snap_counts()
+        self.fetch_fantasy_opportunity_stats()
         self.fetch_players()
 
 

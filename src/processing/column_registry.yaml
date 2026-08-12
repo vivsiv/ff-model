@@ -159,3 +159,22 @@ nflverse:
       # Only 2013+ 
       - offense_snaps  # season total, summed across games in build_snap_counts
       - offense_pct    # season average share of team offensive snaps, mean across games
+
+  fantasy_opportunity_stats:
+    identity:
+      - player_id
+      - season
+
+    stats:
+      # Only 2006+. From ffverse/ffopportunity via load_ff_opportunity, season totals summed
+      # across games in build_fantasy_opportunity_stats. "exp_" = expected fantasy points
+      # given the quality of a player's opportunities (air yards/red zone context, etc.);
+      # "exp_diff_" = actual minus expected (efficiency/over-under-performance relative to
+      # opportunity). Common prefix is deliberate -- makes this table's columns easy to
+      # identify/exclude as a group later.
+      - exp_pass_fantasy_points
+      - exp_rec_fantasy_points
+      - exp_rush_fantasy_points
+      - exp_diff_pass_fantasy_points
+      - exp_diff_rec_fantasy_points
+      - exp_diff_rush_fantasy_points
