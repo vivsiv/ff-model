@@ -60,11 +60,13 @@ PHASE 2. Improve the first model [IN PROGRESS]
 4. Add more features:
     - team_stats [DONE]
     - games should be a feature!! [DONE]
-    - snap counts (pfr_id) [IN PROGRESS]
+    - snap counts (pfr_id) [DONE]
     - draft picks (pfr_id) (has all_pro, allpro, probowls) [DONE]
     - fantasy_stats (regular id)
-5. Reduce shrinkage constant.
-6. Grid search hyperparameters/auto ml.
+5. Reduce shrinkage constant. [DONE]
+    - Tried [0.75, 1.125, 1.5, 1.75, 2, 3 (orig)], 1.5 yielded best eval results.
+    - shrinkage_k default in src/processing/gold.py changed from 3.0 -> 1.5.
+6. Grid search hyperparameters/auto ml. [IN PROGRESS]
     - Try min_samples_leaf 4,8,16. Are any other hyperparams worth adjusting?
 7. Try different model architectures (Gradient Boosting, Ridge, Lasso, Linear, etc.)
 

@@ -87,7 +87,7 @@ class TrainingSetBuilder:
         positional_baseline_df: pd.DataFrame,
         stat_columns: List[str],
         player_grouping_col: str = "player_id",
-        shrinkage_k: float = 3.0,
+        shrinkage_k: float = 1.5,
     ) -> pd.DataFrame:
         """
         For each player-season combo computes the expanding career average/max/min/stddev features for each
@@ -109,7 +109,8 @@ class TrainingSetBuilder:
             stat_columns: The stat columns to compute career features
             player_grouping_col: Column identifying a unique player (default: "player_id")
             shrinkage_k: Shrinkage strength constant — higher pulls harder toward the positional
-                baseline for a given years_played (default: 3.0, a starting point to tune later)
+                baseline for a given years_played (default: 1.5, tuned via eval sweep -- see
+                Phase 2 item 5 in .plan/2026_refresh_project_plan.md)
 
         Returns:
             DataFrame with the career feature columns added
@@ -178,11 +179,15 @@ class TrainingSetBuilder:
 
         return df
 
-    def load_player_features(self) -> pd.DataFrame:
+    def load_player_features(self, shrinkage_k: float = 1.5) -> pd.DataFrame:
         """
         Loads the `player_stats` silver table, merges in the `snap_counts` silver table (joined on player_id + season),
         and adds computed feature values to the combined set of stat columns. Both the construction of the training and
         prediction sets use the output.
+
+        Args:
+            shrinkage_k: Shrinkage strength constant passed through to _add_career_features
+                (default: 1.5)
 
         Returns:
             One row per player-season, with career-to-date features through that season
@@ -201,7 +206,7 @@ class TrainingSetBuilder:
         stat_columns = player_stat_columns + snap_count_stat_columns
 
         baseline_df = self._positional_baseline(player_df, stat_columns)
-        return self._add_career_features(player_df, baseline_df, stat_columns)
+        return self._add_career_features(player_df, baseline_df, stat_columns, shrinkage_k=shrinkage_k)
 
     def load_draft_features(self) -> pd.DataFrame:
         """
@@ -568,12 +573,19 @@ def main():
         default="data",
         help="Parent directory for the silver and gold layers, relative to the repo root (default: data)"
     )
+    parser.add_argument(
+        "--shrinkage-k",
+        type=float,
+        default=1.5,
+        help="Shrinkage strength constant for career stat features -- higher pulls harder "
+             "toward the positional baseline for a given years_played (default: 1.5)"
+    )
 
     args = parser.parse_args()
 
     builder = TrainingSetBuilder(data_dir=args.data_dir)
 
-    features_df = builder.load_player_features()
+    features_df = builder.load_player_features(shrinkage_k=args.shrinkage_k)
     team_features_df = builder.load_team_features()
     draft_features_df = builder.load_draft_features()
     builder.build_training_set(features_df, team_features_df, draft_features_df, target_col=args.target_col)
