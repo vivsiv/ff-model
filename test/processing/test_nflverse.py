@@ -261,8 +261,28 @@ class TestNflverseProcessor():
         assert os.path.exists(silver_path)
         pd.testing.assert_frame_equal(pd.read_csv(silver_path), expected)
 
+    def test_build_player_ids__drops_rows_with_no_player_id(self):
+        test_dir = tempfile.mkdtemp()
+        try:
+            bronze_dir = os.path.join(test_dir, "bronze", "nflv")
+            os.makedirs(bronze_dir)
+            players_df = pd.DataFrame({
+                "gsis_id": ["p1", None],
+                "pfr_id": ["PfrP1", "PfrOrphan"],
+            })
+            players_df.to_csv(os.path.join(bronze_dir, "players.csv"), index=False)
+            processor = NflverseProcessor(data_dir=test_dir)
+
+            result = processor.build_player_ids()
+
+            assert len(result) == 1
+            assert result["player_id"].iloc[0] == "p1"
+        finally:
+            shutil.rmtree(test_dir)
+
     def test_build_snap_counts__collapses_per_game_rows_to_one_row_per_player_season(self):
-        result = self.processor.build_snap_counts().sort_values("player_id").reset_index(drop=True)
+        player_ids_df = self.processor.build_player_ids()
+        result = self.processor.build_snap_counts(player_ids_df).sort_values("player_id").reset_index(drop=True)
 
         # p1: two REG games (50, 60 snaps / 0.8, 1.0 pct) -- summed/averaged. Its third row
         # (WC, 999 snaps) is a playoff game and must be excluded entirely.

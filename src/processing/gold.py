@@ -180,38 +180,25 @@ class TrainingSetBuilder:
 
     def load_player_features(self) -> pd.DataFrame:
         """
-        Loads the `player_stats` silver table, merges in `snap_counts` (one row per
-        player-season, joined on player_id + season), and adds computed feature values to
-        the combined set of stat columns. Both the construction of the training and
+        Loads the `player_stats` silver table, merges in the `snap_counts` silver table (joined on player_id + season),
+        and adds computed feature values to the combined set of stat columns. Both the construction of the training and
         prediction sets use the output.
-
-        snap_counts is merged in (rather than joined as a separate static/context feature
-        set the way draft_picks/team_stats are) so its columns run through the exact same
-        career-average/shrinkage/trend pipeline as every other player_stats stat --
-        offense_snaps/offense_pct are season-level performance facts just like passing_yards
-        or fantasy_points_ppr, not one-off static facts (draft_pick) or a separate team-level
-        context (team_stats). Player-seasons with no snap count match (before 2013, nflverse's
-        snap count data start year, or a player never mapped to a pfr_id) get NaN for these
-        two columns -- the same already-established pattern as other stats with partial
-        historical coverage (e.g. passing_cpoe, unavailable before 2006), which the expanding
-        career aggregates already handle correctly.
 
         Returns:
             One row per player-season, with career-to-date features through that season
         """
-        identity_columns = get_identity_columns("nflverse", "player_stats")
-        stat_columns = get_stat_columns("nflverse", "player_stats")
-
         player_df = pd.read_csv(os.path.join(self.silver_dir, "player_stats.csv"), low_memory=False)
-        player_df = player_df[identity_columns + stat_columns]
+        player_identity_columns = get_identity_columns("nflverse", "player_stats")
+        player_stat_columns = get_stat_columns("nflverse", "player_stats")
+        player_df = player_df[player_identity_columns + player_stat_columns]
 
-        snap_count_identity_columns = get_identity_columns("nflverse", "snap_counts")
-        snap_count_columns = get_stat_columns("nflverse", "snap_counts")
         snap_counts_df = pd.read_csv(os.path.join(self.silver_dir, "snap_counts.csv"), low_memory=False)
-        snap_counts_df = snap_counts_df[snap_count_identity_columns + snap_count_columns]
+        snap_count_identity_columns = get_identity_columns("nflverse", "snap_counts")
+        snap_count_stat_columns = get_stat_columns("nflverse", "snap_counts")
+        snap_counts_df = snap_counts_df[snap_count_identity_columns + snap_count_stat_columns]
 
         player_df = player_df.merge(snap_counts_df, on=snap_count_identity_columns, how="left")
-        stat_columns = stat_columns + snap_count_columns
+        stat_columns = player_stat_columns + snap_count_stat_columns
 
         baseline_df = self._positional_baseline(player_df, stat_columns)
         return self._add_career_features(player_df, baseline_df, stat_columns)
