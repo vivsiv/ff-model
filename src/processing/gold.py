@@ -87,7 +87,7 @@ class TrainingSetBuilder:
         positional_baseline_df: pd.DataFrame,
         stat_columns: List[str],
         player_grouping_col: str = "player_id",
-        shrinkage_k: float = 1.5,
+        shrinkage_k: float,
     ) -> pd.DataFrame:
         """
         For each player-season combo computes the expanding career average/max/min/stddev features for each
@@ -109,8 +109,7 @@ class TrainingSetBuilder:
             stat_columns: The stat columns to compute career features
             player_grouping_col: Column identifying a unique player (default: "player_id")
             shrinkage_k: Shrinkage strength constant — higher pulls harder toward the positional
-                baseline for a given years_played (default: 1.5, tuned via eval sweep -- see
-                Phase 2 item 5 in .plan/2026_refresh_project_plan.md)
+                baseline for a given years_played.
 
         Returns:
             DataFrame with the career feature columns added
@@ -186,8 +185,7 @@ class TrainingSetBuilder:
         prediction sets use the output.
 
         Args:
-            shrinkage_k: Shrinkage strength constant passed through to _add_career_features
-                (default: 1.5)
+            shrinkage_k: Shrinkage strength constant passed through to _add_career_features (default: 1.5)
 
         Returns:
             One row per player-season, with career-to-date features through that season
