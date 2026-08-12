@@ -149,3 +149,13 @@ nflverse:
     stats:
       - draft_pick    # (round - 1) * 32 + pick, computed in build_draft_picks from "round"/"pick"
       - age_at_draft  # renamed from "age" in build_draft_picks
+
+  snap_counts:
+    identity:
+      - player_id
+      - season
+
+    stats:
+      # Only 2013+ 
+      - offense_snaps  # season total, summed across games in build_snap_counts
+      - offense_pct    # season average share of team offensive snaps, mean across games

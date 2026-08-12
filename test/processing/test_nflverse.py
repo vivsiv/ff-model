@@ -2,6 +2,7 @@ import os
 import tempfile
 import shutil
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -47,6 +48,23 @@ class TestNflverseProcessor():
             "hof": [False, False, False, False],
         })
         draft_picks_df.to_csv(os.path.join(cls.bronze_dir, "draft_picks.csv"), index=False)
+
+        players_df = pd.DataFrame({
+            "gsis_id": ["p1", "p2", "p4", "p5", "p_no_pfr"],
+            "pfr_id": ["PfrP1", "PfrP2", "PfrP4", "PfrP5", None],
+            "espn_id": [111, 222, 444, 555, 999],
+        })
+        players_df.to_csv(os.path.join(cls.bronze_dir, "players.csv"), index=False)
+
+        snap_counts_df = pd.DataFrame({
+            "pfr_player_id": ["PfrP1", "PfrP1", "PfrP1", "PfrP2", "PfrP4", "PfrUnknown"],
+            "season": [2022, 2022, 2022, 2022, 2023, 2023],
+            "game_type": ["REG", "REG", "WC", "REG", "REG", "REG"],
+            "position": ["QB", "QB", "QB", "RB", "T", "WR"],
+            "offense_snaps": [50.0, 60.0, 999.0, 20.0, 70.0, 30.0],
+            "offense_pct": [0.8, 1.0, 1.0, 0.4, 1.0, 0.5],
+        })
+        snap_counts_df.to_csv(os.path.join(cls.bronze_dir, "snap_counts.csv"), index=False)
 
         cls.processor = NflverseProcessor(data_dir=cls.test_dir)
 
@@ -225,3 +243,80 @@ class TestNflverseProcessor():
             assert list(result["team"]) == ["LV", "LV", "LA", "JAX", "JAX"]
         finally:
             shutil.rmtree(test_dir)
+
+    def test_build_player_ids__renames_gsis_id_and_keeps_every_other_column_and_row(self):
+        result = self.processor.build_player_ids().reset_index(drop=True)
+
+        # All 5 rows are kept, including "p_no_pfr" (no pfr_id) -- this is a general ID
+        # crosswalk, not filtered down to just what build_snap_counts needs today. "espn_id"
+        # (standing in for any non-pfr ID column) is preserved untouched.
+        expected = pd.DataFrame({
+            "player_id": ["p1", "p2", "p4", "p5", "p_no_pfr"],
+            "pfr_id": ["PfrP1", "PfrP2", "PfrP4", "PfrP5", np.nan],
+            "espn_id": [111, 222, 444, 555, 999],
+        })
+        pd.testing.assert_frame_equal(result, expected)
+
+        silver_path = os.path.join(self.processor.silver_dir, "player_ids.csv")
+        assert os.path.exists(silver_path)
+        pd.testing.assert_frame_equal(pd.read_csv(silver_path), expected)
+
+    def test_build_player_ids__drops_rows_with_no_player_id(self):
+        test_dir = tempfile.mkdtemp()
+        try:
+            bronze_dir = os.path.join(test_dir, "bronze", "nflv")
+            os.makedirs(bronze_dir)
+            players_df = pd.DataFrame({
+                "gsis_id": ["p1", None],
+                "pfr_id": ["PfrP1", "PfrOrphan"],
+            })
+            players_df.to_csv(os.path.join(bronze_dir, "players.csv"), index=False)
+            processor = NflverseProcessor(data_dir=test_dir)
+
+            result = processor.build_player_ids()
+
+            assert len(result) == 1
+            assert result["player_id"].iloc[0] == "p1"
+        finally:
+            shutil.rmtree(test_dir)
+
+    def test_build_snap_counts__collapses_per_game_rows_to_one_row_per_player_season(self):
+        player_ids_df = self.processor.build_player_ids()
+        result = self.processor.build_snap_counts(player_ids_df).sort_values("player_id").reset_index(drop=True)
+
+        # p1: two REG games (50, 60 snaps / 0.8, 1.0 pct) -- summed/averaged. Its third row
+        # (WC, 999 snaps) is a playoff game and must be excluded entirely.
+        # p2: single REG game, passed through as-is.
+        # p4's only row (position "T", an offensive lineman) is filtered out entirely, so p4
+        # doesn't appear in the output.
+        # PfrUnknown has no match in player_ids, so it's dropped rather than crashing.
+        expected = pd.DataFrame({
+            "player_id": ["p1", "p2"],
+            "season": [2022, 2022],
+            "offense_snaps": [110.0, 20.0],
+            "offense_pct": [0.9, 0.4],
+        })
+        pd.testing.assert_frame_equal(result, expected)
+
+        silver_path = os.path.join(self.processor.silver_dir, "snap_counts.csv")
+        assert os.path.exists(silver_path)
+        pd.testing.assert_frame_equal(pd.read_csv(silver_path), expected)
+
+    def test_build_snap_counts__accepts_a_precomputed_player_ids_df(self):
+        player_ids_df = pd.DataFrame({
+            "player_id": ["p2"],
+            "pfr_id": ["PfrP2"],
+        })
+
+        result = self.processor.build_snap_counts(player_ids_df).reset_index(drop=True)
+
+        # Only PfrP2 is in the supplied mapping, so p1's rows (which do exist in bronze) are
+        # dropped just as if they'd never matched -- confirms the passed-in df is actually
+        # used instead of build_player_ids() being called internally.
+        expected = pd.DataFrame({
+            "player_id": ["p2"],
+            "season": [2022],
+            "offense_snaps": [20.0],
+            "offense_pct": [0.4],
+        })
+        pd.testing.assert_frame_equal(result, expected)

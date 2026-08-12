@@ -1,6 +1,7 @@
 import os
 import tempfile
 import shutil
+from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
@@ -19,6 +20,63 @@ class TestTrainingSetBuilder():
     @classmethod
     def teardown_class(cls):
         shutil.rmtree(cls.test_dir)
+
+    def test_load_player_features__merges_snap_counts_and_extends_career_features_to_them(self):
+        # Registry lookups are mocked to a small fixed set of columns rather than the real
+        # (much larger) player_stats registry, so this test doesn't need to fabricate every
+        # real stat column just to exercise the merge.
+        test_dir = tempfile.mkdtemp()
+        try:
+            silver_dir = os.path.join(test_dir, "silver", "nflv")
+            os.makedirs(silver_dir)
+
+            player_stats_df = pd.DataFrame({
+                "player_id": ["p1", "p1", "p2"],
+                "player_display_name": ["Player One", "Player One", "Player Two"],
+                "position": ["WR", "WR", "WR"],
+                "season": [2013, 2014, 2013],
+                "recent_team": ["KC", "KC", "SF"],
+                "fantasy_points_ppr": [100.0, 150.0, 80.0],
+            })
+            player_stats_df.to_csv(os.path.join(silver_dir, "player_stats.csv"), index=False)
+
+            # Only p1/2013 has a snap count match: p1/2014 (no snap data that season) and
+            # p2 (no snap count row at all) should end up NaN, not dropped or crash.
+            snap_counts_df = pd.DataFrame({
+                "player_id": ["p1"],
+                "season": [2013],
+                "offense_snaps": [500.0],
+                "offense_pct": [0.75],
+            })
+            snap_counts_df.to_csv(os.path.join(silver_dir, "snap_counts.csv"), index=False)
+
+            identity_columns = {
+                ("nflverse", "player_stats"): ["player_id", "player_display_name", "position", "season", "recent_team"],
+                ("nflverse", "snap_counts"): ["player_id", "season"],
+            }
+            stat_columns = {
+                ("nflverse", "player_stats"): ["fantasy_points_ppr"],
+                ("nflverse", "snap_counts"): ["offense_snaps", "offense_pct"],
+            }
+
+            builder = TrainingSetBuilder(data_dir=test_dir)
+            with patch("src.processing.gold.get_identity_columns", side_effect=lambda s, t: identity_columns[(s, t)]), \
+                 patch("src.processing.gold.get_stat_columns", side_effect=lambda s, t: stat_columns[(s, t)]):
+                result = builder.load_player_features()
+
+            p1 = result[result["player_id"] == "p1"].sort_values("season").reset_index(drop=True)
+            assert p1["offense_snaps"].iloc[0] == 500.0
+            assert p1["offense_pct"].iloc[0] == 0.75
+            assert pd.isna(p1["offense_snaps"].iloc[1])
+            # snap-count columns get the same career-average treatment as any other stat:
+            # 2014's career_avg is computed from only 2013's real value, ignoring its own NaN.
+            assert p1["offense_snaps_career_avg"].iloc[1] == 500.0
+
+            p2 = result[result["player_id"] == "p2"]
+            assert len(p2) == 1
+            assert pd.isna(p2["offense_snaps"].iloc[0])
+        finally:
+            shutil.rmtree(test_dir)
 
     def test_positional_baseline__trailing_window_within_position(self):
         df = pd.DataFrame({

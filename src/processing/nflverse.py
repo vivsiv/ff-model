@@ -137,11 +137,74 @@ class NflverseProcessor:
 
         return draft_picks_df
 
+    def build_player_ids(self) -> pd.DataFrame:
+        """
+        Loads the nflverse player ID dictionary, renames "gsis_id" to "player_id" and saves it to the silver layer.
+        Meant to be a cross-source lookup of players, not used as features in any model.
+
+        Returns:
+            DataFrame with every column from the nflverse player dictionary, "gsis_id"
+            renamed to "player_id". Rows with no player_id are dropped -- they can't be
+            joined to anything else (player_stats/draft_picks/snap_counts all key off of
+            player_id), so they're useless as a cross-source lookup.
+        """
+        players_df = self._load_bronze("players.csv")
+        players_df = players_df.rename(columns={"gsis_id": "player_id"})
+        players_df = players_df[players_df["player_id"].notna()]
+
+        output_path = os.path.join(self.silver_dir, "player_ids.csv")
+        players_df.to_csv(output_path, index=False)
+        logger.info(f"Saved player IDs to {output_path}")
+
+        return players_df
+
+    def build_snap_counts(self, player_ids_df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Loads nflverse snap counts (one row per player per game, identified only by
+        "pfr_player_id"), joins in "player_id" via player_ids_df's "player_id"/"pfr_id"
+        columns, filters to fantasy-relevant positions and regular season games, and
+        collapses a season's worth of per-game rows down to one row per player per season.
+
+        Args:
+            player_ids_df: Output of build_player_ids. Only its "player_id"/"pfr_id" columns
+                are used.
+
+        Returns:
+            DataFrame with one row per player-season:
+              - "offense_snaps": total offensive snaps played in the season (summed across
+                games).
+              - "offense_pct": average share of team offensive snaps per game played
+                (simple mean across games with snap data, not weighted by team plays).
+
+            Rows with no "pfr_player_id" match (no pfr_id in player_ids_df, or the player
+            was never mapped to one) are dropped entirely.
+        """
+        snap_counts_df = self._load_bronze("snap_counts.csv")
+        snap_counts_df = snap_counts_df[snap_counts_df["game_type"] == "REG"]
+        snap_counts_df = snap_counts_df[snap_counts_df["position"].isin(FANTASY_POSITIONS)]
+
+        snap_counts_df = snap_counts_df.merge(
+            player_ids_df[["player_id", "pfr_id"]], left_on="pfr_player_id", right_on="pfr_id", how="inner"
+        )
+
+        season_snap_counts_df = (
+            snap_counts_df.groupby(["player_id", "season"], as_index=False)
+            .agg(offense_snaps=("offense_snaps", "sum"), offense_pct=("offense_pct", "mean"))
+        )
+
+        output_path = os.path.join(self.silver_dir, "snap_counts.csv")
+        season_snap_counts_df.to_csv(output_path, index=False)
+        logger.info(f"Saved snap counts to {output_path}")
+
+        return season_snap_counts_df
+
     def process_all_data(self, positions: list[str] = FANTASY_POSITIONS) -> None:
         """Builds all silver layer tables from bronze layer data."""
         self.build_player_stats()
         self.build_team_stats()
         self.build_draft_picks()
+        player_ids_df = self.build_player_ids()
+        self.build_snap_counts(player_ids_df)
 
 
 def main():
