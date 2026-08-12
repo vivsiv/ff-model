@@ -147,7 +147,7 @@ class TestTrainingSetBuilder():
         })
 
         result = self.builder._add_career_features(
-            df, positional_baseline_df, stat_columns=["fantasy_points_ppr"]
+            df, positional_baseline_df, stat_columns=["fantasy_points_ppr"], shrinkage_k=3.0
         )
         p1 = result[result["player_id"] == "p1"].sort_values("season").reset_index(drop=True)
 
