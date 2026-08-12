@@ -2,6 +2,7 @@ import os
 import logging
 import argparse
 
+import numpy as np
 import pandas as pd
 
 logging.basicConfig(
@@ -22,6 +23,25 @@ TEAM_RELOCATIONS = {
     "SD": "LAC",   # Chargers
     "OAK": "LV",   # Raiders
     "JAC": "JAX",  # Jacksonville
+}
+
+# The NFL expanded the regular season from 16 to 17 games (17 to 18 weeks) starting in 2021.
+# fantasy_opportunity_stats has no game_type/season_type column of its own (unlike
+# snap_counts), so regular-season weeks have to be derived from this cutoff instead.
+REGULAR_SEASON_EXPANSION_YEAR = 2021
+PRE_EXPANSION_REGULAR_SEASON_WEEKS = 17
+POST_EXPANSION_REGULAR_SEASON_WEEKS = 18
+
+# Renames fantasy_opportunity_stats' raw "*_exp"/"*_diff" columns to a common "exp_"/
+# "exp_diff_" prefix so every column this table contributes is easy to identify/exclude as a
+# group from the rest of player_stats' features.
+FANTASY_OPPORTUNITY_COLUMN_RENAMES = {
+    "pass_fantasy_points_exp": "exp_pass_fantasy_points",
+    "rec_fantasy_points_exp": "exp_rec_fantasy_points",
+    "rush_fantasy_points_exp": "exp_rush_fantasy_points",
+    "pass_fantasy_points_diff": "exp_diff_pass_fantasy_points",
+    "rec_fantasy_points_diff": "exp_diff_rec_fantasy_points",
+    "rush_fantasy_points_diff": "exp_diff_rush_fantasy_points",
 }
 
 class NflverseProcessor:
@@ -198,6 +218,53 @@ class NflverseProcessor:
 
         return season_snap_counts_df
 
+    def build_fantasy_opportunity_stats(self) -> pd.DataFrame:
+        """
+        Loads nflverse fantasy opportunity data (one row per player per game, keyed directly
+        by "player_id" -- same gsis id scheme as player_stats, no id-crosswalk needed),
+        filters to fantasy-relevant positions and regular season games, then collapses a
+        season's worth of per-game rows down to one row per player per season by summing.
+
+        Only keeps the "expected fantasy points" (opportunity quality, e.g. air yards/red
+        zone context) and "diff" (actual minus expected -- efficiency/over-under-performance
+        relative to opportunity) columns, split by pass/rec/rush -- the raw counting-stat
+        columns (yards, TDs, receptions, etc.) are dropped entirely since they're near-exact
+        duplicates of player_stats' own columns. Renamed to a common "exp_"/"exp_diff_"
+        prefix (see FANTASY_OPPORTUNITY_COLUMN_RENAMES) so this table's contribution is easy
+        to identify/exclude as a group later.
+
+        Returns:
+            DataFrame with one row per player-season: "player_id", "season", and
+            "exp_{pass,rec,rush}_fantasy_points" / "exp_diff_{pass,rec,rush}_fantasy_points".
+
+            Only available from 2006 onward (nflverse has no fantasy opportunity data before
+            then); rows for earlier seasons simply don't exist in the output, same as
+            snap_counts' pre-2013 gap.
+        """
+        opportunity_df = self._load_bronze("fantasy_opportunity_stats.csv")
+        opportunity_df = opportunity_df[opportunity_df["position"].isin(FANTASY_POSITIONS)]
+
+        regular_season_weeks = np.where(
+            opportunity_df["season"] >= REGULAR_SEASON_EXPANSION_YEAR,
+            POST_EXPANSION_REGULAR_SEASON_WEEKS,
+            PRE_EXPANSION_REGULAR_SEASON_WEEKS,
+        )
+        opportunity_df = opportunity_df[opportunity_df["week"] <= regular_season_weeks]
+
+        renamed_columns = list(FANTASY_OPPORTUNITY_COLUMN_RENAMES.values())
+        opportunity_df = opportunity_df[["player_id", "season"] + list(FANTASY_OPPORTUNITY_COLUMN_RENAMES)]
+        opportunity_df = opportunity_df.rename(columns=FANTASY_OPPORTUNITY_COLUMN_RENAMES)
+
+        season_opportunity_df = (
+            opportunity_df.groupby(["player_id", "season"], as_index=False)[renamed_columns].sum()
+        )
+
+        output_path = os.path.join(self.silver_dir, "fantasy_opportunity_stats.csv")
+        season_opportunity_df.to_csv(output_path, index=False)
+        logger.info(f"Saved fantasy opportunity stats to {output_path}")
+
+        return season_opportunity_df
+
     def process_all_data(self, positions: list[str] = FANTASY_POSITIONS) -> None:
         """Builds all silver layer tables from bronze layer data."""
         self.build_player_stats()
@@ -205,6 +272,7 @@ class NflverseProcessor:
         self.build_draft_picks()
         player_ids_df = self.build_player_ids()
         self.build_snap_counts(player_ids_df)
+        self.build_fantasy_opportunity_stats()
 
 
 def main():

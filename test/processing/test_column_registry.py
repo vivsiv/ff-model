@@ -113,3 +113,33 @@ class TestColumnRegistry():
         stats = get_stat_columns("nflverse", "snap_counts")
 
         assert set(stats) == {"offense_snaps", "offense_pct"}
+
+    def test_nflverse_fantasy_opportunity_stats__identity_and_stats_have_no_overlap(self):
+        identity = get_identity_columns("nflverse", "fantasy_opportunity_stats")
+        stats = get_stat_columns("nflverse", "fantasy_opportunity_stats")
+
+        assert set(identity) & set(stats) == set()
+
+    def test_nflverse_fantasy_opportunity_stats__no_duplicates_within_any_list(self):
+        identity = get_identity_columns("nflverse", "fantasy_opportunity_stats")
+        stats = get_stat_columns("nflverse", "fantasy_opportunity_stats")
+
+        assert len(identity) == len(set(identity))
+        assert len(stats) == len(set(stats))
+
+    def test_nflverse_fantasy_opportunity_stats__identity_has_exactly_the_expected_columns(self):
+        identity = get_identity_columns("nflverse", "fantasy_opportunity_stats")
+
+        assert set(identity) == {"player_id", "season"}
+
+    def test_nflverse_fantasy_opportunity_stats__stats_has_exactly_the_expected_columns(self):
+        stats = get_stat_columns("nflverse", "fantasy_opportunity_stats")
+
+        assert set(stats) == {
+            "exp_pass_fantasy_points",
+            "exp_rec_fantasy_points",
+            "exp_rush_fantasy_points",
+            "exp_diff_pass_fantasy_points",
+            "exp_diff_rec_fantasy_points",
+            "exp_diff_rush_fantasy_points",
+        }

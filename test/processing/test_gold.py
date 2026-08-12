@@ -50,13 +50,24 @@ class TestTrainingSetBuilder():
             })
             snap_counts_df.to_csv(os.path.join(silver_dir, "snap_counts.csv"), index=False)
 
+            # Same idea for fantasy_opportunity_stats -- only p1/2014 has a match here (the
+            # inverse of snap_counts' coverage), to confirm the two merges are independent.
+            fantasy_opportunity_df = pd.DataFrame({
+                "player_id": ["p1"],
+                "season": [2014],
+                "exp_rec_fantasy_points": [120.0],
+            })
+            fantasy_opportunity_df.to_csv(os.path.join(silver_dir, "fantasy_opportunity_stats.csv"), index=False)
+
             identity_columns = {
                 ("nflverse", "player_stats"): ["player_id", "player_display_name", "position", "season", "recent_team"],
                 ("nflverse", "snap_counts"): ["player_id", "season"],
+                ("nflverse", "fantasy_opportunity_stats"): ["player_id", "season"],
             }
             stat_columns = {
                 ("nflverse", "player_stats"): ["fantasy_points_ppr"],
                 ("nflverse", "snap_counts"): ["offense_snaps", "offense_pct"],
+                ("nflverse", "fantasy_opportunity_stats"): ["exp_rec_fantasy_points"],
             }
 
             builder = TrainingSetBuilder(data_dir=test_dir)
@@ -72,9 +83,16 @@ class TestTrainingSetBuilder():
             # 2014's career_avg is computed from only 2013's real value, ignoring its own NaN.
             assert p1["offense_snaps_career_avg"].iloc[1] == 500.0
 
+            # fantasy_opportunity_stats' match is 2014 instead, the opposite season -- 2013
+            # is NaN, 2014's own career_avg is computed from only its own real value.
+            assert pd.isna(p1["exp_rec_fantasy_points"].iloc[0])
+            assert p1["exp_rec_fantasy_points"].iloc[1] == 120.0
+            assert p1["exp_rec_fantasy_points_career_avg"].iloc[1] == 120.0
+
             p2 = result[result["player_id"] == "p2"]
             assert len(p2) == 1
             assert pd.isna(p2["offense_snaps"].iloc[0])
+            assert pd.isna(p2["exp_rec_fantasy_points"].iloc[0])
         finally:
             shutil.rmtree(test_dir)
 

@@ -180,9 +180,10 @@ class TrainingSetBuilder:
 
     def load_player_features(self) -> pd.DataFrame:
         """
-        Loads the `player_stats` silver table, merges in the `snap_counts` silver table (joined on player_id + season),
-        and adds computed feature values to the combined set of stat columns. Both the construction of the training and
-        prediction sets use the output.
+        Loads the `player_stats` silver table, merges in the `snap_counts` and
+        `fantasy_opportunity_stats` silver tables (both joined on player_id + season), and
+        adds computed feature values to the combined set of stat columns. Both the
+        construction of the training and prediction sets use the output.
 
         Returns:
             One row per player-season, with career-to-date features through that season
@@ -198,7 +199,17 @@ class TrainingSetBuilder:
         snap_counts_df = snap_counts_df[snap_count_identity_columns + snap_count_stat_columns]
 
         player_df = player_df.merge(snap_counts_df, on=snap_count_identity_columns, how="left")
-        stat_columns = player_stat_columns + snap_count_stat_columns
+
+        opportunity_df = pd.read_csv(
+            os.path.join(self.silver_dir, "fantasy_opportunity_stats.csv"), low_memory=False
+        )
+        opportunity_identity_columns = get_identity_columns("nflverse", "fantasy_opportunity_stats")
+        opportunity_stat_columns = get_stat_columns("nflverse", "fantasy_opportunity_stats")
+        opportunity_df = opportunity_df[opportunity_identity_columns + opportunity_stat_columns]
+
+        player_df = player_df.merge(opportunity_df, on=opportunity_identity_columns, how="left")
+
+        stat_columns = player_stat_columns + snap_count_stat_columns + opportunity_stat_columns
 
         baseline_df = self._positional_baseline(player_df, stat_columns)
         return self._add_career_features(player_df, baseline_df, stat_columns)

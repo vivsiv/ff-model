@@ -66,6 +66,20 @@ class TestNflverseProcessor():
         })
         snap_counts_df.to_csv(os.path.join(cls.bronze_dir, "snap_counts.csv"), index=False)
 
+        fantasy_opportunity_df = pd.DataFrame({
+            "player_id": ["p1", "p1", "p2", "p3", "p4"],
+            "season": [2022, 2022, 2022, 2022, 2023],
+            "week": [1, 2, 1, 1, 1],
+            "position": ["QB", "QB", "RB", "K", "WR"],
+            "pass_fantasy_points_exp": [10.0, 12.0, 0.0, 0.0, 0.0],
+            "rec_fantasy_points_exp": [0.0, 0.0, 2.0, 0.0, 8.0],
+            "rush_fantasy_points_exp": [1.0, 1.0, 15.0, 0.0, 0.5],
+            "pass_fantasy_points_diff": [-1.0, 2.0, 0.0, 0.0, 0.0],
+            "rec_fantasy_points_diff": [0.0, 0.0, -0.5, 0.0, 1.0],
+            "rush_fantasy_points_diff": [0.5, -0.5, 3.0, 0.0, 0.0],
+        })
+        fantasy_opportunity_df.to_csv(os.path.join(cls.bronze_dir, "fantasy_opportunity_stats.csv"), index=False)
+
         cls.processor = NflverseProcessor(data_dir=cls.test_dir)
 
     @classmethod
@@ -320,3 +334,59 @@ class TestNflverseProcessor():
             "offense_pct": [0.4],
         })
         pd.testing.assert_frame_equal(result, expected)
+
+    def test_build_fantasy_opportunity_stats__filters_positions_sums_weeks_and_renames_columns(self):
+        result = self.processor.build_fantasy_opportunity_stats().sort_values(
+            ["player_id", "season"]
+        ).reset_index(drop=True)
+
+        # p1: two weeks in 2022, summed. p2/p4: single week each, passed through as-is.
+        # p3 (position "K") is filtered out entirely -- not a fantasy-relevant position.
+        expected = pd.DataFrame({
+            "player_id": ["p1", "p2", "p4"],
+            "season": [2022, 2022, 2023],
+            "exp_pass_fantasy_points": [22.0, 0.0, 0.0],
+            "exp_rec_fantasy_points": [0.0, 2.0, 8.0],
+            "exp_rush_fantasy_points": [2.0, 15.0, 0.5],
+            "exp_diff_pass_fantasy_points": [1.0, 0.0, 0.0],
+            "exp_diff_rec_fantasy_points": [0.0, -0.5, 1.0],
+            "exp_diff_rush_fantasy_points": [0.0, 3.0, 0.0],
+        })
+        pd.testing.assert_frame_equal(result, expected)
+
+        silver_path = os.path.join(self.processor.silver_dir, "fantasy_opportunity_stats.csv")
+        assert os.path.exists(silver_path)
+        pd.testing.assert_frame_equal(pd.read_csv(silver_path), expected)
+
+    def test_build_fantasy_opportunity_stats__excludes_playoff_weeks_using_season_cutoff(self):
+        # fantasy_opportunity_stats has no game_type/season_type column of its own, so the
+        # regular-season cutoff has to be derived from the 2021 16->17 game expansion: weeks
+        # <=17 are regular season through 2020, weeks <=18 from 2021 onward.
+        test_dir = tempfile.mkdtemp()
+        try:
+            bronze_dir = os.path.join(test_dir, "bronze", "nflv")
+            os.makedirs(bronze_dir)
+            fantasy_opportunity_df = pd.DataFrame({
+                "player_id": ["p1", "p1", "p2", "p2"],
+                "season": [2020, 2020, 2021, 2021],
+                "week": [17, 18, 18, 19],
+                "position": ["RB", "RB", "RB", "RB"],
+                "pass_fantasy_points_exp": [0.0, 0.0, 0.0, 0.0],
+                "rec_fantasy_points_exp": [0.0, 0.0, 0.0, 0.0],
+                "rush_fantasy_points_exp": [10.0, 999.0, 10.0, 999.0],
+                "pass_fantasy_points_diff": [0.0, 0.0, 0.0, 0.0],
+                "rec_fantasy_points_diff": [0.0, 0.0, 0.0, 0.0],
+                "rush_fantasy_points_diff": [0.0, 0.0, 0.0, 0.0],
+            })
+            fantasy_opportunity_df.to_csv(os.path.join(bronze_dir, "fantasy_opportunity_stats.csv"), index=False)
+            processor = NflverseProcessor(data_dir=test_dir)
+
+            result = processor.build_fantasy_opportunity_stats().sort_values("player_id").reset_index(drop=True)
+
+            # p1's week-18 (999, playoff in 2020) and p2's week-19 (999, playoff in 2021)
+            # rows are both excluded -- only each player's real week-17/18 regular season
+            # value (10.0) survives.
+            assert list(result["player_id"]) == ["p1", "p2"]
+            assert list(result["exp_rush_fantasy_points"]) == [10.0, 10.0]
+        finally:
+            shutil.rmtree(test_dir)
