@@ -27,6 +27,7 @@ def setup_mlflow_run(
     tracking_dir: str = "../mlruns",
     tags: Optional[dict] = None,
     params: Optional[dict] = None,
+    parent_run_id: Optional[str] = None,
 ) -> str:
     """
     Points mlflow at tracking_dir, sets/creates the active experiment, and creates a new run
@@ -41,6 +42,11 @@ def setup_mlflow_run(
         tracking_dir: The mlruns tracking/registry store directory (default: "../mlruns")
         tags: Optional tags to set on the run, e.g. {"model_type": "random_forest"}
         params: Optional params to log on the run, e.g. {"eval_data_years": 1}
+        parent_run_id: If given, links this run as a child of parent_run_id -- it'll show up
+            nested/collapsible under the parent in the mlflow UI's run list, while still being
+            a completely normal run otherwise (own params/metrics/artifacts, still selectable
+            for comparison views). Does not require the parent run to be active. (default:
+            None, a top-level run)
 
     Returns:
         run_id - the created run's ID
@@ -48,7 +54,7 @@ def setup_mlflow_run(
     set_mlflow_tracking_uri(tracking_dir)
     mlflow.set_experiment(experiment_name)
 
-    with mlflow.start_run(run_name=run_name) as run:
+    with mlflow.start_run(run_name=run_name, parent_run_id=parent_run_id) as run:
         if tags:
             mlflow.set_tags(tags)
         if params:

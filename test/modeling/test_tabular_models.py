@@ -3,6 +3,8 @@ import os
 import pytest
 import shutil
 import tempfile
+import mlflow
+from sklearn.linear_model import Ridge
 
 from src.modeling.tabular_models import TabularModel
 from src.processing.column_registry import get_identity_columns
@@ -171,3 +173,61 @@ class TestTabularModel:
         pd.testing.assert_frame_equal(data1['identity_train'], data2['identity_train'])
         pd.testing.assert_frame_equal(data1['identity_eval'], data2['identity_eval'])
         pd.testing.assert_frame_equal(data1['identity_test'], data2['identity_test'])
+
+    def test_param_search__is_one_at_a_time_not_a_full_cartesian_grid(self):
+        # 3 alpha values + 2 fit_intercept values = 5 runs, not the 3x2=6 a cartesian grid
+        # would produce
+        data = self.model.split_data()
+        results = self.model.param_search(
+            data,
+            model_type="ridge",
+            param_grid={"alpha": [0.1, 1.0, 10.0], "fit_intercept": [True, False]},
+        )
+
+        assert len(results) == 5
+        assert results["search_param"].value_counts().to_dict() == {"alpha": 3, "fit_intercept": 2}
+        assert list(results["search_value"]) == [0.1, 1.0, 10.0, True, False]
+        assert results["run_id"].nunique() == 5
+        # ridge has no oob score
+        assert results["oob_rmse"].isna().all()
+        assert results["eval_rmse"].notna().all()
+        assert results["eval_r2"].notna().all()
+
+    def test_param_search__nests_child_runs_under_one_parent_run_per_search_key(self):
+        data = self.model.split_data()
+        results = self.model.param_search(
+            data,
+            model_type="ridge",
+            param_grid={"alpha": [0.1, 1.0, 10.0], "fit_intercept": [True, False]},
+        )
+
+        parent_ids_by_key = {}
+        for _, row in results.iterrows():
+            run = mlflow.get_run(row["run_id"])
+            assert run.data.tags["phase"] == f"{row['search_param']}_{row['search_value']}_child"
+            assert run.data.tags["model_type"] == "ridge"
+            parent_ids_by_key.setdefault(row["search_param"], set()).add(run.data.tags["mlflow.parentRunId"])
+
+        # every child for a given key shares exactly one parent run...
+        assert all(len(ids) == 1 for ids in parent_ids_by_key.values())
+        # ...and different keys get different parent runs
+        assert parent_ids_by_key["alpha"] != parent_ids_by_key["fit_intercept"]
+
+        for key, parent_ids in parent_ids_by_key.items():
+            parent_run = mlflow.get_run(next(iter(parent_ids)))
+            assert parent_run.data.tags["phase"] == f"{key}_search"
+            assert parent_run.data.params["search_param"] == key
+
+    def test_param_search__holds_non_swept_params_at_sklearn_defaults(self):
+        data = self.model.split_data()
+        results = self.model.param_search(
+            data,
+            model_type="ridge",
+            param_grid={"alpha": [0.1, 1.0]},
+        )
+
+        default_fit_intercept = Ridge().get_params()["fit_intercept"]
+        for _, row in results.iterrows():
+            run = mlflow.get_run(row["run_id"])
+            assert run.data.params["fit_intercept"] == str(default_fit_intercept)
+            assert run.data.params["alpha"] == str(row["search_value"])

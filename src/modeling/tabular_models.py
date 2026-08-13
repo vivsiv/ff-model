@@ -1,4 +1,5 @@
 import os
+import json
 import logging
 import argparse
 from datetime import datetime
@@ -164,14 +165,21 @@ class TabularModel:
         base_models = {
             'ridge': Ridge(),
             'lasso': Lasso(), # Lasso not performant for ppr_ppg
-            'random_forest': RandomForestRegressor(),
+            'random_forest': RandomForestRegressor(n_jobs=-1, n_estimators=200, min_samples_leaf=8),
             'svr': SVR(),
             'hist_gradient_boosting': HistGradientBoostingRegressor(),
             'linear_regression': LinearRegression(),
         }
         return base_models[model_type]
 
-    def setup_mlflow(self, model_type: str, extra_params: Optional[dict] = None) -> str:
+    def setup_mlflow(
+        self,
+        model_type: str,
+        extra_params: Optional[dict] = None,
+        extra_tags: Optional[dict] = None,
+        run_name: Optional[str] = None,
+        parent_run_id: Optional[str] = None,
+    ) -> str:
         """
         Sets the active mlflow experiment to {target}_tabular (shared across all model types
         for this target, so they're directly comparable in mlflow) and creates a new run for
@@ -181,18 +189,26 @@ class TabularModel:
             model_type: e.g. "random_forest"
             extra_params: Optional params to log on the run alongside the model's own
                 hyperparameters, e.g. {"eval_data_years": 1, "test_data_years": 1}
+            extra_tags: Optional tags merged over the default {"model_type": model_type,
+                "phase": "train"}, e.g. {"phase": "sweep"} to override the default phase tag
+            run_name: Overrides the default "{model_type}_{timestamp}" run name
+            parent_run_id: If given, nests the new run under parent_run_id (see
+                setup_mlflow_run) -- used by grid_search to group a sweep's child runs under
+                a single parent run in the mlflow UI.
 
         Returns:
             run_id - The mlflow run to tie training and eval to.
         """
-        run_name = f"{model_type}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+        run_name = run_name or f"{model_type}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+        tags = {"model_type": model_type, "phase": "train", **(extra_tags or {})}
 
         return setup_mlflow_run(
             experiment_name=f"{self.target}_tabular",
             run_name=run_name,
             tracking_dir=self.tracking_dir,
-            tags={"model_type": model_type, "phase": "train"},
+            tags=tags,
             params=extra_params,
+            parent_run_id=parent_run_id,
         )
 
     def fit_model(self, data: dict[str, pd.DataFrame], model_type: str, run_id: str, params: Optional[dict] = None) -> Pipeline:
@@ -294,6 +310,67 @@ class TabularModel:
 
         return preds_df
 
+    def param_search(
+        self,
+        data: dict[str, pd.DataFrame],
+        model_type: str,
+        param_grid: dict[str, list],
+    ) -> pd.DataFrame:
+        """
+        Runs a one-at-a-time hyperparameter sweep: for each key:value combo in param_grid.
+
+        Creates one parent mlflow run per key and nests one child run per (key, value) combo.
+
+        Args:
+            data: Output of split_data. The same split is reused for every candidate so
+                results are directly comparable.
+            model_type: One of ridge, lasso, random_forest, svr, hist_gradient_boosting,
+                linear_regression
+            param_grid: e.g. {"n_estimators": [100, 200, 300], "min_samples_split": [2, 4, 8]}
+                -- yields 6 total child runs (3 + 3), not a 3x3=9 cartesian grid.
+
+        Returns:
+            DataFrame with one row per (param, value) combo with columns: search_param,
+            search_value, run_id, oob_rmse, eval_rmse, eval_r2.
+        """
+        results = []
+
+        for key, values in param_grid.items():
+            parent_run_id = self.setup_mlflow(
+                model_type,
+                extra_params={"search_param": key, "search_values": values},
+                extra_tags={"phase": f"{key}_search"},
+                run_name=f"{model_type}_{key}_{datetime.now().strftime('%Y%m%d%H%M%S')}",
+            )
+
+            for value in values:
+                params = {key: value}
+                child_run_id = self.setup_mlflow(
+                    model_type,
+                    extra_params={"search_param": key, "search_value": value},
+                    extra_tags={"phase": f"{key}_{value}_child"},
+                    run_name=f"{model_type}_{key}_{value}_{datetime.now().strftime('%Y%m%d%H%M%S')}",
+                    parent_run_id=parent_run_id,
+                )
+
+                pipeline = self.fit_model(data, model_type, child_run_id, params=params)
+                self.eval_model(pipeline, data, child_run_id)
+
+                metrics = mlflow.get_run(child_run_id).data.metrics
+                results.append({
+                    "search_param": key,
+                    "search_value": value,
+                    "run_id": child_run_id,
+                    "oob_rmse": metrics.get("oob_rmse"),
+                    "eval_rmse": metrics.get("rmse"),
+                    "eval_r2": metrics.get("r2"),
+                })
+
+        results_df = pd.DataFrame(results)
+        logger.info(f"Param search results:\n{results_df.to_string(index=False)}")
+
+        return results_df
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -353,6 +430,16 @@ def main():
         help="Number of most recent seasons (immediately preceding the eval set) to keep for "
              "training; older seasons are dropped entirely. (default: None)"
     )
+    parser.add_argument(
+        "--param-grid",
+        type=str,
+        default=None,
+        help="JSON dict of {param: [values]} for a one-at-a-time hyperparameter sweep, e.g. "
+             '\'{"n_estimators": [100,200,300], "min_samples_split": [2,4,8]}\'. Sweeps each '
+             "key independently, holding every other param at its sklearn default (3 + 3 = 6 "
+             "runs for the example above, not a 3x3=9 cartesian grid). If given, runs "
+             "param_search instead of a single fit/eval."
+    )
 
     args = parser.parse_args()
 
@@ -368,15 +455,19 @@ def main():
         num_training_seasons=args.num_training_seasons,
     )
 
-    split_params = {
-        "excluded_features": args.exclude_features,
-        "eval_data_years": args.eval_data_years,
-        "test_data_years": args.test_data_years,
-        "num_training_seasons": args.num_training_seasons if args.num_training_seasons is not None else "all",
-    }
-    run_id = model.setup_mlflow(args.model_type, extra_params=split_params)
-    pipeline = model.fit_model(data, args.model_type, run_id)
-    model.eval_model(pipeline, data, run_id)
+    if args.param_grid:
+        param_grid = json.loads(args.param_grid)
+        model.param_search(data, args.model_type, param_grid)
+    else:
+        split_params = {
+            "excluded_features": args.exclude_features,
+            "eval_data_years": args.eval_data_years,
+            "test_data_years": args.test_data_years,
+            "num_training_seasons": args.num_training_seasons if args.num_training_seasons is not None else "all",
+        }
+        run_id = model.setup_mlflow(args.model_type, extra_params=split_params)
+        pipeline = model.fit_model(data, args.model_type, run_id)
+        model.eval_model(pipeline, data, run_id)
 
 
 if __name__ == "__main__":
