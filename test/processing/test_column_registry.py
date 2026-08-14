@@ -1,4 +1,9 @@
-from src.processing.column_registry import get_identity_columns, get_stat_columns, get_targets
+from src.processing.column_registry import (
+    get_identity_columns,
+    get_stat_columns,
+    get_counting_stat_columns,
+    get_targets,
+)
 
 
 class TestColumnRegistry():
@@ -42,6 +47,39 @@ class TestColumnRegistry():
         targets = get_targets("nflverse", "player_stats")
 
         assert set(targets) == {"fantasy_points", "fantasy_points_ppr", "ppr_points_per_game"}
+
+    def test_nflverse_player_stats__counting_stats_are_a_subset_of_stats(self):
+        stats = get_stat_columns("nflverse", "player_stats")
+        counting = get_counting_stat_columns("nflverse", "player_stats")
+
+        assert set(counting) <= set(stats)
+
+    def test_nflverse_player_stats__counting_and_rate_stats_are_mutually_exclusive_and_exhaustive(self):
+        # Every stat should be classified as exactly one of "counting"/"rate" -- get_stat_columns
+        # flattens both sub-lists, so their union must equal the full stats list with no overlap.
+        import yaml
+        from src.processing.column_registry import _REGISTRY_PATH
+
+        with open(_REGISTRY_PATH) as f:
+            raw_stats = yaml.safe_load(f)["nflverse"]["player_stats"]["stats"]
+
+        counting = set(raw_stats["counting"])
+        rate = set(raw_stats["rate"])
+
+        assert counting & rate == set()
+        assert counting | rate == set(get_stat_columns("nflverse", "player_stats"))
+
+    def test_nflverse_player_stats__counting_stats_has_known_counting_columns(self):
+        counting = get_counting_stat_columns("nflverse", "player_stats")
+
+        for col in ["games", "receiving_yards", "passing_epa", "fantasy_points_ppr"]:
+            assert col in counting
+
+    def test_nflverse_player_stats__rate_stats_are_not_counting_stats(self):
+        counting = get_counting_stat_columns("nflverse", "player_stats")
+
+        for col in ["passing_cpoe", "pacr", "racr", "target_share", "air_yards_share", "wopr", "ppr_points_per_game"]:
+            assert col not in counting
 
     def test_nflverse_team_stats__identity_and_stats_have_no_overlap(self):
         identity = get_identity_columns("nflverse", "team_stats")
@@ -113,3 +151,8 @@ class TestColumnRegistry():
         stats = get_stat_columns("nflverse", "snap_counts")
 
         assert set(stats) == {"offense_snaps", "offense_pct"}
+
+    def test_nflverse_snap_counts__counting_stats_has_exactly_the_expected_columns(self):
+        counting = get_counting_stat_columns("nflverse", "snap_counts")
+
+        assert set(counting) == {"offense_snaps"}
