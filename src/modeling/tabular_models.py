@@ -466,7 +466,7 @@ def main():
         model.param_search(data, args.model_type, param_grid)
     else:
         split_params = {
-            "excluded_features": model.excluded_features,
+            "excluded_features": args.exclude_features,
             "eval_data_years": args.eval_data_years,
             "test_data_years": args.test_data_years,
             "num_training_seasons": args.num_training_seasons if args.num_training_seasons is not None else "all",
