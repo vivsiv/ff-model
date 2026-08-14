@@ -41,7 +41,7 @@ class TestColumnRegistry():
     def test_nflverse_player_stats__targets_has_known_target_columns(self):
         targets = get_targets("nflverse", "player_stats")
 
-        assert set(targets) == {"fantasy_points", "fantasy_points_ppr"}
+        assert set(targets) == {"fantasy_points", "fantasy_points_ppr", "ppr_points_per_game"}
 
     def test_nflverse_team_stats__identity_and_stats_have_no_overlap(self):
         identity = get_identity_columns("nflverse", "team_stats")

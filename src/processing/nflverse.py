@@ -2,6 +2,7 @@ import os
 import logging
 import argparse
 
+import numpy as np
 import pandas as pd
 
 logging.basicConfig(
@@ -67,11 +68,17 @@ class NflverseProcessor:
 
         Returns:
             DataFrame with the filtered player stats, with "recent_team" normalized to a
-            single code per franchise across its history.
+            single code per franchise across its history, and a "ppr_points_per_game"
+            column added.
         """
         player_stats_df = self._load_bronze("player_stats.csv")
         player_stats_df = player_stats_df[player_stats_df["position"].isin(FANTASY_POSITIONS)]
         player_stats_df["recent_team"] = player_stats_df["recent_team"].replace(TEAM_RELOCATIONS)
+        player_stats_df["ppr_points_per_game"] = np.where(
+            player_stats_df["games"] > 0,
+            player_stats_df["fantasy_points_ppr"] / player_stats_df["games"],
+            0.0,
+        )
 
         output_path = os.path.join(self.silver_dir, "player_stats.csv")
         player_stats_df.to_csv(output_path, index=False)

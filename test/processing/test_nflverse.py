@@ -22,7 +22,9 @@ class TestNflverseProcessor():
             "position": ["QB", "RB", "K", "WR", "QB"],
             "recent_team": ["ARI", "ARI", "ARI", "DAL", "DAL"],
             "season": [2022, 2022, 2022, 2023, 2024],
+            "games": [16, 15, 16, 10, 8],
             "fantasy_points": [100.0, 90.0, 10.0, 120.0, 150.0],
+            "fantasy_points_ppr": [120.0, 105.0, 10.0, 150.0, 160.0],
         })
         player_stats_df.to_csv(os.path.join(cls.bronze_dir, "player_stats.csv"), index=False)
 
@@ -92,7 +94,9 @@ class TestNflverseProcessor():
             "position": ["QB", "RB", "K", "WR", "QB"],
             "recent_team": ["ARI", "ARI", "ARI", "DAL", "DAL"],
             "season": [2022, 2022, 2022, 2023, 2024],
+            "games": [16, 15, 16, 10, 8],
             "fantasy_points": [100.0, 90.0, 10.0, 120.0, 150.0],
+            "fantasy_points_ppr": [120.0, 105.0, 10.0, 150.0, 160.0],
         })
         pd.testing.assert_frame_equal(result, expected)
 
@@ -105,13 +109,40 @@ class TestNflverseProcessor():
             "position": ["QB", "RB", "WR", "QB"],
             "recent_team": ["ARI", "ARI", "DAL", "DAL"],
             "season": [2022, 2022, 2023, 2024],
+            "games": [16, 15, 10, 8],
             "fantasy_points": [100.0, 90.0, 120.0, 150.0],
+            "fantasy_points_ppr": [120.0, 105.0, 150.0, 160.0],
+            "ppr_points_per_game": [7.5, 7.0, 15.0, 20.0],
         })
         pd.testing.assert_frame_equal(result, expected)
 
         silver_path = os.path.join(self.processor.silver_dir, "player_stats.csv")
         assert os.path.exists(silver_path)
         pd.testing.assert_frame_equal(pd.read_csv(silver_path), expected)
+
+    def test_build_player_stats__ppr_points_per_game_is_zero_when_games_is_zero(self):
+        test_dir = tempfile.mkdtemp()
+        try:
+            bronze_dir = os.path.join(test_dir, "bronze", "nflv")
+            os.makedirs(bronze_dir)
+            player_stats_df = pd.DataFrame({
+                "player_id": ["p1"],
+                "player_display_name": ["Player One"],
+                "position": ["WR"],
+                "recent_team": ["ARI"],
+                "season": [2022],
+                "games": [0],
+                "fantasy_points": [0.0],
+                "fantasy_points_ppr": [0.0],
+            })
+            player_stats_df.to_csv(os.path.join(bronze_dir, "player_stats.csv"), index=False)
+            processor = NflverseProcessor(data_dir=test_dir)
+
+            result = processor.build_player_stats()
+
+            assert result["ppr_points_per_game"].iloc[0] == 0.0
+        finally:
+            shutil.rmtree(test_dir)
 
     def test_build_team_stats__saves_full_silver(self):
         result = self.processor.build_team_stats()
@@ -214,7 +245,9 @@ class TestNflverseProcessor():
                 "position": ["RB", "RB", "RB"],
                 "recent_team": ["OAK", "LV", "SD"],
                 "season": [2001, 2003, 2001],
+                "games": [16, 15, 16],
                 "fantasy_points": [50.0, 60.0, 70.0],
+                "fantasy_points_ppr": [55.0, 65.0, 75.0],
             })
             player_stats_df.to_csv(os.path.join(bronze_dir, "player_stats.csv"), index=False)
             processor = NflverseProcessor(data_dir=test_dir)
