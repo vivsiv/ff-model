@@ -16,7 +16,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.linear_model import LinearRegression, Ridge, Lasso
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.svm import SVR
-from sklearn.ensemble import HistGradientBoostingRegressor
+from sklearn.ensemble import GradientBoostingRegressor
 
 from src.modeling.utils import setup_mlflow_run
 from src.processing.column_registry import get_identity_columns
@@ -154,7 +154,7 @@ class TabularModel:
 
     def create_pipeline(self, model: Any = LinearRegression()) -> Pipeline:
         pipeline = Pipeline([
-            ('imputer', SimpleImputer(strategy='mean')),
+            ('imputer', SimpleImputer(strategy='mean', add_indicator=True)),
             ('scaler', StandardScaler()),
             ('model', model)
         ])
@@ -163,12 +163,12 @@ class TabularModel:
 
     def get_base_model(self, model_type: str) -> Any:
         base_models = {
-            'ridge': Ridge(),
+            'ridge': Ridge(alpha=1000),
             'lasso': Lasso(), # Lasso not performant for ppr_ppg
             'random_forest': RandomForestRegressor(n_jobs=-1, n_estimators=200, min_samples_leaf=8),
             'svr': SVR(),
-            'hist_gradient_boosting': HistGradientBoostingRegressor(),
-            'linear_regression': LinearRegression(),
+            'gradient_boosting': GradientBoostingRegressor(n_estimators=100, min_samples_leaf=24),
+            'linear': LinearRegression(),
         }
         return base_models[model_type]
 

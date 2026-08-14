@@ -68,7 +68,7 @@ PHASE 2. Improve the first model [IN PROGRESS]
     - shrinkage_k default in src/processing/gold.py changed from 3.0 -> 1.5.
 6. Grid search hyperparameters/auto ml. [IN PROGRESS]
     - Try min_samples_leaf 4,8,16. Are any other hyperparams worth adjusting?
-7. Try different model architectures (Gradient Boosting, Ridge, Lasso, Linear, etc.)
+7. Try different model architectures (Gradient Boosting, Ridge, Lasso, Linear, etc.) [IN PROGRESS]
 
 PHASE 3. Second Model (PPR POINTS PER GAME) [TODO]
 1. Create new per game target column (ppr_points_per_game), see how the existing feature set does predicting new target.
