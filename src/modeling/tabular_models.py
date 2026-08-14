@@ -32,7 +32,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-
 class TabularModel:
     """Loads the gold training set, splits it, and fits/evaluates/logs models."""
 
@@ -41,8 +40,16 @@ class TabularModel:
             data_dir: str,
             tracking_dir: str,
             target: str,
-            excluded_features: Optional[list[str]] = None,
+            excluded_features: Optional[list[str]] = None
     ):
+        """
+        Args:
+            data_dir: Parent directory for the gold/predictions layers
+            tracking_dir: mlflow tracking/registry store directory
+            target: Which target's training set to load, gold_dir/{target}__training_set.csv
+            excluded_features: Feature names to exclude from the feature set used to
+                train/eval. Entries ending in "*" are treated as prefixes.
+        """
         self.data_dir = data_dir
         self.gold_data_dir = os.path.join(data_dir, "gold")
         self.target = target
@@ -404,11 +411,12 @@ def main():
     parser.add_argument(
         "--exclude-features",
         type=str,
-        nargs="+",
-        default=None,
+        nargs="*",
+        default=["fantasy_points*", "ppr_points_per_game*"],
         help="Feature names to exclude from the feature set used to train/eval. Entries "
              "ending in '*' are treated as prefixes, e.g. 'receiving_*' excludes any feature "
-             "starting with 'receiving_'. default: none excluded)"
+             f"starting with 'receiving_'. (default: fantasy points related features); pass "
+             "--exclude-features with no values to opt out of exclusions entirely)"
     )
     parser.add_argument(
         "--eval-data-years",
@@ -458,7 +466,7 @@ def main():
         model.param_search(data, args.model_type, param_grid)
     else:
         split_params = {
-            "excluded_features": args.exclude_features,
+            "excluded_features": model.excluded_features,
             "eval_data_years": args.eval_data_years,
             "test_data_years": args.test_data_years,
             "num_training_seasons": args.num_training_seasons if args.num_training_seasons is not None else "all",

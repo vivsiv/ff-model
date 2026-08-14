@@ -140,8 +140,6 @@ class TestNflverseProcessor():
 
             result = processor.build_player_stats()
 
-            # 0 games played -> 0 rather than NaN/inf, so the row still has a usable
-            # target instead of being dropped from training/eval.
             assert result["ppr_points_per_game"].iloc[0] == 0.0
         finally:
             shutil.rmtree(test_dir)

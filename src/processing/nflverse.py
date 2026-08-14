@@ -69,9 +69,7 @@ class NflverseProcessor:
         Returns:
             DataFrame with the filtered player stats, with "recent_team" normalized to a
             single code per franchise across its history, and a "ppr_points_per_game"
-            column added (fantasy_points_ppr / games, 0 for games == 0 rather than NaN/inf,
-            so those rows still have a usable target to train/eval against instead of being
-            dropped).
+            column added.
         """
         player_stats_df = self._load_bronze("player_stats.csv")
         player_stats_df = player_stats_df[player_stats_df["position"].isin(FANTASY_POSITIONS)]
