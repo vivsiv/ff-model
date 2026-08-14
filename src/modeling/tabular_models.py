@@ -434,11 +434,9 @@ def main():
         "--param-grid",
         type=str,
         default=None,
-        help="JSON dict of {param: [values]} for a one-at-a-time hyperparameter sweep, e.g. "
-             '\'{"n_estimators": [100,200,300], "min_samples_split": [2,4,8]}\'. Sweeps each '
-             "key independently, holding every other param at its sklearn default (3 + 3 = 6 "
-             "runs for the example above, not a 3x3=9 cartesian grid). If given, runs "
-             "param_search instead of a single fit/eval."
+        help="JSON dict of {param: [values]} for a one-at-a-time hyperparameter search, e.g. "
+             '\'{"n_estimators": [100,200,300], "min_samples_split": [2,4,8]}\'. Iterates through each '
+             "key independently, holding every other param at its sklearn default."
     )
 
     args = parser.parse_args()
