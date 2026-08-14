@@ -40,7 +40,7 @@ class TabularModel:
             self,
             data_dir: str,
             tracking_dir: str,
-            target: str = "fantasy_points_ppr",
+            target: str,
             excluded_features: Optional[list[str]] = None,
     ):
         self.data_dir = data_dir

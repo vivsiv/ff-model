@@ -52,8 +52,7 @@ PHASE 1. First Model (Total PPR Points) [DONE]
     - Move the making of predictions to its own file modeling/tabular_predictions.py
     - Add build_prediction set to gold.py (this should have season == last season (2025) and target season == 2026 with the target_column blank)
 
-
-PHASE 2. Improve the first model [IN PROGRESS]
+PHASE 2. Improve the first model [DONE]
 1. Add Out of Bag error as a metric (what does the oob_score parameter do?) [DONE].
 2. Update the notebook to be able to load a saved model and inspect it [DONE]
 3. View which features are contributing the most to decisions. Feature importance, partial depdendance. [DONE]
@@ -62,15 +61,15 @@ PHASE 2. Improve the first model [IN PROGRESS]
     - games should be a feature!! [DONE]
     - snap counts (pfr_id) [DONE]
     - draft picks (pfr_id) (has all_pro, allpro, probowls) [DONE]
-    - fantasy_stats (regular id)
+    - fantasy_stats (regular id) [DEFERRED]
 5. Reduce shrinkage constant. [DONE]
     - Tried [0.75, 1.125, 1.5, 1.75, 2, 3 (orig)], 1.5 yielded best eval results.
     - shrinkage_k default in src/processing/gold.py changed from 3.0 -> 1.5.
-6. Grid search hyperparameters/auto ml. [IN PROGRESS]
+6. Grid search hyperparameters/auto ml. [DONE]
     - Try min_samples_leaf 4,8,16. Are any other hyperparams worth adjusting?
-7. Try different model architectures (Gradient Boosting, Ridge, Lasso, Linear, etc.) [IN PROGRESS]
+7. Try different model architectures (Gradient Boosting, Ridge, Lasso, Linear, etc.) [DONE]
 
-PHASE 3. Second Model (PPR POINTS PER GAME) [TODO]
+PHASE 3. Second Model (PPR POINTS PER GAME) [IN PROGRESS]
 1. Create new per game target column (ppr_points_per_game), see how the existing feature set does predicting new target.
 2. Add per game variants of existing features.
 3. Train a new model with the per game features and improve as done in phase 2.

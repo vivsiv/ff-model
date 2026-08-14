@@ -78,10 +78,12 @@ nflverse:
       # Fantasy 
       - fantasy_points
       - fantasy_points_ppr
+      - ppr_points_per_game  # derived: fantasy_points_ppr / games (0 if games == 0), computed in build_player_stats (nflverse.py)
 
     targets:
       - fantasy_points
       - fantasy_points_ppr
+      - ppr_points_per_game
 
   team_stats:
     identity:
