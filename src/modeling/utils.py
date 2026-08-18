@@ -2,6 +2,7 @@ import os
 from typing import Optional, Tuple
 
 import mlflow
+from mlflow.entities.model_registry import ModelVersion
 from mlflow.tracking import MlflowClient
 from sklearn.pipeline import Pipeline
 
@@ -69,7 +70,7 @@ def load_mlflow_model(
     model_type: str,
     model_version: Optional[int] = None,
     tracking_dir: str = "../mlruns",
-) -> Tuple[Pipeline, int]:
+) -> Tuple[Pipeline, ModelVersion]:
     """
     Loads a registered {target}_{model_type} model from the mlflow model registry rooted at
     tracking_dir.
@@ -81,15 +82,20 @@ def load_mlflow_model(
         tracking_dir: The mlruns tracking/registry store directory (default: "../mlruns")
 
     Returns:
-        (pipeline, model_version) - the loaded pipeline and the version number that was loaded
+        (pipeline, model_version) - the loaded pipeline, and the registry's ModelVersion entry
+        for it (.version, .run_id -- the mlflow run that trained/logged it, e.g. to look up the
+        hyperparams or, for models registered via tabular_models.py's CLI, the train/eval/test
+        split params logged on that run -- plus whatever else the caller needs off it).
     """
     set_mlflow_tracking_uri(tracking_dir)
 
     registered_name = f"{target}_{model_type}"
+    client = MlflowClient()
     if model_version is None:
-        client = MlflowClient()
-        model_version = client.get_latest_versions(registered_name, stages=["None"])[0].version
+        model_version = client.get_latest_versions(registered_name, stages=["None"])[0]
+    else:
+        model_version = client.get_model_version(registered_name, str(model_version))
 
-    pipeline = mlflow.sklearn.load_model(f"models:/{registered_name}/{model_version}")
+    pipeline = mlflow.sklearn.load_model(f"models:/{registered_name}/{model_version.version}")
 
     return pipeline, model_version

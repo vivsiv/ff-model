@@ -280,40 +280,52 @@ class TabularModel:
 
         return pipeline
 
-    def eval_model(self, pipeline: Pipeline, data: dict[str, pd.DataFrame], run_id: str) -> pd.DataFrame:
+    def eval_model(
+        self,
+        pipeline: Pipeline,
+        data: dict[str, pd.DataFrame],
+        run_id: str,
+        split: str = "eval",
+    ) -> pd.DataFrame:
         """
-        Scores a fitted pipeline against the eval set. Logs R^2, RMSE, and the full dataset of
-        predictions vs actual for the eval set..
+        Scores a fitted pipeline against a held-out split. Logs R^2, RMSE, and the full dataset
+        of predictions vs actual for that split.
 
         Args:
             pipeline: A fit pipeline.
             data: Output of split_data
-            run_id: The mlflow run_id returned by fit_model, so eval metrics land in the same
-                run as the fit params/model artifact
+            run_id: The mlflow run_id to log metrics/artifacts into. When called right after
+                fit_model, pass the same run_id so eval metrics land alongside the fit
+                params/model artifact.
+            split: Which split of data to score against, "eval" or "test" (default: "eval").
+                Selects data["X_{split}"]/data["y_{split}"]/data["identity_{split}"], and
+                namespaces the predictions CSV filename/artifact path with the split name.
         """
-        y_pred = pipeline.predict(data["X_eval"])
+        X, y, identity = data[f"X_{split}"], data[f"y_{split}"], data[f"identity_{split}"]
 
-        preds_df = data["identity_eval"].copy()
+        y_pred = pipeline.predict(X)
+
+        preds_df = identity.copy()
         preds_df["predictions"] = y_pred
-        preds_df["actual"] = data["y_eval"]
+        preds_df["actual"] = y
         preds_df = preds_df.sort_values(by=["target_season", "predictions", "actual"], ascending=False)
 
         with mlflow.start_run(run_id=run_id):
-            score = pipeline.score(data["X_eval"], data["y_eval"])
+            score = pipeline.score(X, y)
             print(f"R^2 score: {score}")
             mlflow.log_metric("r2", score)
 
-            rmse = np.sqrt(mean_squared_error(data["y_eval"], y_pred))
+            rmse = np.sqrt(mean_squared_error(y, y_pred))
             print(f"RMSE: {rmse}")
             mlflow.log_metric("rmse", rmse)
 
             output_df = preds_df.rename(columns={"predictions": self.target})
             output_df[self.target] = output_df[self.target].round(2)
 
-            csv_path = os.path.join(self.predictions_dir, f"{self.target}_eval_predictions_{run_id}.csv")
+            csv_path = os.path.join(self.predictions_dir, f"{self.target}_{split}_predictions_{run_id}.csv")
             output_df[["player_display_name", "target_season", self.target, "actual"]].to_csv(csv_path, index=False)
 
-            mlflow.log_artifact(csv_path, "eval_predictions")
+            mlflow.log_artifact(csv_path, f"{split}_predictions")
 
         return preds_df
 

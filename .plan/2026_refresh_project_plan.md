@@ -69,15 +69,16 @@ PHASE 2. Improve the first model [DONE]
     - Try min_samples_leaf 4,8,16. Are any other hyperparams worth adjusting?
 7. Try different model architectures (Gradient Boosting, Ridge, Lasso, Linear, etc.) [DONE]
 
-PHASE 3. Second Model (PPR POINTS PER GAME) [IN PROGRESS]
+PHASE 3. Second Model (PPR POINTS PER GAME) [DONE]
 1. Create new per game target column (ppr_points_per_game), see how the existing feature set does predicting new target. [DONE]
-2. Add per game variants of existing features. [IN PROGRESS]
-3. Train a new model with the per game features and improve as done in phase 2.
+2. Add per game variants of existing features. [DONE]
+3. Train a new model with the per game features and improve as done in phase 2. [DEFERRED]
 
-PHASE 4. Predictions & Rankings [TODO]
-1. Generate list of players and teams to predict for 2026
-2. Generate rankings process based on current code.
-3. Re-evaluate rankings process
+PHASE 4. Predictions & Rankings [IN PROGRESS]
+1. Add functionality to eval on the test set. [IN PROGRESS]
+2. Generate list of players and teams to predict for 2026.
+3. Generate rankings process based on current code.
+4. Re-evaluate rankings process
 
 PHASE 5. Sequential Model [TODO]
 1. Create a new training set builder that builds a sequential version of the data that can be used to feed an lstm or transformer
