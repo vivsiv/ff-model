@@ -6,6 +6,7 @@ from typing import Any, Optional
 
 import pandas as pd
 import mlflow
+from sklearn.pipeline import Pipeline
 
 from src.modeling.tabular_models import TabularModel
 from src.modeling.utils import load_mlflow_model
@@ -30,8 +31,9 @@ class TabularModelTestSetEvaluator:
     and TabularModel's CLI (main()).
 
     Caveat: this assumes gold_dir/{target}__training_set.csv hasn't changed (rows added/removed/
-    changed) since the model was trained.
-        TODO: what if features were added.
+    changed or columns removed/changed) since the model was trained.
+    New feature columns are fine -- the model's feature_names_in_ params is used to extract the
+    exact set of features used to train the model.
     """
 
     def __init__(
@@ -77,6 +79,32 @@ class TabularModelTestSetEvaluator:
             "num_training_seasons": None if num_training_seasons == "all" else int(num_training_seasons),
         }
 
+    def _select_pipeline_features(self, pipeline: Pipeline, X: pd.DataFrame) -> pd.DataFrame:
+        """
+        Restricts X to exactly the columns -- in the same order -- that pipeline was fit on
+        (per sklearn's own pipeline.feature_names_in_), rather than whatever the current gold
+        training set happens to contain.
+
+        Args:
+            pipeline: The fit pipeline being evaluated.
+            X: Candidate feature set for the test split.
+
+        Returns:
+            X restricted to pipeline.feature_names_in_, in that exact order.
+
+        Raises:
+            ValueError: If the pipeline needs a column that's no longer in X.
+        """
+        required_features = list(pipeline.feature_names_in_)
+        missing = [col for col in required_features if col not in X.columns]
+        if missing:
+            raise ValueError(
+                f"Training set is missing {len(missing)} column(s) the model was fit on: "
+                f"{missing}. It may have been renamed/removed since the model was trained."
+            )
+
+        return X[required_features]
+
     def evaluate(self, model_type: str, model_version: Optional[int] = None) -> pd.DataFrame:
         """
         Loads the model at {target}_{model_type}/versions/{model_version} (version is latest if model_version isn't
@@ -115,6 +143,7 @@ class TabularModelTestSetEvaluator:
             test_data_years=split_params["test_data_years"],
             num_training_seasons=split_params["num_training_seasons"],
         )
+        data["X_test"] = self._select_pipeline_features(pipeline, data["X_test"])
 
         run_id = model.setup_mlflow(
             model_type,

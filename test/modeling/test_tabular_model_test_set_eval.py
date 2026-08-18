@@ -4,10 +4,47 @@ import pytest
 import shutil
 import tempfile
 import mlflow
+from sklearn.pipeline import Pipeline
 
 from src.modeling.tabular_models import TabularModel
 from src.modeling.tabular_model_test_set_eval import TabularModelTestSetEvaluator
 from src.processing.column_registry import get_identity_columns
+
+
+def _build_training_data(feature_cols: dict[str, list]) -> pd.DataFrame:
+    n = 10
+    identity_data = {col: [f"{col}_{i}" for i in range(n)] for col in get_identity_columns("nflverse", "player_stats")}
+    identity_data["target_season"] = [2020, 2020, 2021, 2021, 2022, 2022, 2023, 2023, 2024, 2024]
+
+    return pd.DataFrame({
+        **identity_data,
+        **feature_cols,
+        'target': [10, 11, 12, 13, 14, 15, 16, 17, 18, 19],
+    })
+
+
+def _train_and_register_ridge_model(
+    gold_dir: str, tracking_dir: str, target: str, training_data: pd.DataFrame
+) -> Pipeline:
+    """Trains+registers a ridge model on training_data (eval/test years=1, no exclusions),
+    logging split params the same way tabular_models.py's CLI (main()) does."""
+    training_data.to_csv(os.path.join(gold_dir, f"{target}__training_set.csv"), index=False)
+
+    model = TabularModel(data_dir=os.path.dirname(gold_dir), tracking_dir=tracking_dir, target=target)
+    data = model.split_data(eval_data_years=1, test_data_years=1)
+    run_id = model.setup_mlflow(
+        "ridge",
+        extra_params={
+            "excluded_features": [],
+            "eval_data_years": 1,
+            "test_data_years": 1,
+            "num_training_seasons": "all",
+        },
+    )
+    pipeline = model.fit_model(data, "ridge", run_id)
+    model.eval_model(pipeline, data, run_id)
+
+    return pipeline
 
 
 class TestTabularModelTestSetEvaluator:
@@ -128,3 +165,60 @@ class TestTabularModelTestSetEvaluator:
     def test_parse_split_data_params__raises_on_missing_keys(self):
         with pytest.raises(KeyError):
             self.evaluator._parse_split_data_params({"eval_data_years": "1"})
+
+    def test_evaluate__ignores_feature_columns_added_to_the_training_set_after_training(self):
+        # Simulates Phase 2's incremental feature growth: a column is added to the gold
+        # training set on disk after the model was trained/registered, without retraining.
+        test_dir = tempfile.mkdtemp()
+        try:
+            gold_dir = os.path.join(test_dir, "gold")
+            tracking_dir = os.path.join(test_dir, "mlruns")
+            os.makedirs(gold_dir)
+
+            training_data = _build_training_data({
+                'f1': [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+                'f2': [100, 50, 0, 100, 50, 0, 100, 50, 0, 100],
+            })
+            pipeline = _train_and_register_ridge_model(gold_dir, tracking_dir, "target_2", training_data)
+
+            # a new feature column shows up in the gold layer after training
+            training_data_with_new_col = training_data.copy()
+            training_data_with_new_col["f3_new"] = 1
+            training_data_with_new_col.to_csv(os.path.join(gold_dir, "target_2__training_set.csv"), index=False)
+
+            evaluator = TabularModelTestSetEvaluator(data_dir=test_dir, tracking_dir=tracking_dir, target="target_2")
+            preds_df = evaluator.evaluate(model_type="ridge")
+
+            test_rows = training_data[training_data["target_season"] == 2024]
+            expected = pipeline.predict(test_rows[["f1", "f2"]])
+            pd.testing.assert_series_equal(
+                pd.Series(expected, index=test_rows.index).sort_index(),
+                preds_df["predictions"].sort_index(),
+                check_names=False,
+            )
+        finally:
+            shutil.rmtree(test_dir)
+
+    def test_evaluate__raises_a_clear_error_if_a_feature_column_the_model_needs_is_gone(self):
+        # Simulates a training-set column being renamed/removed after the model was trained --
+        # unlike new columns, this can't be recovered from and should fail loudly.
+        test_dir = tempfile.mkdtemp()
+        try:
+            gold_dir = os.path.join(test_dir, "gold")
+            tracking_dir = os.path.join(test_dir, "mlruns")
+            os.makedirs(gold_dir)
+
+            training_data = _build_training_data({
+                'f1': [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+                'f2': [100, 50, 0, 100, 50, 0, 100, 50, 0, 100],
+            })
+            _train_and_register_ridge_model(gold_dir, tracking_dir, "target_2", training_data)
+
+            training_data_missing_col = training_data.drop(columns=["f1"])
+            training_data_missing_col.to_csv(os.path.join(gold_dir, "target_2__training_set.csv"), index=False)
+
+            evaluator = TabularModelTestSetEvaluator(data_dir=test_dir, tracking_dir=tracking_dir, target="target_2")
+            with pytest.raises(ValueError, match="f1"):
+                evaluator.evaluate(model_type="ridge")
+        finally:
+            shutil.rmtree(test_dir)
