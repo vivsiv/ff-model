@@ -2,11 +2,8 @@
 # Keyed by data source then by table name within that source.
 #
 # "identity" - columns used for joins/grouping/output.
-# "stats" - columns used as features or to compute features. Either a flat list, or (for
-#   tables where it matters, e.g. player_stats/snap_counts) split into "counting"/"rate"
-#   sub-lists: "counting" stats are season-total counts (e.g. receiving_yards) eligible for
-#   gold.py's per-game transform; "rate" stats are already normalized (e.g. target_share,
-#   passing_cpoe) and are not divided by games again.
+# "stats" - columns used as features or to compute features. Either a flat list, or a dict with
+#   with stat sub-categories.
 # "targets" - columns that will be predicted.
 
 nflverse:

@@ -30,10 +30,8 @@ def get_stat_columns(source: str, table: str) -> List[str]:
     """
     Returns the columns from `source`/`table` that are candidates for feature engineering.
 
-    `stats` is either a flat list, or (for tables that classify stats into "counting"/"rate",
-    e.g. player_stats/snap_counts, see get_counting_stat_columns) a dict of sub-lists -- this
-    flattens either shape into a single list, so callers don't need to care which one a given
-    table uses.
+    `stats` is either a flat list or a dict (for tables that classify stats into subcategories
+    i.e. "counting"/"rate"). This method flattens either shape into a single list.
 
     Args:
         source: Data source name, e.g. "nflverse"
@@ -51,10 +49,7 @@ def get_stat_columns(source: str, table: str) -> List[str]:
 
 def get_counting_stat_columns(source: str, table: str) -> List[str]:
     """
-    Returns the "counting" (season-total) stat columns from `source`/`table` -- these are
-    eligible for gold.py's per-game transform, unlike "rate" stats (e.g. target_share,
-    passing_cpoe), which are already normalized. Only defined for tables whose `stats` is
-    split into "counting"/"rate" sub-lists (currently player_stats, snap_counts).
+    Returns the "counting" stat columns (a subcategory of overall stats) from `source`/`table`.
 
     Args:
         source: Data source name, e.g. "nflverse"

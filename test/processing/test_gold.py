@@ -150,7 +150,7 @@ class TestTrainingSetBuilder():
     def test_add_per_game_stats__zero_games_yields_zero_not_nan_or_inf(self):
         df = pd.DataFrame({
             "games": [0],
-            "receiving_yards": [0.0],
+            "receiving_yards": [500.0],
         })
 
         result_df, _ = self.builder._add_per_game_stats(df, counting_stat_columns=["receiving_yards"])

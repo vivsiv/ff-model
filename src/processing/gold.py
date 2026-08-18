@@ -191,29 +191,19 @@ class TrainingSetBuilder:
         games_col: str = "games",
     ) -> tuple[pd.DataFrame, List[str]]:
         """
-        Adds a "{stat}_per_game" column (stat / games, 0 if games == 0 rather than NaN/inf)
-        for each stat in counting_stat_columns, so _positional_baseline/_add_career_features
-        can compute a full second set of career features (avg/std/max/min/trend/shrunk_avg)
-        on a per-game basis alongside the season-total versions -- a player's per-game rate
-        in a given season doesn't get dragged down by a shortened, injury-affected season the
-        way an expanding average of season totals would, which matters more here since
-        ppr_points_per_game is specifically trying to isolate "production when healthy" from
-        availability.
-
-        games_col itself is excluded even if present in counting_stat_columns -- dividing
-        games by itself is a meaningless, always-1 column.
+        Adds per game rate versions of each column in counting_stat_columns, named "{stat}_per_game".
+        The new columns can then be passed to _positional_baseline/_add_career_features to get
+        (avg/std/max/min/trend/shrunk_avg) versions of the new per game columns.
 
         Args:
             df: Dataframe with counting_stat_columns and games_col
             counting_stat_columns: Season-total stat columns to add a per-game version of
                 (see get_counting_stat_columns)
-            games_col: Column to divide by (default: "games")
+            games_col: Column to divide by (default: "games"), also ignored if in counting_stat_columns.
 
         Returns:
             (df, per_game_columns) -- df with one new "{stat}_per_game" column added per
-            eligible stat; per_game_columns lists the names of those new columns, for the
-            caller to pass into _positional_baseline/_add_career_features alongside the raw
-            stat columns.
+            eligible stat; per_game_columns lists the names of those new columns.
         """
         eligible_stats = [stat for stat in counting_stat_columns if stat != games_col]
         per_game_columns = {
