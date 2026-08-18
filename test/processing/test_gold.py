@@ -58,10 +58,16 @@ class TestTrainingSetBuilder():
                 ("nflverse", "player_stats"): ["fantasy_points_ppr"],
                 ("nflverse", "snap_counts"): ["offense_snaps", "offense_pct"],
             }
+            # No counting stats for this test -- it's about the merge, not the per-game transform.
+            counting_stat_columns = {
+                ("nflverse", "player_stats"): [],
+                ("nflverse", "snap_counts"): [],
+            }
 
             builder = TrainingSetBuilder(data_dir=test_dir)
             with patch("src.processing.gold.get_identity_columns", side_effect=lambda s, t: identity_columns[(s, t)]), \
-                 patch("src.processing.gold.get_stat_columns", side_effect=lambda s, t: stat_columns[(s, t)]):
+                 patch("src.processing.gold.get_stat_columns", side_effect=lambda s, t: stat_columns[(s, t)]), \
+                 patch("src.processing.gold.get_counting_stat_columns", side_effect=lambda s, t: counting_stat_columns[(s, t)]):
                 result = builder.load_player_features()
 
             p1 = result[result["player_id"] == "p1"].sort_values("season").reset_index(drop=True)
@@ -77,6 +83,92 @@ class TestTrainingSetBuilder():
             assert pd.isna(p2["offense_snaps"].iloc[0])
         finally:
             shutil.rmtree(test_dir)
+
+    def test_load_player_features__adds_per_game_career_features_for_counting_stats(self):
+        test_dir = tempfile.mkdtemp()
+        try:
+            silver_dir = os.path.join(test_dir, "silver", "nflv")
+            os.makedirs(silver_dir)
+
+            player_stats_df = pd.DataFrame({
+                "player_id": ["p1", "p1"],
+                "player_display_name": ["Player One", "Player One"],
+                "position": ["WR", "WR"],
+                "season": [2020, 2021],
+                "recent_team": ["KC", "KC"],
+                "games": [10, 16],
+                "receiving_yards": [500.0, 1280.0],
+                "target_share": [0.2, 0.25],  # rate stat -- should not get a per-game variant
+            })
+            player_stats_df.to_csv(os.path.join(silver_dir, "player_stats.csv"), index=False)
+            pd.DataFrame({"player_id": [], "season": []}).to_csv(os.path.join(silver_dir, "snap_counts.csv"), index=False)
+
+            identity_columns = {
+                ("nflverse", "player_stats"): ["player_id", "player_display_name", "position", "season", "recent_team"],
+                ("nflverse", "snap_counts"): ["player_id", "season"],
+            }
+            stat_columns = {
+                ("nflverse", "player_stats"): ["games", "receiving_yards", "target_share"],
+                ("nflverse", "snap_counts"): [],
+            }
+            counting_stat_columns = {
+                ("nflverse", "player_stats"): ["games", "receiving_yards"],
+                ("nflverse", "snap_counts"): [],
+            }
+
+            builder = TrainingSetBuilder(data_dir=test_dir)
+            with patch("src.processing.gold.get_identity_columns", side_effect=lambda s, t: identity_columns[(s, t)]), \
+                 patch("src.processing.gold.get_stat_columns", side_effect=lambda s, t: stat_columns[(s, t)]), \
+                 patch("src.processing.gold.get_counting_stat_columns", side_effect=lambda s, t: counting_stat_columns[(s, t)]):
+                result = builder.load_player_features().sort_values("season").reset_index(drop=True)
+
+            # raw per-game column kept as a real feature (per the "keep it, simpler codewise"
+            # decision), not just used transiently to derive career features.
+            assert list(result["receiving_yards_per_game"]) == [50.0, 80.0]
+            # 2021's career_avg is the expanding mean of per-game rates (50, then (50+80)/2),
+            # not of season totals -- a shortened prior season doesn't drag it down as hard.
+            assert list(result["receiving_yards_per_game_career_avg"]) == [50.0, 65.0]
+            assert result["receiving_yards_per_game_trend"].iloc[1] == pytest.approx(15.0)
+            # "games" itself never gets a "games_per_game" column -- dividing it by itself is meaningless.
+            assert "games_per_game" not in result.columns
+            # rate stats (target_share) don't get a per-game variant at all.
+            assert "target_share_per_game" not in result.columns
+        finally:
+            shutil.rmtree(test_dir)
+
+    def test_add_per_game_stats__divides_counting_stats_by_games(self):
+        df = pd.DataFrame({
+            "games": [10, 16],
+            "receiving_yards": [500.0, 1280.0],
+        })
+
+        result_df, per_game_columns = self.builder._add_per_game_stats(df, counting_stat_columns=["receiving_yards"])
+
+        assert per_game_columns == ["receiving_yards_per_game"]
+        assert list(result_df["receiving_yards_per_game"]) == [50.0, 80.0]
+
+    def test_add_per_game_stats__zero_games_yields_zero_not_nan_or_inf(self):
+        df = pd.DataFrame({
+            "games": [0],
+            "receiving_yards": [500.0],
+        })
+
+        result_df, _ = self.builder._add_per_game_stats(df, counting_stat_columns=["receiving_yards"])
+
+        assert result_df["receiving_yards_per_game"].iloc[0] == 0.0
+
+    def test_add_per_game_stats__excludes_the_games_column_itself(self):
+        df = pd.DataFrame({
+            "games": [10],
+            "receiving_yards": [500.0],
+        })
+
+        result_df, per_game_columns = self.builder._add_per_game_stats(
+            df, counting_stat_columns=["games", "receiving_yards"]
+        )
+
+        assert "games_per_game" not in result_df.columns
+        assert per_game_columns == ["receiving_yards_per_game"]
 
     def test_positional_baseline__trailing_window_within_position(self):
         df = pd.DataFrame({

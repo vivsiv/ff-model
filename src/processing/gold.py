@@ -6,7 +6,12 @@ from typing import List, Optional
 import numpy as np
 import pandas as pd
 
-from src.processing.column_registry import get_identity_columns, get_stat_columns, get_targets
+from src.processing.column_registry import (
+    get_identity_columns,
+    get_stat_columns,
+    get_counting_stat_columns,
+    get_targets,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -19,6 +24,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 TARGET_COL = "target"
+PER_GAME_SUFFIX = "_per_game"
 ROUNDING_EXCLUDED_COLUMNS = [
     "season", "target_season", "seasons_since_played", "years_played", "games", "age", "draft_pick",
 ]
@@ -178,11 +184,42 @@ class TrainingSetBuilder:
 
         return df
 
+    def _add_per_game_stats(
+        self,
+        df: pd.DataFrame,
+        counting_stat_columns: List[str],
+        games_col: str = "games",
+    ) -> tuple[pd.DataFrame, List[str]]:
+        """
+        Adds per game rate versions of each column in counting_stat_columns, named "{stat}_per_game".
+        The new columns can then be passed to _positional_baseline/_add_career_features to get
+        (avg/std/max/min/trend/shrunk_avg) versions of the new per game columns.
+
+        Args:
+            df: Dataframe with counting_stat_columns and games_col
+            counting_stat_columns: Season-total stat columns to add a per-game version of
+                (see get_counting_stat_columns)
+            games_col: Column to divide by (default: "games"), also ignored if in counting_stat_columns.
+
+        Returns:
+            (df, per_game_columns) -- df with one new "{stat}_per_game" column added per
+            eligible stat; per_game_columns lists the names of those new columns.
+        """
+        eligible_stats = [stat for stat in counting_stat_columns if stat != games_col]
+        per_game_columns = {
+            f"{stat}{PER_GAME_SUFFIX}": np.where(df[games_col] > 0, df[stat] / df[games_col], 0.0)
+            for stat in eligible_stats
+        }
+
+        df = pd.concat([df, pd.DataFrame(per_game_columns, index=df.index)], axis=1)
+        return df, [f"{stat}{PER_GAME_SUFFIX}" for stat in eligible_stats]
+
     def load_player_features(self, shrinkage_k: float = 1.5) -> pd.DataFrame:
         """
         Loads the `player_stats` silver table, merges in the `snap_counts` silver table (joined on player_id + season),
-        and adds computed feature values to the combined set of stat columns. Both the construction of the training and
-        prediction sets use the output.
+        and adds computed feature values to the combined set of stat columns -- both season-total career features and
+        (for counting stats) a second, per-game-basis set of the same features. Both the construction of the training
+        and prediction sets use the output.
 
         Args:
             shrinkage_k: Shrinkage strength constant passed through to _add_career_features (default: 1.5)
@@ -203,8 +240,15 @@ class TrainingSetBuilder:
         player_df = player_df.merge(snap_counts_df, on=snap_count_identity_columns, how="left")
         stat_columns = player_stat_columns + snap_count_stat_columns
 
-        baseline_df = self._positional_baseline(player_df, stat_columns)
-        return self._add_career_features(player_df, baseline_df, stat_columns, shrinkage_k=shrinkage_k)
+        counting_stat_columns = (
+            get_counting_stat_columns("nflverse", "player_stats")
+            + get_counting_stat_columns("nflverse", "snap_counts")
+        )
+        player_df, per_game_columns = self._add_per_game_stats(player_df, counting_stat_columns)
+        all_stat_columns = stat_columns + per_game_columns
+
+        baseline_df = self._positional_baseline(player_df, all_stat_columns)
+        return self._add_career_features(player_df, baseline_df, all_stat_columns, shrinkage_k=shrinkage_k)
 
     def load_draft_features(self) -> pd.DataFrame:
         """
