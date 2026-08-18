@@ -22,3 +22,7 @@ dependencies = [
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
+addopts = "-m 'not integration'"
+markers = [
+    "integration: slow tests that load real generated data from disk (e.g. data/gold/*.csv); excluded by default, run explicitly with `pytest -m integration`",
+]
