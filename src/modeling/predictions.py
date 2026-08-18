@@ -42,7 +42,8 @@ class PredictionReporter:
         os.makedirs(self.predictions_dir, exist_ok=True)
 
     def load_model(self, model_type: str, model_version: int = None) -> Tuple[Pipeline, int]:
-        return load_mlflow_model(self.target, model_type, model_version, tracking_dir=self.tracking_dir)
+        pipeline, model_version, _ = load_mlflow_model(self.target, model_type, model_version, tracking_dir=self.tracking_dir)
+        return pipeline, model_version
 
     def load_prediction_data(self) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """
