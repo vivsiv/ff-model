@@ -94,7 +94,8 @@ class TabularModelTestSetEvaluator:
         Returns:
             DataFrame of test-set predictions vs actuals (see TabularModel.eval_model)
         """
-        pipeline, model_version, source_run_id = load_mlflow_model(self.target, model_type, model_version, self.tracking_dir)
+        pipeline, mv = load_mlflow_model(self.target, model_type, model_version, self.tracking_dir)
+        model_version, source_run_id = int(mv.version), mv.run_id
         source_run_params = mlflow.get_run(source_run_id).data.params
         split_params = self._parse_split_data_params(source_run_params)
 
