@@ -6,6 +6,7 @@ import tempfile
 import mlflow
 from sklearn.pipeline import Pipeline
 
+from src.modeling.data_prep import TabularModelDataPrep
 from src.modeling.tabular_models import TabularModel
 from src.modeling.tabular_model_test_set_eval import TabularModelTestSetEvaluator
 from src.processing.column_registry import get_identity_columns
@@ -27,20 +28,13 @@ def _train_and_register_ridge_model(
     gold_dir: str, tracking_dir: str, target: str, training_data: pd.DataFrame
 ) -> Pipeline:
     """Trains+registers a ridge model on training_data (eval/test years=1, no exclusions),
-    logging split params the same way tabular_models.py's CLI (main()) does."""
+    logging its data prep config the same way tabular_models.py's CLI (main()) does."""
     training_data.to_csv(os.path.join(gold_dir, f"{target}__training_set.csv"), index=False)
 
-    model = TabularModel(data_dir=os.path.dirname(gold_dir), tracking_dir=tracking_dir, target=target)
-    data = model.split_data(eval_data_years=1, test_data_years=1)
-    run_id = model.setup_mlflow(
-        "ridge",
-        extra_params={
-            "excluded_features": [],
-            "eval_data_years": 1,
-            "test_data_years": 1,
-            "num_training_seasons": "all",
-        },
-    )
+    data_prep = TabularModelDataPrep(data_dir=os.path.dirname(gold_dir), config={"target": target})
+    model = TabularModel(data_dir=os.path.dirname(gold_dir), tracking_dir=tracking_dir, data_prep=data_prep)
+    data = model.split_data()
+    run_id = model.setup_mlflow("ridge")
     pipeline = model.fit_model(data, "ridge", run_id)
     model.eval_model(pipeline, data, run_id)
 
@@ -70,25 +64,16 @@ class TestTabularModelTestSetEvaluator:
         training_data.to_csv(os.path.join(cls.gold_dir, "target_1__training_set.csv"), index=False)
 
         # Simulate what tabular_models.py's CLI (main()) does when training+registering a
-        # model: split, fit, log split params + eval, all under one run.
-        cls.split_params = {
-            "excluded_features": ["f3"],
-            "eval_data_years": 1,
-            "test_data_years": 1,
-            "num_training_seasons": 2,
+        # model: split (per a data prep config), fit, log the config + eval, all under one run.
+        cls.config = {
+            "target": "target_1",
+            "features": {"mode": "exclude", "columns": ["f3"]},
+            "split": {"eval_data_years": 1, "test_data_years": 1, "num_training_seasons": 2},
         }
-        model = TabularModel(
-            data_dir=cls.test_dir,
-            tracking_dir=cls.tracking_dir,
-            target="target_1",
-            excluded_features=cls.split_params["excluded_features"],
-        )
-        cls.data = model.split_data(
-            eval_data_years=cls.split_params["eval_data_years"],
-            test_data_years=cls.split_params["test_data_years"],
-            num_training_seasons=cls.split_params["num_training_seasons"],
-        )
-        cls.train_run_id = model.setup_mlflow("ridge", extra_params=cls.split_params)
+        cls.data_prep = TabularModelDataPrep(data_dir=cls.test_dir, config=cls.config)
+        model = TabularModel(data_dir=cls.test_dir, tracking_dir=cls.tracking_dir, data_prep=cls.data_prep)
+        cls.data = model.split_data()
+        cls.train_run_id = model.setup_mlflow("ridge")
         cls.pipeline = model.fit_model(cls.data, "ridge", cls.train_run_id)
         model.eval_model(cls.pipeline, cls.data, cls.train_run_id)
 
@@ -101,7 +86,7 @@ class TestTabularModelTestSetEvaluator:
     def test_evaluate__reconstructs_the_same_test_split_the_model_was_trained_with(self):
         preds_df = self.evaluator.evaluate(model_type="ridge")
 
-        # test split held out 2024 (most recent season), per the logged split params
+        # test split held out 2024 (most recent season), per the logged config
         assert set(preds_df["target_season"]) == {2024}
         assert len(preds_df) == len(self.data["X_test"])
 
@@ -135,36 +120,41 @@ class TestTabularModelTestSetEvaluator:
         assert "metrics.r2" in latest_test_run
         assert "metrics.rmse" in latest_test_run
 
-    def test_evaluate__raises_if_the_source_run_is_missing_split_params(self):
-        # A run created via fit_model directly (e.g. param_search's children) never logs
-        # excluded_features/eval_data_years/test_data_years/num_training_seasons -- only
-        # tabular_models.py's CLI (main()) does.
-        model = TabularModel(data_dir=self.test_dir, tracking_dir=self.tracking_dir, target="target_1")
+    def test_evaluate__test_run_also_logs_the_reconstructed_data_prep_config(self):
+        self.evaluator.evaluate(model_type="ridge")
+
+        mlflow.set_tracking_uri(self.tracking_dir)
+        experiment = mlflow.get_experiment_by_name("target_1_tabular")
+        runs = mlflow.search_runs(
+            experiment_ids=[experiment.experiment_id],
+            filter_string="tags.phase = 'test'",
+            output_format="pandas",
+        )
+        latest_test_run_id = runs.iloc[0]["run_id"]
+
+        logged_config = mlflow.artifacts.load_dict(f"runs:/{latest_test_run_id}/data_prep_config.json")
+        assert logged_config == self.config
+
+    def test_load_data_prep_config__returns_the_config_logged_on_the_given_run(self):
+        config = self.evaluator._load_data_prep_config(self.train_run_id)
+        assert config == self.config
+
+    def test_evaluate__raises_if_the_source_run_has_no_data_prep_config_artifact(self):
+        # A run created via fit_model directly (e.g. param_search's children) never gets
+        # setup_mlflow's data_prep_config.json artifact logged onto it by itself -- only a
+        # run created via setup_mlflow does, and here we skip that entirely.
+        data_prep = TabularModelDataPrep(data_dir=self.test_dir, config={"target": "target_1"})
+        model = TabularModel(data_dir=self.test_dir, tracking_dir=self.tracking_dir, data_prep=data_prep)
         data = model.split_data()
-        run_id = model.setup_mlflow("lasso")
+
+        from src.modeling.utils import setup_mlflow_run
+        run_id = setup_mlflow_run(
+            experiment_name="target_1_tabular", run_name="bare_run", tracking_dir=self.tracking_dir,
+        )
         model.fit_model(data, "lasso", run_id)
 
-        with pytest.raises(KeyError):
-            self.evaluator.evaluate(model_type="lasso")
-
-    def test_parse_split_data_params__casts_logged_string_params_back_to_expected_types(self):
-        parsed = self.evaluator._parse_split_data_params({
-            "excluded_features": "['fantasy_points*', 'ppr_points_per_game*']",
-            "eval_data_years": "1",
-            "test_data_years": "1",
-            "num_training_seasons": "all",
-        })
-
-        assert parsed == {
-            "excluded_features": ["fantasy_points*", "ppr_points_per_game*"],
-            "eval_data_years": 1,
-            "test_data_years": 1,
-            "num_training_seasons": None,
-        }
-
-    def test_parse_split_data_params__raises_on_missing_keys(self):
-        with pytest.raises(KeyError):
-            self.evaluator._parse_split_data_params({"eval_data_years": "1"})
+        with pytest.raises(RuntimeError, match="data_prep_config"):
+            self.evaluator._load_data_prep_config(run_id)
 
     def test_evaluate__ignores_feature_columns_added_to_the_training_set_after_training(self):
         # Simulates Phase 2's incremental feature growth: a column is added to the gold
