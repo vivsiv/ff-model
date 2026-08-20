@@ -178,7 +178,6 @@ class TestTabularModel:
             self.model._log_performance_metrics(y, y_pred, n=3)
 
         metrics = mlflow.get_run(run_id).data.metrics
-        assert metrics["top_3_n"] == 3
 
         y_top, y_pred_top = np.array([10.0, 20.0, 30.0]), np.array([8.0, 22.0, 33.0])
         expected_rmse = np.sqrt(np.mean((y_top - y_pred_top) ** 2))
@@ -196,7 +195,6 @@ class TestTabularModel:
             self.model._log_performance_metrics(y, y_pred, n=100)
 
         metrics = mlflow.get_run(run_id).data.metrics
-        assert metrics["top_100_n"] == 6
         assert "top_100_r2" in metrics
         assert "top_100_rmse" in metrics
 
@@ -209,7 +207,6 @@ class TestTabularModel:
             self.model._log_performance_metrics(y, y_pred, n=5)
 
         metrics = mlflow.get_run(run_id).data.metrics
-        assert metrics["top_5_n"] == 1
         assert "top_5_rmse" not in metrics
         assert "top_5_r2" not in metrics
 
@@ -225,7 +222,6 @@ class TestTabularModel:
         assert "r2" in run.data.metrics
         assert "rmse" in run.data.metrics
         for n in (50, 100, 200):
-            assert run.data.metrics[f"top_{n}_n"] == 2
             assert f"top_{n}_r2" in run.data.metrics
             assert f"top_{n}_rmse" in run.data.metrics
 

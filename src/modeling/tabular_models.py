@@ -163,10 +163,9 @@ class TabularModel:
     def _log_performance_metrics(self, y: pd.Series, y_pred: np.ndarray, n: Optional[int] = None) -> None:
         """
         Logs R^2/RMSE for a slice of the split -- either the n rows with the highest actual
-        value (logged as "top_{n}_r2"/"top_{n}_rmse"/"top_{n}_n"), or, if n is None, the
-        entire split with no restriction (logged as plain "r2"/"rmse", matching what
-        pipeline.score()/mean_squared_error would give directly). Must be called inside an
-        active mlflow run.
+        value (logged as "top_{n}_r2"/"top_{n}_rmse"), or, if n is None, the entire split
+        with no restriction (logged as plain "r2"/"rmse", matching what pipeline.score()/
+        mean_squared_error would give directly). Must be called inside an active mlflow run.
 
         Args:
             y: True target values for the split being scored.
