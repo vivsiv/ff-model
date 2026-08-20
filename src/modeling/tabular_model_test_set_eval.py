@@ -1,13 +1,13 @@
-import ast
 import logging
 import argparse
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, List, Optional
 
 import pandas as pd
 import mlflow
 from sklearn.pipeline import Pipeline
 
+from src.modeling.data_prep import TabularModelDataPrep
 from src.modeling.tabular_models import TabularModel
 from src.modeling.utils import load_mlflow_model
 
@@ -21,14 +21,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+DATA_PREP_CONFIG_ARTIFACT_PATH = "data_prep_config.json"
+
 
 class TabularModelTestSetEvaluator:
     """
     Loads a trained (and registered) tabular model from mlflow and scores it against its test set.
 
-    The train/eval/test split is fully determined by the params: excluded_features,
-    eval_data_years, test_data_years, and num_training_seasons (all of which must be recoverable from mlflow)
-    and TabularModel's CLI (main()).
+    The train/eval/test split is fully determined by the TabularModelDataPrep config logged
+    (as a "data_prep_config.json" artifact) on the model's training run -- see
+    TabularModel.setup_mlflow.
 
     Caveat: this assumes gold_dir/{target}__training_set.csv hasn't changed (rows added/removed/
     changed or columns removed/changed) since the model was trained.
@@ -46,38 +48,28 @@ class TabularModelTestSetEvaluator:
         self.tracking_dir = tracking_dir
         self.target = target
 
-    def _parse_split_data_params(self, params: dict[str, str]) -> dict[str, Any]:
+    def _load_data_prep_config(self, source_run_id: str) -> dict[str, Any]:
         """
-        Casts the string-valued mlflow params logged by tabular_models.py's CLI (main()) back
-        to the types TabularModel.split_data expects.
+        Downloads and parses the data_prep_config.json artifact logged on source_run_id (see
+        TabularModel.setup_mlflow).
 
         Args:
-            params: mlflow.entities.Run.data.params from the model's training run
+            source_run_id: The training run to pull the config from.
 
         Returns:
-            dict with excluded_features (list[str]), eval_data_years (int), test_data_years
-            (int), num_training_seasons (Optional[int])
+            The logged TabularModelDataPrep config dict.
 
         Raises:
-            KeyError: If the run is missing one of the expected split params -- e.g. it was
-                created by fit_model()/param_search() directly rather than main()'s CLI.
+            RuntimeError: If the run has no data_prep_config.json artifact -- e.g. it was
+                created by fit_model()/param_search() directly, or by a version of
+                tabular_models.py predating this config-driven data prep.
         """
-        required = ["excluded_features", "eval_data_years", "test_data_years", "num_training_seasons"]
-        missing = [key for key in required if key not in params]
-        if missing:
-            raise KeyError(
-                f"Run is missing split param(s) {missing}; it must have been created by "
-                "tabular_models.py's CLI (main()), not fit_model()/param_search() directly"
-            )
-
-        num_training_seasons = params["num_training_seasons"]
-
-        return {
-            "excluded_features": ast.literal_eval(params["excluded_features"]),
-            "eval_data_years": int(params["eval_data_years"]),
-            "test_data_years": int(params["test_data_years"]),
-            "num_training_seasons": None if num_training_seasons == "all" else int(num_training_seasons),
-        }
+        try:
+            return mlflow.artifacts.load_dict(f"runs:/{source_run_id}/{DATA_PREP_CONFIG_ARTIFACT_PATH}")
+        except mlflow.exceptions.MlflowException as e:
+            raise RuntimeError(
+                f"Run {source_run_id} has no {DATA_PREP_CONFIG_ARTIFACT_PATH} artifact."
+            ) from e
 
     def _select_pipeline_features(self, pipeline: Pipeline, X: pd.DataFrame) -> pd.DataFrame:
         """
@@ -105,11 +97,17 @@ class TabularModelTestSetEvaluator:
 
         return X[required_features]
 
-    def evaluate(self, model_type: str, model_version: Optional[int] = None) -> pd.DataFrame:
+    def evaluate(
+        self,
+        model_type: str,
+        model_version: Optional[int] = None,
+        top_ns: Optional[List[int]] = [50, 100, 200],
+    ) -> pd.DataFrame:
         """
         Loads the model at {target}_{model_type}/versions/{model_version} (version is latest if model_version isn't
-        given), then rebuilds the exact train/eval/test split the model was trained on from params logged to mlflow,
-        and finally scores it against the test split.
+        given), then rebuilds the exact train/eval/test split the model was trained on from the
+        TabularModelDataPrep config logged on its training run, and finally scores it against
+        the test split.
 
         Logs a new run (tagged phase=test, alongside a source_run_id param pointing back at the
         training run) with the test R^2/RMSE and the full predictions-vs-actual CSV, in the same
@@ -118,31 +116,26 @@ class TabularModelTestSetEvaluator:
         Args:
             model_type: e.g. "random_forest"
             model_version: Specific registered version to evaluate. Defaults to the latest version.
+            top_ns: Passed through to TabularModel.eval_model -- for each n, also logs
+                top_{n}_r2/top_{n}_rmse (default: [50, 100, 200]). This is purely an
+                evaluation-time choice (unlike the data prep config) so it isn't reconstructed
+                from the source training run; pass an empty list/None to skip.
 
         Returns:
             DataFrame of test-set predictions vs actuals (see TabularModel.eval_model)
         """
         pipeline, mv = load_mlflow_model(self.target, model_type, model_version, self.tracking_dir)
         model_version, source_run_id = int(mv.version), mv.run_id
-        source_run_params = mlflow.get_run(source_run_id).data.params
-        split_params = self._parse_split_data_params(source_run_params)
+        config = self._load_data_prep_config(source_run_id)
 
         logger.info(
             f"Reconstructing split for {self.target}_{model_type} v{model_version} from "
-            f"source run {source_run_id}: {split_params}"
+            f"source run {source_run_id} using data prep config: {config}"
         )
 
-        model = TabularModel(
-            data_dir=self.data_dir,
-            tracking_dir=self.tracking_dir,
-            target=self.target,
-            excluded_features=split_params["excluded_features"],
-        )
-        data = model.split_data(
-            eval_data_years=split_params["eval_data_years"],
-            test_data_years=split_params["test_data_years"],
-            num_training_seasons=split_params["num_training_seasons"],
-        )
+        data_prep = TabularModelDataPrep(data_dir=self.data_dir, config=config)
+        model = TabularModel(data_dir=self.data_dir, tracking_dir=self.tracking_dir, data_prep=data_prep)
+        data = model.split_data()
         data["X_test"] = self._select_pipeline_features(pipeline, data["X_test"])
 
         run_id = model.setup_mlflow(
@@ -152,13 +145,13 @@ class TabularModelTestSetEvaluator:
             run_name=f"{model_type}_v{model_version}_test_{datetime.now().strftime('%Y%m%d%H%M%S')}",
         )
 
-        return model.eval_model(pipeline, data, run_id, split="test")
+        return model.eval_model(pipeline, data, run_id, split="test", top_ns=top_ns)
 
 
 def main():
     parser = argparse.ArgumentParser(
         description="Scores an already-trained, registered model against the test split it was "
-                     "trained with, reconstructed from that model's logged split params"
+                     "trained with, reconstructed from that model's logged data prep config"
     )
     parser.add_argument(
         "--data-dir",

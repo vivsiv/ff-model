@@ -72,10 +72,10 @@ PHASE 2. Improve the first model [DONE]
 PHASE 3. Second Model (PPR POINTS PER GAME) [DONE]
 1. Create new per game target column (ppr_points_per_game), see how the existing feature set does predicting new target. [DONE]
 2. Add per game variants of existing features. [DONE]
-3. Train a new model with the per game features and improve as done in phase 2. [DEFERRED]
+3. Train a new model with the per game features and improve as done in phase 2. [IN PROGRESS]
 
 PHASE 4. Predictions & Rankings [IN PROGRESS]
-1. Add functionality to eval on the test set. [IN PROGRESS]
+1. Add functionality to eval on the test set. [DONE]
 2. Generate list of players and teams to predict for 2026.
 3. Generate rankings process based on current code.
 4. Re-evaluate rankings process

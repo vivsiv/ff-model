@@ -1,13 +1,31 @@
+import numpy as np
 import pandas as pd
 import os
 import pytest
 import shutil
 import tempfile
 import mlflow
+from unittest.mock import patch
+from sklearn.base import BaseEstimator, RegressorMixin
 from sklearn.linear_model import Ridge
 
+from src.modeling.data_prep import TabularModelDataPrep
 from src.modeling.tabular_models import TabularModel
 from src.processing.column_registry import get_identity_columns
+
+
+class _RecordingModel(BaseEstimator, RegressorMixin):
+    """Minimal fake estimator that just records the sample_weight it was fit with."""
+
+    def __init__(self):
+        self.received_sample_weight = None
+
+    def fit(self, X, y, sample_weight=None):
+        self.received_sample_weight = sample_weight
+        return self
+
+    def predict(self, X):
+        return np.zeros(len(X))
 
 
 class TestTabularModel:
@@ -33,146 +51,44 @@ class TestTabularModel:
         })
         training_data.to_csv(os.path.join(cls.gold_dir, "target_1__training_set.csv"), index=False)
 
-        cls.model = TabularModel(data_dir=cls.test_dir, tracking_dir=cls.tracking_dir, target="target_1")
+        cls.data_prep = TabularModelDataPrep(data_dir=cls.test_dir, config={"target": "target_1"})
+        cls.model = TabularModel(data_dir=cls.test_dir, tracking_dir=cls.tracking_dir, data_prep=cls.data_prep)
 
     @classmethod
     def teardown_class(cls):
         shutil.rmtree(cls.test_dir)
 
-    def test_initial_datasets(self):
-        model = TabularModel(data_dir=self.test_dir, tracking_dir=self.tracking_dir, target="target_1")
+    def test_init__wires_up_target_and_predictions_dir_from_data_prep(self):
+        model = TabularModel(data_dir=self.test_dir, tracking_dir=self.tracking_dir, data_prep=self.data_prep)
 
-        expected_features = pd.DataFrame({
-            'f1': [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
-            'f2': [100, 50, 0, 100, 50, 0, 100, 50, 0, 100],
-            'f3': [12, 0, 8, 12, 0, 8, 12, 0, 8, 12]
-        })
-        expected_target = pd.Series([10, 11, 12, 13, 14, 15, 16, 17, 18, 19], name="target")
-
-        assert model.features_df.equals(expected_features)
-        assert model.target_df.equals(expected_target)
-        assert list(model.identity_df.columns) == get_identity_columns("nflverse", "player_stats") + ["target_season"]
-        assert len(model.identity_df) == 10
         assert model.target == "target_1"
+        assert model.data_prep is self.data_prep
+        assert os.path.isdir(os.path.join(self.test_dir, "predictions"))
 
-    def test_initial_datasets__excludes_features_by_exact_match_and_prefix(self):
-        model = TabularModel(
-            data_dir=self.test_dir,
-            tracking_dir=self.tracking_dir,
-            target="target_1",
-            excluded_features=["f1", "f3"],
-        )
-
-        expected_features = pd.DataFrame({
-            'f2': [100, 50, 0, 100, 50, 0, 100, 50, 0, 100],
-        })
-
-        assert model.features_df.equals(expected_features)
-        assert model.feature_cols == ["f2"]
-
-    def test_initial_datasets__excludes_features_by_prefix_when_denoted_with_a_star(self):
-        model = TabularModel(
-            data_dir=self.test_dir,
-            tracking_dir=self.tracking_dir,
-            target="target_1",
-            excluded_features=["f*"],  # trailing "*" should catch f1, f2, and f3
-        )
-
-        assert model.feature_cols == []
-
-    def test_initial_datasets__does_not_treat_features_as_prefixes_without_a_star(self):
-        model = TabularModel(
-            data_dir=self.test_dir,
-            tracking_dir=self.tracking_dir,
-            target="target_1",
-            excluded_features=["f"],  # no trailing "*", so this shouldn't match f1/f2/f3
-        )
-
-        assert model.feature_cols == ["f1", "f2", "f3"]
-
-    def test_split_data__holds_out_most_recent_season_for_test_and_the_one_before_for_eval(self):
-        data = self.model.split_data(eval_data_years=1, test_data_years=1)
-
-        identity_col_count = len(get_identity_columns("nflverse", "player_stats")) + 1  # + target_season
-
-        assert data['X_train'].shape == (6, 3)
-        assert data['X_eval'].shape == (2, 3)
-        assert data['X_test'].shape == (2, 3)
-        assert data['y_train'].shape == (6,)
-        assert data['y_eval'].shape == (2,)
-        assert data['y_test'].shape == (2,)
-        assert data['identity_train'].shape == (6, identity_col_count)
-        assert data['identity_eval'].shape == (2, identity_col_count)
-        assert data['identity_test'].shape == (2, identity_col_count)
-
-        # test must be exactly the most recent season (2024), eval the one before it (2023),
-        # nothing older
-        assert set(data['identity_test']['target_season']) == {2024}
-        assert set(data['identity_eval']['target_season']) == {2023}
-        assert set(data['identity_train']['target_season']) == {2020, 2021, 2022}
-
-    def test_split_data__eval_data_years_controls_how_much_is_held_out(self):
-        data = self.model.split_data(eval_data_years=2, test_data_years=1)
-
-        assert data['X_train'].shape == (4, 3)
-        assert data['X_eval'].shape == (4, 3)
-        assert data['X_test'].shape == (2, 3)
-        assert set(data['identity_test']['target_season']) == {2024}
-        assert set(data['identity_eval']['target_season']) == {2022, 2023}
-        assert set(data['identity_train']['target_season']) == {2020, 2021}
-
-    def test_split_data__test_data_years_controls_how_much_is_held_out(self):
-        data = self.model.split_data(eval_data_years=1, test_data_years=2)
-
-        assert data['X_train'].shape == (4, 3)
-        assert data['X_eval'].shape == (2, 3)
-        assert data['X_test'].shape == (4, 3)
-        assert set(data['identity_test']['target_season']) == {2023, 2024}
-        assert set(data['identity_eval']['target_season']) == {2022}
-        assert set(data['identity_train']['target_season']) == {2020, 2021}
-
-    def test_split_data__uses_defaults_of_one_year_each(self):
+    def test_split_data__delegates_to_data_prep_split(self):
         data = self.model.split_data()
+        expected = self.data_prep.split()
 
-        assert set(data['identity_test']['target_season']) == {2024}
-        assert set(data['identity_eval']['target_season']) == {2023}
-        assert set(data['identity_train']['target_season']) == {2020, 2021, 2022}
+        pd.testing.assert_frame_equal(data["X_train"], expected["X_train"])
+        pd.testing.assert_series_equal(data["y_train"], expected["y_train"])
+        assert set(data["identity_test"]["target_season"]) == {2024}
 
-    def test_split_data__num_training_seasons_limits_training_to_most_recent_n_seasons(self):
-        data = self.model.split_data(eval_data_years=1, test_data_years=1, num_training_seasons=2)
+    def test_setup_mlflow__logs_data_prep_config_as_an_artifact(self):
+        run_id = self.model.setup_mlflow("ridge")
 
-        assert data['X_train'].shape == (4, 3)
-        assert set(data['identity_test']['target_season']) == {2024}
-        assert set(data['identity_eval']['target_season']) == {2023}
-        # only the 2 most recent training seasons (2021, 2022) are kept; 2020 is dropped
-        assert set(data['identity_train']['target_season']) == {2021, 2022}
+        logged_config = mlflow.artifacts.load_dict(f"runs:/{run_id}/data_prep_config.json")
+        assert logged_config == self.data_prep.config
 
-    def test_split_data__num_training_seasons_none_keeps_every_older_season(self):
-        data = self.model.split_data(eval_data_years=1, test_data_years=1, num_training_seasons=None)
+    def test_fit_model__passes_sample_weight_train_to_the_underlying_model(self):
+        data = self.model.split_data()
+        fake_model = _RecordingModel()
 
-        assert set(data['identity_train']['target_season']) == {2020, 2021, 2022}
+        with patch.object(self.model, "get_base_model", return_value=fake_model):
+            run_id = self.model.setup_mlflow("fake")
+            self.model.fit_model(data, "fake", run_id)
 
-    def test_split_data__raises_if_requested_seasons_exceed_available_seasons(self):
-        # 5 distinct seasons available (2020-2024); requesting 3 + 1 + 1 = 5 is fine...
-        self.model.split_data(eval_data_years=1, test_data_years=1, num_training_seasons=3)
-
-        # ...but 4 + 1 + 1 = 6 exceeds the 5 available
-        with pytest.raises(ValueError):
-            self.model.split_data(eval_data_years=1, test_data_years=1, num_training_seasons=4)
-
-    def test_split_data_is_deterministic(self):
-        data1 = self.model.split_data(eval_data_years=1, test_data_years=1)
-        data2 = self.model.split_data(eval_data_years=1, test_data_years=1)
-
-        pd.testing.assert_frame_equal(data1['X_train'], data2['X_train'])
-        pd.testing.assert_frame_equal(data1['X_eval'], data2['X_eval'])
-        pd.testing.assert_frame_equal(data1['X_test'], data2['X_test'])
-        pd.testing.assert_series_equal(data1['y_train'], data2['y_train'])
-        pd.testing.assert_series_equal(data1['y_eval'], data2['y_eval'])
-        pd.testing.assert_series_equal(data1['y_test'], data2['y_test'])
-        pd.testing.assert_frame_equal(data1['identity_train'], data2['identity_train'])
-        pd.testing.assert_frame_equal(data1['identity_eval'], data2['identity_eval'])
-        pd.testing.assert_frame_equal(data1['identity_test'], data2['identity_test'])
+        assert fake_model.received_sample_weight is not None
+        np.testing.assert_array_equal(fake_model.received_sample_weight, data["sample_weight_train"])
 
     def test_param_search__is_one_at_a_time_not_a_full_cartesian_grid(self):
         # 3 alpha values + 2 fit_intercept values = 5 runs, not the 3x2=6 a cartesian grid
@@ -188,10 +104,12 @@ class TestTabularModel:
         assert results["search_param"].value_counts().to_dict() == {"alpha": 3, "fit_intercept": 2}
         assert list(results["search_value"]) == [0.1, 1.0, 10.0, True, False]
         assert results["run_id"].nunique() == 5
-        # ridge has no oob score
-        assert results["oob_rmse"].isna().all()
         assert results["eval_rmse"].notna().all()
         assert results["eval_r2"].notna().all()
+        assert results["eval_top_100_rmse"].notna().all()
+        assert results["eval_top_100_r2"].notna().all()
+        assert results["eval_top_200_rmse"].notna().all()
+        assert results["eval_top_200_r2"].notna().all()
 
     def test_param_search__nests_child_runs_under_one_parent_run_per_search_key(self):
         data = self.model.split_data()
@@ -230,4 +148,91 @@ class TestTabularModel:
         for _, row in results.iterrows():
             run = mlflow.get_run(row["run_id"])
             assert run.data.params["fit_intercept"] == str(default_fit_intercept)
-            assert run.data.params["alpha"] == str(row["search_value"])
+
+    def test_log_performance_metrics__none_scores_the_whole_split_under_unprefixed_names(self):
+        y = pd.Series([1, 2, 3, 10, 20, 30])
+        y_pred = np.array([1.0, 2.0, 3.0, 8.0, 22.0, 33.0])
+
+        run_id = self.model.setup_mlflow("ridge")
+        with mlflow.start_run(run_id=run_id):
+            self.model._log_performance_metrics(y, y_pred, n=None)
+
+        metrics = mlflow.get_run(run_id).data.metrics
+        y_arr, y_pred_arr = np.asarray(y, dtype=float), y_pred
+        expected_rmse = np.sqrt(np.mean((y_arr - y_pred_arr) ** 2))
+        expected_r2 = 1 - np.sum((y_arr - y_pred_arr) ** 2) / np.sum((y_arr - y_arr.mean()) ** 2)
+
+        assert "n" not in metrics
+        assert metrics["rmse"] == pytest.approx(expected_rmse)
+        assert metrics["r2"] == pytest.approx(expected_r2)
+
+    def test_log_performance_metrics__restricts_r2_and_rmse_to_the_top_n_rows_by_actual(self):
+        # Perfect predictions for the bottom 3 (by actual), imperfect for the top 3 -- if
+        # top_3 didn't actually restrict to the top-3-by-actual rows, results would come out
+        # as a perfect 0 RMSE / 1 R^2.
+        y = pd.Series([1, 2, 3, 10, 20, 30])
+        y_pred = np.array([1.0, 2.0, 3.0, 8.0, 22.0, 33.0])
+
+        run_id = self.model.setup_mlflow("ridge")
+        with mlflow.start_run(run_id=run_id):
+            self.model._log_performance_metrics(y, y_pred, n=3)
+
+        metrics = mlflow.get_run(run_id).data.metrics
+
+        y_top, y_pred_top = np.array([10.0, 20.0, 30.0]), np.array([8.0, 22.0, 33.0])
+        expected_rmse = np.sqrt(np.mean((y_top - y_pred_top) ** 2))
+        expected_r2 = 1 - np.sum((y_top - y_pred_top) ** 2) / np.sum((y_top - y_top.mean()) ** 2)
+
+        assert metrics["top_3_rmse"] == pytest.approx(expected_rmse)
+        assert metrics["top_3_r2"] == pytest.approx(expected_r2)
+
+    def test_log_performance_metrics__caps_at_available_rows_when_fewer_than_n(self):
+        y = pd.Series([1, 2, 3, 10, 20, 30])
+        y_pred = np.array([1.0, 2.0, 3.0, 8.0, 22.0, 33.0])
+
+        run_id = self.model.setup_mlflow("ridge")
+        with mlflow.start_run(run_id=run_id):
+            self.model._log_performance_metrics(y, y_pred, n=100)
+
+        metrics = mlflow.get_run(run_id).data.metrics
+        assert "top_100_r2" in metrics
+        assert "top_100_rmse" in metrics
+
+    def test_log_performance_metrics__skips_r2_and_rmse_when_fewer_than_two_rows_available(self):
+        y = pd.Series([10])
+        y_pred = np.array([8.0])
+
+        run_id = self.model.setup_mlflow("ridge")
+        with mlflow.start_run(run_id=run_id):
+            self.model._log_performance_metrics(y, y_pred, n=5)
+
+        metrics = mlflow.get_run(run_id).data.metrics
+        assert "top_5_rmse" not in metrics
+        assert "top_5_r2" not in metrics
+
+    def test_eval_model__logs_top_n_and_whole_split_metrics_by_default(self):
+        # Eval split (target_season 2023) has targets [16, 17] -- fewer than 50/100/200, so
+        # all three cap at the full eval split size (2).
+        data = self.model.split_data()
+        run_id = self.model.setup_mlflow("ridge")
+        pipeline = self.model.fit_model(data, "ridge", run_id)
+        self.model.eval_model(pipeline, data, run_id)
+
+        run = mlflow.get_run(run_id)
+        assert "r2" in run.data.metrics
+        assert "rmse" in run.data.metrics
+        for n in (50, 100, 200):
+            assert f"top_{n}_r2" in run.data.metrics
+            assert f"top_{n}_rmse" in run.data.metrics
+
+    def test_eval_model__empty_top_ns_skips_top_n_metrics_entirely(self):
+        data = self.model.split_data()
+        run_id = self.model.setup_mlflow("ridge")
+        pipeline = self.model.fit_model(data, "ridge", run_id)
+        self.model.eval_model(pipeline, data, run_id, top_ns=[])
+
+        run = mlflow.get_run(run_id)
+        assert not any(key.startswith("top_") for key in run.data.metrics)
+        # whole-split r2/rmse are always logged regardless of top_ns
+        assert "r2" in run.data.metrics
+        assert "rmse" in run.data.metrics
