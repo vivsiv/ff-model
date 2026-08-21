@@ -200,17 +200,10 @@ def main():
         help="Top-level mlruns tracking/registry store directory, relative to the repo root (default: mlruns)"
     )
     parser.add_argument(
-        "--target",
+        "--registered-model",
         type=str,
-        default="fantasy_points_ppr",
-        help="Which target's registered model to load (default: fantasy_points_ppr)"
-    )
-    parser.add_argument(
-        "--model-type",
-        type=str,
-        default="random_forest",
-        help="Registered model type to load; must expose feature_importances_ (e.g. "
-             "random_forest, gradient_boosting -- not ridge/lasso/linear/svr) (default: random_forest)"
+        default=None,
+        help="The registered model to load."
     )
     parser.add_argument(
         "--model-version",
@@ -221,17 +214,17 @@ def main():
 
     args = parser.parse_args()
 
-    pipeline, mv = load_mlflow_model(args.target, args.model_type, args.model_version, args.tracking_dir)
+    pipeline, mv = load_mlflow_model(args.registered_model, args.model_version, args.tracking_dir)
     feature_importance_df = get_feature_importance(pipeline)
 
     output_dir = os.path.join(args.data_dir, "analysis")
     os.makedirs(output_dir, exist_ok=True)
 
     output_path = os.path.join(
-        output_dir, f"{args.target}_{args.model_type}_v{mv.version}_feature_importance.csv"
+        output_dir, f"{args.registered_model}_v{mv.version}_feature_importance.csv"
     )
     feature_importance_df.to_csv(output_path, index=False)
-    logger.info(f"Saved feature importance for {args.target}_{args.model_type} v{mv.version} to {output_path}")
+    logger.info(f"Saved feature importance for {args.registered_model} v{mv.version} to {output_path}")
 
 
 if __name__ == "__main__":

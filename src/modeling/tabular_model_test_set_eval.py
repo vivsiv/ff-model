@@ -1,3 +1,4 @@
+import os
 import logging
 import argparse
 from datetime import datetime
@@ -8,8 +9,7 @@ import mlflow
 from sklearn.pipeline import Pipeline
 
 from src.modeling.data_prep import TabularModelDataPrep
-from src.modeling.tabular_models import TabularModel
-from src.modeling.utils import load_mlflow_model
+from src.modeling.utils import load_mlflow_model, predict, score, set_mlflow_tracking_uri, setup_mlflow_run
 
 logging.basicConfig(
     level=logging.INFO,
@@ -26,32 +26,35 @@ DATA_PREP_CONFIG_ARTIFACT_PATH = "data_prep_config.json"
 
 class TabularModelTestSetEvaluator:
     """
-    Loads a trained (and registered) tabular model from mlflow and scores it against its test set.
+    Loads a trained tabular model from mlflow and scores it against its test set.
 
-    The train/eval/test split is fully determined by the TabularModelDataPrep config logged
-    (as a "data_prep_config.json" artifact) on the model's training run -- see
-    TabularModel.setup_mlflow.
-
-    Caveat: this assumes gold_dir/{target}__training_set.csv hasn't changed (rows added/removed/
-    changed or columns removed/changed) since the model was trained.
-    New feature columns are fine -- the model's feature_names_in_ params is used to extract the
-    exact set of features used to train the model.
+    Caveat: this assumes gold_dir/{target}__training_set.csv hasn't fundamentally changed
+    (rows added/removed/ changed or columns removed/changed) since the model was trained.
     """
 
     def __init__(
             self,
             data_dir: str,
             tracking_dir: str,
-            target: str = "fantasy_points_ppr",
+            registered_model: str,
+            model_version: Optional[int],
     ):
         self.data_dir = data_dir
         self.tracking_dir = tracking_dir
-        self.target = target
+        self.registered_model = registered_model
+
+        self.predictions_dir = os.path.join(data_dir, "predictions")
+        os.makedirs(self.predictions_dir, exist_ok=True)
+
+        self.pipeline, self.mv = load_mlflow_model(registered_model, model_version, self.tracking_dir)
+        self.model_version, self.source_run_id = int(self.mv.version), self.mv.run_id
+        self.config = self._load_data_prep_config(self.source_run_id)
+
+        self.data_prep = TabularModelDataPrep(data_dir=self.data_dir, config=self.config)
 
     def _load_data_prep_config(self, source_run_id: str) -> dict[str, Any]:
         """
-        Downloads and parses the data_prep_config.json artifact logged on source_run_id (see
-        TabularModel.setup_mlflow).
+        Downloads and parses the data_prep_config.json artifact logged on source_run_id.
 
         Args:
             source_run_id: The training run to pull the config from.
@@ -73,9 +76,7 @@ class TabularModelTestSetEvaluator:
 
     def _select_pipeline_features(self, pipeline: Pipeline, X: pd.DataFrame) -> pd.DataFrame:
         """
-        Restricts X to exactly the columns -- in the same order -- that pipeline was fit on
-        (per sklearn's own pipeline.feature_names_in_), rather than whatever the current gold
-        training set happens to contain.
+        Restricts X to exactly the columns -- in the same order -- the pipeline was fit on.
 
         Args:
             pipeline: The fit pipeline being evaluated.
@@ -99,53 +100,57 @@ class TabularModelTestSetEvaluator:
 
     def evaluate(
         self,
-        model_type: str,
-        model_version: Optional[int] = None,
         top_ns: Optional[List[int]] = [50, 100, 200],
     ) -> pd.DataFrame:
         """
-        Loads the model at {target}_{model_type}/versions/{model_version} (version is latest if model_version isn't
-        given), then rebuilds the exact train/eval/test split the model was trained on from the
-        TabularModelDataPrep config logged on its training run, and finally scores it against
-        the test split.
+        Loads a registered model @ version model_version (model_version is latest if not provided).
+        Rebuilds the exact train/eval/test split the model was trained on from its
+        data prep config, and finally scores it against the test set.
 
         Logs a new run (tagged phase=test, alongside a source_run_id param pointing back at the
         training run) with the test R^2/RMSE and the full predictions-vs-actual CSV, in the same
-        {target}_tabular mlflow experiment as the model's training/eval runs.
+        mlflow experiment as the model's training/eval runs (found by looking up which
+        experiment source_run_id itself lives in, rather than recomputing the name).
 
         Args:
-            model_type: e.g. "random_forest"
-            model_version: Specific registered version to evaluate. Defaults to the latest version.
-            top_ns: Passed through to TabularModel.eval_model -- for each n, also logs
-                top_{n}_r2/top_{n}_rmse (default: [50, 100, 200]). This is purely an
-                evaluation-time choice (unlike the data prep config) so it isn't reconstructed
-                from the source training run; pass an empty list/None to skip.
+            top_ns: For each n, also logs top_{n}_r2/top_{n}_rmse (default: [50, 100, 200]).
 
         Returns:
-            DataFrame of test-set predictions vs actuals (see TabularModel.eval_model)
+            DataFrame of test-set predictions vs actuals (see predict())
         """
-        pipeline, mv = load_mlflow_model(self.target, model_type, model_version, self.tracking_dir)
-        model_version, source_run_id = int(mv.version), mv.run_id
-        config = self._load_data_prep_config(source_run_id)
+        data = self.data_prep.split()
+        X_test = self._select_pipeline_features(self.pipeline, data["X_test"])
 
-        logger.info(
-            f"Reconstructing split for {self.target}_{model_type} v{model_version} from "
-            f"source run {source_run_id} using data prep config: {config}"
+        set_mlflow_tracking_uri(self.tracking_dir)
+        source_experiment_id = mlflow.get_run(self.source_run_id).info.experiment_id
+        experiment_name = mlflow.get_experiment(source_experiment_id).name
+
+        run_id = setup_mlflow_run(
+            experiment_name=experiment_name,
+            run_name=f"{self.registered_model}_v{self.model_version}_test_{datetime.now().strftime('%Y%m%d%H%M%S')}",
+            tracking_dir=self.tracking_dir,
+            tags={"phase": "test"},
+            params={"source_run_id": self.source_run_id, "model_version": self.model_version},
+        )
+        mlflow.log_dict(self.config, "data_prep_config.json", run_id=run_id)
+
+        csv_path = os.path.join(
+            self.predictions_dir, f"{self.registered_model}_v{self.model_version}_test_predictions_{run_id}.csv"
         )
 
-        data_prep = TabularModelDataPrep(data_dir=self.data_dir, config=config)
-        model = TabularModel(data_dir=self.data_dir, tracking_dir=self.tracking_dir, data_prep=data_prep)
-        data = model.split_data()
-        data["X_test"] = self._select_pipeline_features(pipeline, data["X_test"])
-
-        run_id = model.setup_mlflow(
-            model_type,
-            extra_params={"source_run_id": source_run_id, "model_version": model_version},
-            extra_tags={"phase": "test"},
-            run_name=f"{model_type}_v{model_version}_test_{datetime.now().strftime('%Y%m%d%H%M%S')}",
+        preds_df = predict(
+            pipeline=self.pipeline,
+            X=X_test,
+            identity=data["identity_test"],
+            target=self.data_prep.target,
+            run_id=run_id,
+            csv_path=csv_path,
+            artifact_path="test_predictions",
+            y=data["y_test"],
         )
+        score(preds_df, run_id, top_ns=top_ns)
 
-        return model.eval_model(pipeline, data, run_id, split="test", top_ns=top_ns)
+        return preds_df
 
 
 def main():
@@ -167,17 +172,10 @@ def main():
              "--data-dir, relative to the repo root (default: mlruns)"
     )
     parser.add_argument(
-        "--target",
+        "--registered-model",
         type=str,
-        default="fantasy_points_ppr",
-        help="Which target's training set/registered model to use (default: fantasy_points_ppr)"
-    )
-    parser.add_argument(
-        "--model-type",
-        type=str,
-        default="random_forest",
-        help="Registered model type to evaluate, one of: ridge, lasso, random_forest, svr, "
-             "gradient_boosting, linear (default: random_forest)"
+        required=True,
+        help="Name of the model as registered in mlflow to evaluate."
     )
     parser.add_argument(
         "--model-version",
@@ -188,8 +186,12 @@ def main():
 
     args = parser.parse_args()
 
-    evaluator = TabularModelTestSetEvaluator(data_dir=args.data_dir, tracking_dir=args.tracking_dir, target=args.target)
-    test_preds_df = evaluator.evaluate(model_type=args.model_type, model_version=args.model_version)
+    evaluator = TabularModelTestSetEvaluator(
+        data_dir=args.data_dir,
+        tracking_dir=args.tracking_dir,
+        registered_model=args.registered_model,
+        model_version=args.model_version)
+    test_preds_df = evaluator.evaluate()
 
     print(test_preds_df)
 

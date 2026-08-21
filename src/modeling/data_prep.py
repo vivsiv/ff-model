@@ -29,6 +29,9 @@ class TabularModelDataPrep:
 
     Config schema (see configs/*.yaml for real examples):
         target: <str> e.g. "ppr_points_per_game", "fantasy_points_ppr"
+        positions: optional -- list[str] of "position" values (e.g. ["RB"], ["WR", "TE"]) to
+            restrict the training data to. Omit entirely (or leave empty) to keep every
+            position, i.e. train the general model.
         split:
             eval_data_years: <int, default 1>
             test_data_years: <int, default 1>
@@ -58,8 +61,11 @@ class TabularModelDataPrep:
         self.gold_data_dir = os.path.join(data_dir, "gold")
         self.config = config
         self.target = config["target"]
+        self.positions = config.get("positions") or None
 
         self.training_data = self._load_data()
+        if self.positions:
+            self.training_data = self._filter_positions(self.training_data, self.positions)
 
         self.identity_cols = get_identity_columns("nflverse", "player_stats") + ["target_season"]
         self.feature_cols = self._resolve_feature_columns()
@@ -90,6 +96,23 @@ class TabularModelDataPrep:
         logger.info(f"Loaded data: {len(data)} rows")
 
         return data
+
+    @staticmethod
+    def _filter_positions(data: pd.DataFrame, positions: List[str]) -> pd.DataFrame:
+        """
+        Restricts data to rows whose "position" column is one of positions.
+
+        Args:
+            data: Training data to filter.
+            positions: Position values to keep, e.g. ["RB"] or ["WR", "TE"].
+
+        Returns:
+            Filtered copy of data.
+        """
+        filtered = data[data["position"].isin(positions)]
+        logger.info(f"Filtered to positions {positions}: {len(filtered)} rows (from {len(data)})")
+
+        return filtered
 
     @staticmethod
     def _matches_any(col: str, patterns: List[str]) -> bool:

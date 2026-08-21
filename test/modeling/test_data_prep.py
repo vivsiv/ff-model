@@ -24,6 +24,19 @@ def _build_training_data() -> pd.DataFrame:
     })
 
 
+def _build_multi_position_training_data() -> pd.DataFrame:
+    n = 6
+    identity_data = {col: [f"{col}_{i}" for i in range(n)] for col in get_identity_columns("nflverse", "player_stats")}
+    identity_data["position"] = ["QB", "RB", "RB", "WR", "WR", "TE"]
+    identity_data["target_season"] = [2020, 2020, 2021, 2021, 2022, 2022]
+
+    return pd.DataFrame({
+        **identity_data,
+        "f1": [1, 2, 3, 4, 5, 6],
+        "target": [10, 11, 12, 13, 14, 15],
+    })
+
+
 class TestTabularModelDataPrep:
     @classmethod
     def setup_class(cls):
@@ -41,10 +54,47 @@ class TestTabularModelDataPrep:
     def _build(self, config: dict) -> TabularModelDataPrep:
         return TabularModelDataPrep(data_dir=self.test_dir, config={"target": "target_1", **config})
 
+    def _build_with_positions(self, config: dict) -> TabularModelDataPrep:
+        target = "target_positions"
+        _build_multi_position_training_data().to_csv(
+            os.path.join(self.gold_dir, f"{target}__training_set.csv"), index=False
+        )
+        return TabularModelDataPrep(data_dir=self.test_dir, config={"target": target, **config})
+
     def test_init__loads_target_season_gold_training_set(self):
         prep = self._build({})
         assert len(prep.training_data) == 10
         assert prep.target == "target_1"
+
+    def test_init__keeps_every_position_when_positions_omitted(self):
+        prep = self._build_with_positions({})
+        assert len(prep.training_data) == 6
+        assert prep.positions is None
+
+    def test_init__filters_to_a_single_configured_position(self):
+        prep = self._build_with_positions({"positions": ["RB"]})
+        assert len(prep.training_data) == 2
+        assert set(prep.identity_df["position"]) == {"RB"}
+
+    def test_init__filters_to_multiple_configured_positions(self):
+        prep = self._build_with_positions({"positions": ["RB", "WR"]})
+        assert len(prep.training_data) == 4
+        assert set(prep.identity_df["position"]) == {"RB", "WR"}
+
+    def test_init__empty_positions_list_is_treated_like_omitted(self):
+        prep = self._build_with_positions({"positions": []})
+        assert len(prep.training_data) == 6
+        assert prep.positions is None
+
+    def test_split__respects_position_filtering(self):
+        prep = self._build_with_positions({
+            "positions": ["WR"],
+            "split": {"eval_data_years": 1, "test_data_years": 0},
+        })
+        data = prep.split()
+
+        assert set(data["identity_train"]["position"]) == {"WR"}
+        assert set(data["identity_eval"]["position"]) == {"WR"}
 
     def test_init__sample_weights_defaults_to_uniform_one_when_omitted(self):
         prep = TabularModelDataPrep(data_dir=self.test_dir, config={"target": "target_1"})
