@@ -8,8 +8,6 @@ from typing import Any, List, Optional
 import pandas as pd
 import mlflow
 from mlflow.models import infer_signature
-import numpy as np
-from sklearn.metrics import mean_squared_error
 from sklearn.preprocessing import StandardScaler
 from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
@@ -19,7 +17,7 @@ from sklearn.svm import SVR
 from sklearn.ensemble import GradientBoostingRegressor
 
 from src.modeling.data_prep import TabularModelDataPrep
-from src.modeling.utils import setup_mlflow_run
+from src.modeling.utils import predict, score, setup_mlflow_run
 
 logging.basicConfig(
     level=logging.INFO,
@@ -33,40 +31,39 @@ logger = logging.getLogger(__name__)
 
 
 class TabularModel:
-    """Fits/evaluates/logs a Tabular model."""
+    """Fits a Tabular model to data, gathers performance on the eval set, and logs it to mlflow."""
 
     def __init__(
             self,
             data_dir: str,
             tracking_dir: str,
             data_prep: TabularModelDataPrep,
+            model_type: str,
     ):
         """
         Args:
-            data_dir: Parent directory for the gold/predictions layers
+            data_dir: Parent directory in which to log model artifacts
             tracking_dir: mlflow tracking/registry store directory
             data_prep: Prepared data source -- see TabularModelDataPrep.
+            model_type: Type of model being fit (i.e.) random forest
         """
         self.data_dir = data_dir
         self.tracking_dir = tracking_dir
-        self.data_prep = data_prep
-        self.target = data_prep.target
-
         self.predictions_dir = os.path.join(data_dir, "predictions")
         os.makedirs(self.predictions_dir, exist_ok=True)
 
-    def split_data(self) -> dict[str, pd.DataFrame]:
-        """Thin wrapper around self.data_prep.split() -- see TabularModelDataPrep.split."""
-        return self.data_prep.split()
+        self.data_prep = data_prep
+        self.data = data_prep.split()
+        self.target = data_prep.target
 
-    def create_pipeline(self, model: Any = LinearRegression()) -> Pipeline:
-        pipeline = Pipeline([
-            ('imputer', SimpleImputer(strategy='mean', add_indicator=True)),
-            ('scaler', StandardScaler()),
-            ('model', model)
-        ])
+        self.model_type = model_type
 
-        return pipeline
+    @property
+    def base_model_name(self) -> str:
+        positions = [pos.lower() for pos in self.data_prep.positions] if self.data_prep.positions else None
+        suffix = f"_{'_'.join(sorted(positions))}" if positions else ""
+
+        return f"{self.target}{suffix}"
 
     def get_base_model(self, model_type: str) -> Any:
         base_models = {
@@ -79,36 +76,40 @@ class TabularModel:
         }
         return base_models[model_type]
 
+    def create_pipeline(self, model: Any = LinearRegression()) -> Pipeline:
+        pipeline = Pipeline([
+            ('imputer', SimpleImputer(strategy='mean', add_indicator=True)),
+            ('scaler', StandardScaler()),
+            ('model', model)
+        ])
+
+        return pipeline
+
     def setup_mlflow(
         self,
-        model_type: str,
-        extra_params: Optional[dict] = None,
-        extra_tags: Optional[dict] = None,
         run_name: Optional[str] = None,
         parent_run_id: Optional[str] = None,
+        extra_params: Optional[dict] = None,
+        extra_tags: Optional[dict] = None,
     ) -> str:
         """
-        Sets the active mlflow experiment to {target}_tabular and creates a new run for
-        it, tagged with model_type and phase=train. Logs self.data_prep.config as a
-        "data_prep_config.json" artifact.
+        Sets the active mlflow experiment and creates a new run for it, tagged with model_type and phase=train.
+        Logs self.data_prep.config as a "data_prep_config.json" artifact.
 
         Args:
-            model_type: e.g. "random_forest"
-            extra_params: Optional params to log on the run alongside the model's own
-                hyperparameters.
-            extra_tags: Optional tags merged over the default {"model_type": model_type,
-                "phase": "train"}.
             run_name: Overrides the default "{model_type}_{timestamp}" run name.
             parent_run_id: If given, nests the new run under parent_run_id.
+            extra_params: Optional params to log on the run alongside the model's own hyperparameters.
+            extra_tags: Optional tags over the default {"model_type": model_type, "phase": "train"}.
 
         Returns:
-            run_id - The mlflow run to tie training and eval to.
+            run_id - The resulting mlflow run id.
         """
-        run_name = run_name or f"{model_type}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
-        tags = {"model_type": model_type, "phase": "train", **(extra_tags or {})}
+        run_name = run_name or f"{self.model_type}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+        tags = {"model_type": self.model_type, "phase": "train", **(extra_tags or {})}
 
         run_id = setup_mlflow_run(
-            experiment_name=f"{self.target}_tabular",
+            experiment_name=f"{self.base_model_name}_tabular",
             run_name=run_name,
             tracking_dir=self.tracking_dir,
             tags=tags,
@@ -119,16 +120,16 @@ class TabularModel:
 
         return run_id
 
-    def fit_model(self, data: dict[str, pd.DataFrame], model_type: str, run_id: str, params: Optional[dict] = None) -> Pipeline:
+    def fit_model(
+        self,
+        run_id: str,
+        params: Optional[dict] = None) -> Pipeline:
         """
         Gets the base model for model_type, applies params (sklearn defaults if none given),
         fits it on the training split (weighted by data["sample_weight_train"], if present),
         and registers it to mlflow under run_id.
 
         Args:
-            data: Output of split_data
-            model_type: One of ridge, lasso, random_forest, svr, hist_gradient_boosting,
-                linear_regression
             run_id: mlflow run_id from setup_mlflow, so the fit params/model artifact land in
                 the same run eval_model logs its metrics/predictions into
             params: Hyperparameters to set on the base model before fitting.
@@ -137,127 +138,69 @@ class TabularModel:
         Returns:
             The fit pipeline
         """
-        base_model = self.get_base_model(model_type)
+        base_model = self.get_base_model(self.model_type)
         base_model.set_params(**(params or {}))
 
         pipeline = self.create_pipeline(base_model)
 
+        X_train = self.data["X_train"]
+        y_train = self.data["y_train"]
+
         fit_params = {}
-        if "sample_weight_train" in data:
-            fit_params["model__sample_weight"] = data["sample_weight_train"]
-        pipeline.fit(data["X_train"], data["y_train"], **fit_params)
+        if "sample_weight_train" in self.data:
+            fit_params["model__sample_weight"] = self.data["sample_weight_train"]
+        pipeline.fit(X_train, y_train, **fit_params)
 
         with mlflow.start_run(run_id=run_id):
             mlflow.log_params(base_model.get_params())
 
-            signature = infer_signature(data["X_train"], data["y_train"])
+            signature = infer_signature(X_train, y_train)
             mlflow.sklearn.log_model(
                 sk_model=pipeline,
-                registered_model_name=f"{self.target}_{model_type}",
-                name=model_type,
-                input_example=data["X_train"],
+                registered_model_name=f"{self.base_model_name}_{self.model_type}",
+                name=self.model_type,
+                input_example=self.data["X_train"],
                 signature=signature)
 
         return pipeline
 
-    def _log_performance_metrics(self, y: pd.Series, y_pred: np.ndarray, n: Optional[int] = None) -> None:
-        """
-        Logs R^2/RMSE for a slice of the split -- either the n rows with the highest actual
-        value (logged as "top_{n}_r2"/"top_{n}_rmse"), or, if n is None, the entire split
-        with no restriction (logged as plain "r2"/"rmse", matching what pipeline.score()/
-        mean_squared_error would give directly). Must be called inside an active mlflow run.
-
-        Args:
-            y: True target values for the split being scored.
-            y_pred: Predicted values, aligned positionally with y (as returned by
-                pipeline.predict).
-            n: Number of rows (highest actual value first) to restrict to. None (default)
-                scores the entire split, logged under the unprefixed "r2"/"rmse" names. If
-                the split has fewer than n rows, every row is used.
-        """
-        y_values = np.asarray(y)
-
-        if n is None:
-            idx = np.arange(len(y_values))
-            prefix, label = "", "Overall"
-        else:
-            idx = np.argsort(y_values)[::-1][:n]
-            prefix, label = f"top_{n}_", f"Top {n}"
-
-        if len(idx) < 2:
-            logger.warning(
-                f"Only {len(idx)} row(s) available for {label}; skipping {prefix}r2/"
-                f"{prefix}rmse (need at least 2 to compute a meaningful R^2)"
-            )
-            return
-
-        y_slice, y_pred_slice = y_values[idx], y_pred[idx]
-
-        rmse = np.sqrt(mean_squared_error(y_slice, y_pred_slice))
-        print(f"{label} RMSE: {rmse} (n={len(idx)})")
-        mlflow.log_metric(f"{prefix}rmse", rmse)
-
-        ss_tot = ((y_slice - y_slice.mean()) ** 2).sum()
-        if ss_tot > 0:
-            r2 = 1 - ((y_slice - y_pred_slice) ** 2).sum() / ss_tot
-            print(f"{label} R^2: {r2}")
-            mlflow.log_metric(f"{prefix}r2", r2)
-        else:
-            logger.warning(f"actual has zero variance for {label}; skipping {prefix}r2")
-
     def eval_model(
         self,
         pipeline: Pipeline,
-        data: dict[str, pd.DataFrame],
         run_id: str,
         split: str = "eval",
         top_ns: Optional[List[int]] = [50, 100, 200],
     ) -> pd.DataFrame:
         """
-        Scores a fitted pipeline against a held-out split. Logs whole-split R^2/RMSE, plus
-        (for each n in top_ns) R^2/RMSE restricted to the n rows with the highest actual value
-        (see _log_performance_metrics). Also logs the full dataset of predictions vs actual
-        for the split as a CSV artifact.
+        Scores a fitted pipeline against a held-out evaluation data set via predict()/score()
+        -- see their docstrings for what gets logged/returned.
 
         Args:
             pipeline: A fit pipeline.
-            data: Output of split_data
-            run_id: The mlflow run_id to log metrics/artifacts into. When called right after
-                fit_model, pass the same run_id so eval metrics land alongside the fit
-                params/model artifact.
-            split: Which split of data to score against, "eval" or "test" (default: "eval").
-                Selects data["X_{split}"]/data["y_{split}"]/data["identity_{split}"], and
-                namespaces the predictions CSV filename/artifact path with the split name.
-            top_ns: For each n in this list, also logs "top_{n}_r2"/"top_{n}_rmse" (default:
-                [50, 100, 200]). Pass an empty list/None to only log whole-split r2/rmse.
+            run_id: The mlflow run_id to log metrics/artifacts to.
+            split: Which evaluation dataset to score against, "eval" or "test" (default: "eval").
+            top_ns: For each n in this list, log "top_{n}_r2"/"top_{n}_rmse" (default: [50, 100, 200]).
         """
-        X, y, identity = data[f"X_{split}"], data[f"y_{split}"], data[f"identity_{split}"]
+        csv_path = os.path.join(
+            self.predictions_dir, f"{self.base_model_name}_{self.model_type}_{split}_predictions_{run_id}.csv"
+        )
 
-        y_pred = pipeline.predict(X)
-
-        preds_df = identity.copy()
-        preds_df["predictions"] = y_pred
-        preds_df["actual"] = y
-        preds_df = preds_df.sort_values(by=["target_season", "predictions", "actual"], ascending=False)
-
-        with mlflow.start_run(run_id=run_id):
-            for n in [None, *(top_ns or [])]:
-                self._log_performance_metrics(y, y_pred, n)
-
-            output_df = preds_df.rename(columns={"predictions": self.target})
-            output_df[self.target] = output_df[self.target].round(2)
-
-            csv_path = os.path.join(self.predictions_dir, f"{self.target}_{split}_predictions_{run_id}.csv")
-            output_df[["player_display_name", "target_season", self.target, "actual"]].to_csv(csv_path, index=False)
-
-            mlflow.log_artifact(csv_path, f"{split}_predictions")
+        preds_df = predict(
+            pipeline=pipeline,
+            X=self.data[f"X_{split}"],
+            identity=self.data[f"identity_{split}"],
+            target=self.target,
+            run_id=run_id,
+            csv_path=csv_path,
+            artifact_path=f"{split}_predictions",
+            y=self.data[f"y_{split}"],
+        )
+        score(preds_df, run_id, top_ns=top_ns)
 
         return preds_df
 
     def param_search(
         self,
-        data: dict[str, pd.DataFrame],
-        model_type: str,
         param_grid: dict[str, list],
     ) -> pd.DataFrame:
         """
@@ -266,41 +209,33 @@ class TabularModel:
         Creates one parent mlflow run per key and nests one child run per (key, value) combo.
 
         Args:
-            data: Output of split_data. The same split is reused for every candidate so
-                results are directly comparable.
-            model_type: One of ridge, lasso, random_forest, svr, hist_gradient_boosting,
-                linear_regression
             param_grid: e.g. {"n_estimators": [100, 200, 300], "min_samples_split": [2, 4, 8]}
                 -- yields 6 total child runs (3 + 3), not a 3x3=9 cartesian grid.
 
         Returns:
             DataFrame with one row per (param, value) combo with columns: search_param,
-            search_value, run_id, eval_rmse, eval_r2, and eval_top_{n}_rmse/eval_top_{n}_r2
-            for whichever top_ns eval_model logged (its own default is used since top_ns
-            isn't threaded through here).
+            search_value, run_id, eval_rmse, eval_r2, and eval_top_{n}_rmse/eval_top_{n}_r2.
         """
         results = []
 
         for key, values in param_grid.items():
             parent_run_id = self.setup_mlflow(
-                model_type,
+                run_name=f"{self.model_type}_{key}_{datetime.now().strftime('%Y%m%d%H%M%S')}",
                 extra_params={"search_param": key, "search_values": values},
                 extra_tags={"phase": f"{key}_search"},
-                run_name=f"{model_type}_{key}_{datetime.now().strftime('%Y%m%d%H%M%S')}",
             )
 
             for value in values:
                 params = {key: value}
                 child_run_id = self.setup_mlflow(
-                    model_type,
+                    run_name=f"{self.model_type}_{key}_{value}_{datetime.now().strftime('%Y%m%d%H%M%S')}",
+                    parent_run_id=parent_run_id,
                     extra_params={"search_param": key, "search_value": value},
                     extra_tags={"phase": f"{key}_{value}_child"},
-                    run_name=f"{model_type}_{key}_{value}_{datetime.now().strftime('%Y%m%d%H%M%S')}",
-                    parent_run_id=parent_run_id,
                 )
 
-                pipeline = self.fit_model(data, model_type, child_run_id, params=params)
-                self.eval_model(pipeline, data, child_run_id)
+                pipeline = self.fit_model(run_id=child_run_id, params=params)
+                self.eval_model(pipeline, child_run_id)
 
                 metrics = mlflow.get_run(child_run_id).data.metrics
                 result = {
@@ -329,7 +264,7 @@ def main():
         "--data-dir",
         type=str,
         default="data",
-        help="Parent directory for the gold/predictions layers, relative to the repo root (default: data)"
+        help="Parent directory for model artifacts, relative to the repo root (default: data)"
     )
     parser.add_argument(
         "--tracking-dir",
@@ -364,16 +299,14 @@ def main():
     args = parser.parse_args()
 
     data_prep = TabularModelDataPrep.from_config_file(data_dir=args.data_dir, config_path=args.config)
-    model = TabularModel(data_dir=args.data_dir, tracking_dir=args.tracking_dir, data_prep=data_prep)
-    data = model.split_data()
+    model = TabularModel(data_dir=args.data_dir, tracking_dir=args.tracking_dir, data_prep=data_prep, model_type=args.model_type)
 
     if args.param_grid:
-        param_grid = json.loads(args.param_grid)
-        model.param_search(data, args.model_type, param_grid)
+        model.param_search(json.loads(args.param_grid))
     else:
-        run_id = model.setup_mlflow(args.model_type, extra_params={"config_path": args.config})
-        pipeline = model.fit_model(data, args.model_type, run_id)
-        model.eval_model(pipeline, data, run_id)
+        run_id = model.setup_mlflow(extra_params={"config_path": args.config})
+        pipeline = model.fit_model(run_id=run_id)
+        model.eval_model(pipeline=pipeline, run_id=run_id)
 
 
 if __name__ == "__main__":

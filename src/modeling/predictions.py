@@ -4,10 +4,9 @@ import argparse
 from typing import Tuple
 
 import pandas as pd
-import mlflow
 from sklearn.pipeline import Pipeline
 
-from src.modeling.utils import load_mlflow_model, setup_mlflow_run
+from src.modeling.utils import load_mlflow_model, predict, setup_mlflow_run
 from src.processing.column_registry import get_identity_columns
 from src.processing.gold import TARGET_COL
 
@@ -42,7 +41,9 @@ class PredictionReporter:
         os.makedirs(self.predictions_dir, exist_ok=True)
 
     def load_model(self, model_type: str, model_version: int = None) -> Tuple[Pipeline, int]:
-        pipeline, mv = load_mlflow_model(self.target, model_type, model_version, tracking_dir=self.tracking_dir)
+        pipeline, mv = load_mlflow_model(
+            f"{self.target}_{model_type}", model_version, tracking_dir=self.tracking_dir
+        )
         return pipeline, int(mv.version)
 
     def load_prediction_data(self) -> Tuple[pd.DataFrame, pd.DataFrame]:
@@ -65,29 +66,25 @@ class PredictionReporter:
         identity_df, features_df = self.load_prediction_data()
         pipeline, model_version = self.load_model(model_type, model_version)
 
-        y_pred = pipeline.predict(features_df)
-
-        preds_df = identity_df.copy()
-        preds_df["predictions"] = y_pred
-        preds_df.sort_values(by="predictions", ascending=False, inplace=True)
-        preds_df.rename(columns={"predictions": self.target}, inplace=True)
-        preds_df[self.target] = preds_df[self.target].round(2)
-
-        csv_path = os.path.join(self.predictions_dir, f"{self.target}_{model_type}_v{model_version}_predictions.csv")
-        preds_df.to_csv(csv_path, index=False)
-
         run_id = setup_mlflow_run(
             experiment_name=f"{self.target}_tabular",
             run_name=f"{model_type}_v{model_version}_predictions",
             tracking_dir=self.tracking_dir,
             tags={"model_type": model_type, "phase": "predict"},
+            params={"model_name": f"{self.target}_{model_type}_v{model_version}"},
         )
 
-        with mlflow.start_run(run_id=run_id):
-            mlflow.log_param("model_name", f"{self.target}_{model_type}_v{model_version}")
-            mlflow.log_artifact(csv_path, "predictions")
+        csv_path = os.path.join(self.predictions_dir, f"{self.target}_{model_type}_v{model_version}_predictions.csv")
 
-        return preds_df
+        return predict(
+            pipeline=pipeline,
+            X=features_df,
+            identity=identity_df,
+            target=self.target,
+            run_id=run_id,
+            csv_path=csv_path,
+            artifact_path="predictions",
+        )
 
 
 def main():
