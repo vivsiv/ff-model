@@ -16,8 +16,9 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.svm import SVR
 from sklearn.ensemble import GradientBoostingRegressor
 
-from src.modeling.data_prep import TabularModelDataPrep
-from src.modeling.utils import predict, score, setup_mlflow_run
+from src.modeling.data_prep import DATA_PREP_CONFIG_ARTIFACT_PATH, TabularModelDataPrep
+from src.modeling.model_inference import ModelInference
+from src.modeling.utils import setup_mlflow_run
 
 logging.basicConfig(
     level=logging.INFO,
@@ -65,7 +66,7 @@ class TabularModel:
 
         return f"{self.target}{suffix}"
 
-    def get_base_model(self, model_type: str) -> Any:
+    def get_base_model(self) -> Any:
         base_models = {
             'ridge': Ridge(alpha=1000),
             'lasso': Lasso(), # Lasso not performant for ppr_ppg
@@ -74,9 +75,9 @@ class TabularModel:
             'gradient_boosting': GradientBoostingRegressor(n_estimators=100, min_samples_leaf=24),
             'linear': LinearRegression(),
         }
-        return base_models[model_type]
+        return base_models[self.model_type]
 
-    def create_pipeline(self, model: Any = LinearRegression()) -> Pipeline:
+    def create_pipeline(self, model: Any) -> Pipeline:
         pipeline = Pipeline([
             ('imputer', SimpleImputer(strategy='mean', add_indicator=True)),
             ('scaler', StandardScaler()),
@@ -116,7 +117,7 @@ class TabularModel:
             params=extra_params,
             parent_run_id=parent_run_id,
         )
-        mlflow.log_dict(self.data_prep.config, "data_prep_config.json", run_id=run_id)
+        mlflow.log_dict(self.data_prep.config, DATA_PREP_CONFIG_ARTIFACT_PATH, run_id=run_id)
 
         return run_id
 
@@ -126,8 +127,8 @@ class TabularModel:
         params: Optional[dict] = None) -> Pipeline:
         """
         Gets the base model for model_type, applies params (sklearn defaults if none given),
-        fits it on the training split (weighted by data["sample_weight_train"], if present),
-        and registers it to mlflow under run_id.
+        fits it on the training split (weighted by data["sample_weight_train"]), and registers
+        it to mlflow under run_id.
 
         Args:
             run_id: mlflow run_id from setup_mlflow, so the fit params/model artifact land in
@@ -138,7 +139,7 @@ class TabularModel:
         Returns:
             The fit pipeline
         """
-        base_model = self.get_base_model(self.model_type)
+        base_model = self.get_base_model()
         base_model.set_params(**(params or {}))
 
         pipeline = self.create_pipeline(base_model)
@@ -146,10 +147,7 @@ class TabularModel:
         X_train = self.data["X_train"]
         y_train = self.data["y_train"]
 
-        fit_params = {}
-        if "sample_weight_train" in self.data:
-            fit_params["model__sample_weight"] = self.data["sample_weight_train"]
-        pipeline.fit(X_train, y_train, **fit_params)
+        pipeline.fit(X_train, y_train, model__sample_weight=self.data["sample_weight_train"])
 
         with mlflow.start_run(run_id=run_id):
             mlflow.log_params(base_model.get_params())
@@ -169,35 +167,32 @@ class TabularModel:
         pipeline: Pipeline,
         run_id: str,
         split: str = "eval",
-        top_ns: Optional[List[int]] = [50, 100, 200],
+        top_n_rows: Optional[List[int]] = None,
     ) -> pd.DataFrame:
         """
-        Scores a fitted pipeline against a held-out evaluation data set via predict()/score()
-        -- see their docstrings for what gets logged/returned.
+        Scores a fitted pipeline against a held-out evaluation data set via a ModelInference
+        built from the fit pipeline + self.data_prep (see ModelInference.evaluate's
+        docstring for what gets logged/returned).
 
         Args:
             pipeline: A fit pipeline.
             run_id: The mlflow run_id to log metrics/artifacts to.
             split: Which evaluation dataset to score against, "eval" or "test" (default: "eval").
-            top_ns: For each n in this list, log "top_{n}_r2"/"top_{n}_rmse" (default: [50, 100, 200]).
+            top_n_rows: For each n in this list, log "top_{n}_r2"/"top_{n}_rmse" for the top
+                n rows by target value. None (default) or [] both skip top-n metrics
+                entirely -- pass a list explicitly (e.g. [50, 100, 200]) if you want them.
         """
         csv_path = os.path.join(
             self.predictions_dir, f"{self.base_model_name}_{self.model_type}_{split}_predictions_{run_id}.csv"
         )
 
-        preds_df = predict(
-            pipeline=pipeline,
-            X=self.data[f"X_{split}"],
-            identity=self.data[f"identity_{split}"],
-            target=self.target,
+        inference = ModelInference.from_fit_pipeline(pipeline, self.data_prep)
+        return inference.evaluate(
+            dataset=split,
             run_id=run_id,
             csv_path=csv_path,
-            artifact_path=f"{split}_predictions",
-            y=self.data[f"y_{split}"],
+            top_n_rows=top_n_rows,
         )
-        score(preds_df, run_id, top_ns=top_ns)
-
-        return preds_df
 
     def param_search(
         self,
@@ -235,7 +230,7 @@ class TabularModel:
                 )
 
                 pipeline = self.fit_model(run_id=child_run_id, params=params)
-                self.eval_model(pipeline, child_run_id)
+                self.eval_model(pipeline, child_run_id, top_n_rows=[50, 100, 200])
 
                 metrics = mlflow.get_run(child_run_id).data.metrics
                 result = {
@@ -285,7 +280,7 @@ def main():
         "--model-type",
         type=str,
         default="random_forest",
-        help="Model type to fit, one of: ridge, lasso, random_forest, svr, hist_gradient_boosting, linear_regression (default: random_forest)"
+        help="Model type to fit, one of: ridge, lasso, random_forest, svr, gradient_boosting, linear (default: random_forest)"
     )
     parser.add_argument(
         "--param-grid",
@@ -294,6 +289,15 @@ def main():
         help="JSON dict of {param: [values]} for a one-at-a-time hyperparameter search, e.g. "
              '\'{"n_estimators": [100,200,300], "min_samples_split": [2,4,8]}\'. Iterates through each '
              "key independently, holding every other param at its sklearn default."
+    )
+    parser.add_argument(
+        "--top-n-rows",
+        type=int,
+        nargs="*",
+        default=[50, 100, 200],
+        help="Space-separated values to also log top_{n}_r2/top_{n}_rmse for the top n rows by target value. "
+             "e.g. --top-n-rows 50 100 200. Pass --top-n-rows with no values to skip top-n "
+             "metrics entirely. (default: [50, 100, 200])"
     )
 
     args = parser.parse_args()
@@ -306,7 +310,7 @@ def main():
     else:
         run_id = model.setup_mlflow(extra_params={"config_path": args.config})
         pipeline = model.fit_model(run_id=run_id)
-        model.eval_model(pipeline=pipeline, run_id=run_id)
+        model.eval_model(pipeline=pipeline, run_id=run_id, top_n_rows=args.top_n_rows)
 
 
 if __name__ == "__main__":

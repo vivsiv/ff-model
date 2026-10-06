@@ -25,6 +25,21 @@ def _build_training_data() -> pd.DataFrame:
     })
 
 
+def _build_prediction_data() -> pd.DataFrame:
+    n = 4
+    identity_data = {col: [f"{col}_{i}" for i in range(n)] for col in get_identity_columns("nflverse", "player_stats")}
+    identity_data["position"] = ["QB", "RB", "WR", "TE"]
+    identity_data["target_season"] = [2025, 2025, 2025, 2025]
+
+    return pd.DataFrame({
+        **identity_data,
+        "f1": [11, 12, 13, 14],
+        "f2": [1, 2, 3, 4],
+        "receiving_yards": [5, 6, 7, 8],
+        "target": [None, None, None, None],
+    })
+
+
 class TestTabularModelDataPrep:
     @classmethod
     def setup_class(cls):
@@ -34,6 +49,9 @@ class TestTabularModelDataPrep:
 
         cls.training_data = _build_training_data()
         cls.training_data.to_csv(os.path.join(cls.gold_dir, "target_1__training_set.csv"), index=False)
+
+        cls.prediction_data = _build_prediction_data()
+        cls.prediction_data.to_csv(os.path.join(cls.gold_dir, "target_1__prediction_set.csv"), index=False)
 
     @classmethod
     def teardown_class(cls):
@@ -45,7 +63,6 @@ class TestTabularModelDataPrep:
     def test_init__loads_gold_data_correctly(self):
         prep = self._build(config={})
         assert len(prep.training_data) == 10
-        
 
     def test_init__sets_base_fields_correctly(self):
         prep = self._build(config={})
@@ -102,6 +119,21 @@ class TestTabularModelDataPrep:
     def test_resolve_feature_columns__unrecognized_mode_keeps_every_column(self):
         prep = self._build({"features": {"mode": "both", "columns": ["f1"]}})
         assert prep.feature_cols == ["f1", "f2", "receiving_yards"]
+
+    def test_load_prediction_set__splits_into_identity_and_resolved_feature_columns(self):
+        prep = self._build({"features": {"mode": "exclude", "columns": ["f2"]}})
+        prediction_set = prep.load_prediction_set()
+
+        assert list(prediction_set["features"].columns) == ["f1", "receiving_yards"]
+        assert list(prediction_set["features"]["f1"]) == [11, 12, 13, 14]
+        assert set(prediction_set["identity"]["position"]) == {"QB", "RB", "WR", "TE"}
+
+    def test_load_prediction_set__respects_position_filtering(self):
+        prep = self._build({"positions": ["RB"]})
+        prediction_set = prep.load_prediction_set()
+
+        assert set(prediction_set["identity"]["position"]) == {"RB"}
+        assert list(prediction_set["features"]["f1"]) == [12]
 
     def test_split__holds_out_most_recent_season_for_test_and_the_one_before_for_eval(self):
         prep = self._build({"split": {"eval_data_years": 1, "test_data_years": 1}})

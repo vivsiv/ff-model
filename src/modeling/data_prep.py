@@ -6,7 +6,7 @@ import yaml
 import pandas as pd
 
 from src.processing.column_registry import get_identity_columns
-from src.processing.gold import TARGET_COL, training_set_filename
+from src.processing.gold import TARGET_COL, prediction_set_filename, training_set_filename
 
 logging.basicConfig(
     level=logging.INFO,
@@ -17,6 +17,11 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+# mlflow artifact filename a TabularModelDataPrep's config is logged/read under (see
+# tabular_models.py's setup_mlflow -- the write side -- and utils.load_data_prep_config --
+# the read side).
+DATA_PREP_CONFIG_ARTIFACT_PATH = "data_prep_config.json"
 
 
 class TabularModelDataPrep:
@@ -100,6 +105,30 @@ class TabularModelDataPrep:
         logger.info(f"Loaded data: {len(data)} rows")
 
         return data
+
+    def load_prediction_set(self) -> dict[str, pd.DataFrame]:
+        """
+        Loads gold_dir/{target}__prediction_set.csv -- the live, not-yet-played season's
+        rows (target left blank) -- and prepares it the same way the training set is:
+        restricted to self.positions (if set), then split into identity/feature columns
+        using the exact identity_cols/feature_cols resolved from the training set, so a
+        positional and/or feature-filtered model gets the same columns at prediction time
+        it was trained on.
+
+        Returns:
+            dict with "identity" and "features" DataFrames, row-aligned.
+        """
+        filename = prediction_set_filename(self.target)
+        data = pd.read_csv(os.path.join(self.gold_data_dir, filename))
+        logger.info(f"Loaded prediction data: {len(data)} rows")
+
+        if self.positions:
+            data = self._filter_positions(data, self.positions)
+
+        return {
+            "identity": data[self.identity_cols],
+            "features": data[self.feature_cols],
+        }
 
     @staticmethod
     def _filter_positions(data: pd.DataFrame, positions: List[str]) -> pd.DataFrame:
