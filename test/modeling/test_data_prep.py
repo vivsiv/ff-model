@@ -13,6 +13,7 @@ from src.processing.column_registry import get_identity_columns
 def _build_training_data() -> pd.DataFrame:
     n = 10
     identity_data = {col: [f"{col}_{i}" for i in range(n)] for col in get_identity_columns("nflverse", "player_stats")}
+    identity_data["position"] = ["QB", "TE", "RB", "WR", "QB", "TE", "RB", "QB", "WR", "TE"]
     identity_data["target_season"] = [2020, 2020, 2021, 2021, 2022, 2022, 2023, 2023, 2024, 2024]
 
     return pd.DataFrame({
@@ -21,19 +22,6 @@ def _build_training_data() -> pd.DataFrame:
         "f2": [100, 50, 0, 100, 50, 0, 100, 50, 0, 100],
         "receiving_yards": [12, 0, 8, 12, 0, 8, 12, 0, 8, 12],
         "target": [10, 11, 12, 13, 14, 15, 16, 17, 18, 19],
-    })
-
-
-def _build_multi_position_training_data() -> pd.DataFrame:
-    n = 6
-    identity_data = {col: [f"{col}_{i}" for i in range(n)] for col in get_identity_columns("nflverse", "player_stats")}
-    identity_data["position"] = ["QB", "RB", "RB", "WR", "WR", "TE"]
-    identity_data["target_season"] = [2020, 2020, 2021, 2021, 2022, 2022]
-
-    return pd.DataFrame({
-        **identity_data,
-        "f1": [1, 2, 3, 4, 5, 6],
-        "target": [10, 11, 12, 13, 14, 15],
     })
 
 
@@ -54,50 +42,33 @@ class TestTabularModelDataPrep:
     def _build(self, config: dict) -> TabularModelDataPrep:
         return TabularModelDataPrep(data_dir=self.test_dir, config={"target": "target_1", **config})
 
-    def _build_with_positions(self, config: dict) -> TabularModelDataPrep:
-        target = "target_positions"
-        _build_multi_position_training_data().to_csv(
-            os.path.join(self.gold_dir, f"{target}__training_set.csv"), index=False
-        )
-        return TabularModelDataPrep(data_dir=self.test_dir, config={"target": target, **config})
-
-    def test_init__loads_target_season_gold_training_set(self):
-        prep = self._build({})
+    def test_init__loads_gold_data_correctly(self):
+        prep = self._build(config={})
         assert len(prep.training_data) == 10
-        assert prep.target == "target_1"
+        
 
-    def test_init__keeps_every_position_when_positions_omitted(self):
-        prep = self._build_with_positions({})
-        assert len(prep.training_data) == 6
+    def test_init__sets_base_fields_correctly(self):
+        prep = self._build(config={})
+        assert prep.target == "target_1"
         assert prep.positions is None
 
     def test_init__filters_to_a_single_configured_position(self):
-        prep = self._build_with_positions({"positions": ["RB"]})
+        prep = self._build(config={"positions": ["RB"]})
         assert len(prep.training_data) == 2
         assert set(prep.identity_df["position"]) == {"RB"}
 
     def test_init__filters_to_multiple_configured_positions(self):
-        prep = self._build_with_positions({"positions": ["RB", "WR"]})
+        prep = self._build(config={"positions": ["RB", "WR"]})
         assert len(prep.training_data) == 4
         assert set(prep.identity_df["position"]) == {"RB", "WR"}
 
     def test_init__empty_positions_list_is_treated_like_omitted(self):
-        prep = self._build_with_positions({"positions": []})
-        assert len(prep.training_data) == 6
+        prep = self._build({"positions": []})
+        assert len(prep.training_data) == 10
         assert prep.positions is None
 
-    def test_split__respects_position_filtering(self):
-        prep = self._build_with_positions({
-            "positions": ["WR"],
-            "split": {"eval_data_years": 1, "test_data_years": 0},
-        })
-        data = prep.split()
-
-        assert set(data["identity_train"]["position"]) == {"WR"}
-        assert set(data["identity_eval"]["position"]) == {"WR"}
-
     def test_init__sample_weights_defaults_to_uniform_one_when_omitted(self):
-        prep = TabularModelDataPrep(data_dir=self.test_dir, config={"target": "target_1"})
+        prep = self._build({})
         assert list(prep.sample_weights) == [1.0] * 10
 
     def test_resolve_feature_columns__defaults_to_every_non_identity_non_target_column(self):
@@ -108,11 +79,19 @@ class TestTabularModelDataPrep:
         prep = self._build({"features": {"mode": "exclude", "columns": ["f2"]}})
         assert prep.feature_cols == ["f1", "receiving_yards"]
 
-    def test_resolve_feature_columns__exclude_mode_drops_prefix_matches(self):
+    def test_resolve_feature_columns__exclude_mode_drops_prefix_wildcard_matches(self):
         prep = self._build({"features": {"mode": "exclude", "columns": ["receiving_*"]}})
         assert prep.feature_cols == ["f1", "f2"]
 
-    def test_resolve_feature_columns__exclude_mode_does_not_treat_entries_as_prefixes_without_a_star(self):
+    def test_resolve_feature_columns__exclude_mode_drops_suffix_wildcard_matches(self):
+        prep = self._build({"features": {"mode": "exclude", "columns": ["*_yards"]}})
+        assert prep.feature_cols == ["f1", "f2"]
+
+    def test_resolve_feature_columns__exclude_mode_drops_substring_wildcard_matches(self):
+        prep = self._build({"features": {"mode": "exclude", "columns": ["*ceiving_ya*"]}})
+        assert prep.feature_cols == ["f1", "f2"]
+
+    def test_resolve_feature_columns__exclude_mode_does_not_treat_entries_without_a_star_as_wildcards(self):
         prep = self._build({"features": {"mode": "exclude", "columns": ["receiving"]}})
         assert prep.feature_cols == ["f1", "f2", "receiving_yards"]
 
@@ -131,9 +110,22 @@ class TestTabularModelDataPrep:
         assert set(data["identity_test"]["target_season"]) == {2024}
         assert set(data["identity_eval"]["target_season"]) == {2023}
         assert set(data["identity_train"]["target_season"]) == {2020, 2021, 2022}
-        assert list(data["y_train"]) == [10, 11, 12, 13, 14, 15]
-        assert list(data["y_eval"]) == [16, 17]
+
         assert list(data["y_test"]) == [18, 19]
+        assert list(data["y_eval"]) == [16, 17]
+        assert list(data["y_train"]) == [10, 11, 12, 13, 14, 15]
+
+    def test_split__supports_more_than_one_year_for_test_and_eval(self):
+        prep = self._build({"split": {"eval_data_years": 2, "test_data_years": 2}})
+        data = prep.split()
+
+        assert set(data["identity_test"]["target_season"]) == {2023, 2024}
+        assert set(data["identity_eval"]["target_season"]) == {2021, 2022}
+        assert set(data["identity_train"]["target_season"]) == {2020}
+
+        assert list(data["y_test"]) == [16, 17, 18, 19]
+        assert list(data["y_eval"]) == [12, 13, 14, 15]
+        assert list(data["y_train"]) == [10, 11]
 
     def test_split__num_training_seasons_limits_training_to_most_recent_n_seasons(self):
         prep = self._build({"split": {"eval_data_years": 1, "test_data_years": 1, "num_training_seasons": 1}})
@@ -192,15 +184,15 @@ class TestTabularModelDataPrep:
         # 14, 15 qualify for all three -> largest (min=14) wins -> 1.0
         assert list(data["sample_weight_train"]) == pytest.approx([0.1, 0.1, 0.5, 0.5, 1.0, 1.0])
 
-    def test_split__sample_weight_train_lowest_bucket_covers_values_below_its_own_min(self):
+    def test_split__sample_weight_train_rows_below_the_lowest_bucket_get_zero_weight(self):
         prep = self._build({
             "sample_weights": {"buckets": [{"min": 12, "weight": 0.3}, {"min": 14, "weight": 1.0}]},
         })
         data = prep.split()
 
         # train targets [10, 11, 12, 13, 14, 15]: 10 and 11 are below the lowest bucket's own
-        # min (12), but still get its weight (0.3) rather than being left unweighted.
-        assert list(data["sample_weight_train"]) == pytest.approx([0.3, 0.3, 0.3, 0.3, 1.0, 1.0])
+        # min (12), so they get weight 0 rather than inheriting the lowest bucket's weight.
+        assert list(data["sample_weight_train"]) == pytest.approx([0.0, 0.0, 0.3, 0.3, 1.0, 1.0])
 
     def test_split__sample_weights_never_applied_to_eval_or_test(self):
         prep = self._build({"sample_weights": {"buckets": [{"min": 0, "weight": 0.0}]}})

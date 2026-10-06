@@ -8,7 +8,7 @@ from sklearn.pipeline import Pipeline
 
 from src.modeling.utils import load_mlflow_model, predict, setup_mlflow_run
 from src.processing.column_registry import get_identity_columns
-from src.processing.gold import TARGET_COL
+from src.processing.gold import TARGET_COL, prediction_set_filename
 
 logging.basicConfig(
     level=logging.INFO,
@@ -53,7 +53,7 @@ class PredictionReporter:
         Returns:
             (identity_df, features_df)
         """
-        filename = f"{self.target}__prediction_set.csv"
+        filename = prediction_set_filename(self.target)
         data = pd.read_csv(os.path.join(self.gold_dir, filename))
         logger.info(f"Loaded prediction data: {len(data)} rows")
 

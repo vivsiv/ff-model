@@ -6,7 +6,7 @@ import yaml
 import pandas as pd
 
 from src.processing.column_registry import get_identity_columns
-from src.processing.gold import TARGET_COL
+from src.processing.gold import TARGET_COL, training_set_filename
 
 logging.basicConfig(
     level=logging.INFO,
@@ -36,18 +36,20 @@ class TabularModelDataPrep:
             eval_data_years: <int, default 1>
             test_data_years: <int, default 1>
             num_training_seasons: <int, default None -- keep every remaining older season>
-        sample_weights: optional -- uniform weight 1.0 for every training row if omitted
-            entirely (or {} with no "global_weight"/"buckets").
+        sample_weights: optional -- How to weight an individual row in the training set.
             global_weight: <float, default 1.0>  -- used when "buckets" is empty/omitted, as
-                a single uniform weight for every row.
+                a single uniform weight for every row
             buckets: list of {min: <float>, weight: <float>}. The weight whose target bucket
                 matches bucket_n.min <= target < bucket_{n+1}.min (or inf) is applied to the
-                row.
-        features:
+                row. Rows below the lowest bucket's own min get a weight of 0 -- include a
+                min: 0 bucket if every row should get some non-zero weight.
+            If no value is provided a global_weight of 1.0 is applied to all rows.
+        features: optional -- Specify features to use or not use from the gold table.
             mode: include | exclude  -- mutually exclusive: either "columns" is an allow-list
                 (only these survive) or a deny-list (everything but these survives).
-            columns: <list[str]>  -- entries ending in "*" are treated as prefixes.
-            (omit the whole "features" section for "keep every non-identity/target column")
+            columns: <list[str]>  -- The list of features to include or exclude,
+                The "*" wildcard can be used to denote prefixes or suffixes that should match.
+            If no value is provided all non target/identity columns are used as features.
     """
 
     def __init__(self, data_dir: str, config: dict[str, Any]):
@@ -68,11 +70,13 @@ class TabularModelDataPrep:
             self.training_data = self._filter_positions(self.training_data, self.positions)
 
         self.identity_cols = get_identity_columns("nflverse", "player_stats") + ["target_season"]
-        self.feature_cols = self._resolve_feature_columns()
-
         self.identity_df = self.training_data[self.identity_cols]
+
+        self.feature_cols = self._resolve_feature_columns()
         self.features_df = self.training_data[self.feature_cols]
+
         self.target_df = self.training_data[TARGET_COL]
+        
         self.sample_weights = self._compute_sample_weights(self.target_df)
 
     @classmethod
@@ -91,7 +95,7 @@ class TabularModelDataPrep:
         return cls(data_dir=data_dir, config=config)
 
     def _load_data(self) -> pd.DataFrame:
-        filename = f"{self.target}__training_set.csv"
+        filename = training_set_filename(self.target)
         data = pd.read_csv(os.path.join(self.gold_data_dir, filename))
         logger.info(f"Loaded data: {len(data)} rows")
 
@@ -116,9 +120,9 @@ class TabularModelDataPrep:
 
     @staticmethod
     def _matches_any(col: str, patterns: List[str]) -> bool:
-        """Returns True if col matches any entry in patterns. The "*" wildcard can
-        be used to denote prefixes or suffixes that should match; all other
-        entries must match col exactly."""
+        """Returns True if col matches any entry in patterns. "*" on both ends matches col as
+        a substring, on one end matches col as a prefix/suffix; entries with no "*" must match
+        col exactly."""
         for pattern in patterns:
             if pattern.startswith("*") and pattern.endswith("*"):
                 if pattern[1:-1] in col:
@@ -148,7 +152,7 @@ class TabularModelDataPrep:
         patterns = features_config.get("columns", [])
 
         candidate_cols = [
-            col for col in self.training_data.columns if col not in self.identity_cols + [TARGET_COL]
+            col for col in self.training_data.columns if col not in [*self.identity_cols, TARGET_COL]
         ]
 
         if mode == "include":
@@ -162,7 +166,9 @@ class TabularModelDataPrep:
         """
         Computes a per-row weight from config["sample_weights"]. When buckets of weights
         are provided the weight bucket_n.min <= target < bucket_n+1.min is applied to each row,
-        otherwise the global_weight (default 1) is applied to each row.
+        otherwise the global_weight (default 1) is applied to each row. Rows below the lowest
+        bucket's own min get a weight of 0 (buckets should include a min: 0 entry to avoid
+        zero-weighting rows unintentionally).
 
         Args:
             target_vals: Target values to compute weights for.
@@ -170,14 +176,14 @@ class TabularModelDataPrep:
         Returns:
             Series of weights aligned with target, index-for-index.
         """
-        weights_config = self.config.get("sample_weights", {"global_weight": 1.0})
+        weights_config = self.config.get("sample_weights", {})
         buckets = sorted(weights_config.get("buckets", []), key=lambda bucket: bucket["min"])
 
         if not buckets:
             global_weight = weights_config.get("global_weight", 1.0)
             return pd.Series(global_weight, index=target_vals.index, dtype=float)
 
-        weights = pd.Series(buckets[0]["weight"], index=target_vals.index, dtype=float)
+        weights = pd.Series(0.0, index=target_vals.index, dtype=float)
         for bucket in buckets:
             weights[target_vals >= bucket["min"]] = bucket["weight"]
 

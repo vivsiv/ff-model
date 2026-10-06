@@ -25,6 +25,19 @@ logger = logging.getLogger(__name__)
 
 TARGET_COL = "target"
 PER_GAME_SUFFIX = "_per_game"
+
+
+def training_set_filename(target_col: str) -> str:
+    """Filename (not path) that build_training_set saves/TabularModelDataPrep loads a
+    target's gold training set under, relative to gold_dir."""
+    return f"{target_col}__training_set.csv"
+
+
+def prediction_set_filename(target_col: str) -> str:
+    """Filename (not path) that build_prediction_set saves/PredictionReporter loads a
+    target's gold prediction set under, relative to gold_dir."""
+    return f"{target_col}__prediction_set.csv"
+
 ROUNDING_EXCLUDED_COLUMNS = [
     "season", "target_season", "seasons_since_played", "years_played", "games", "age", "draft_pick",
 ]
@@ -499,7 +512,7 @@ class TrainingSetBuilder:
         )
         training_df = self._join_draft_features(training_df, draft_features_df)
 
-        output_path = os.path.join(self.gold_dir, f"{target_col}__training_set.csv")
+        output_path = os.path.join(self.gold_dir, training_set_filename(target_col))
         self._round_significant_figures(training_df, exclude_columns=ROUNDING_EXCLUDED_COLUMNS).to_csv(
             output_path, index=False
         )
@@ -584,7 +597,7 @@ class TrainingSetBuilder:
         )
         prediction_df = self._join_draft_features(prediction_df, draft_features_df)
 
-        output_path = os.path.join(self.gold_dir, f"{target_col}__prediction_set.csv")
+        output_path = os.path.join(self.gold_dir, prediction_set_filename(target_col))
         self._round_significant_figures(prediction_df, exclude_columns=ROUNDING_EXCLUDED_COLUMNS).to_csv(
             output_path, index=False
         )
