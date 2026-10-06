@@ -183,12 +183,12 @@ class TestTabularModel:
         assert fake_model.received_sample_weight is not None
         np.testing.assert_array_equal(fake_model.received_sample_weight, self.model.data["sample_weight_train"])
 
-    def test_eval_model__logs_top_n_and_whole_split_metrics_by_default(self):
+    def test_eval_model__logs_top_n_metrics_when_top_n_rows_is_given(self):
         # Eval split (target_season 2023) has targets [16, 17] -- fewer than 50/100/200, so
         # all three cap at the full eval split size (2).
         run_id = self.model.setup_mlflow()
         pipeline = self.model.fit_model(run_id=run_id)
-        self.model.eval_model(pipeline, run_id)
+        self.model.eval_model(pipeline, run_id, top_n_rows=[50, 100, 200])
 
         run = mlflow.get_run(run_id)
         assert "r2" in run.data.metrics
@@ -197,14 +197,25 @@ class TestTabularModel:
             assert f"top_{n}_r2" in run.data.metrics
             assert f"top_{n}_rmse" in run.data.metrics
 
-    def test_eval_model__empty_top_ns_skips_top_n_metrics_entirely(self):
+    def test_eval_model__omitting_top_n_rows_skips_top_n_metrics_entirely(self):
         run_id = self.model.setup_mlflow()
         pipeline = self.model.fit_model(run_id=run_id)
-        self.model.eval_model(pipeline, run_id, top_ns=[])
+        self.model.eval_model(pipeline, run_id)
 
         run = mlflow.get_run(run_id)
         assert not any(key.startswith("top_") for key in run.data.metrics)
-        # whole-split r2/rmse are always logged regardless of top_ns
+        # whole-split r2/rmse are always logged regardless of top_n_rows
+        assert "r2" in run.data.metrics
+        assert "rmse" in run.data.metrics
+
+    def test_eval_model__empty_top_n_rows_skips_top_n_metrics_entirely(self):
+        run_id = self.model.setup_mlflow()
+        pipeline = self.model.fit_model(run_id=run_id)
+        self.model.eval_model(pipeline, run_id, top_n_rows=[])
+
+        run = mlflow.get_run(run_id)
+        assert not any(key.startswith("top_") for key in run.data.metrics)
+        # whole-split r2/rmse are always logged regardless of top_n_rows
         assert "r2" in run.data.metrics
         assert "rmse" in run.data.metrics
 

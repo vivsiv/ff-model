@@ -34,8 +34,8 @@ def training_set_filename(target_col: str) -> str:
 
 
 def prediction_set_filename(target_col: str) -> str:
-    """Filename (not path) that build_prediction_set saves/PredictionReporter loads a
-    target's gold prediction set under, relative to gold_dir."""
+    """Filename (not path) that build_prediction_set saves/TabularModelDataPrep.
+    load_prediction_set loads a target's gold prediction set under, relative to gold_dir."""
     return f"{target_col}__prediction_set.csv"
 
 ROUNDING_EXCLUDED_COLUMNS = [
