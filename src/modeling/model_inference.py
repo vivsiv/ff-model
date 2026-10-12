@@ -334,7 +334,7 @@ class ModelInference:
             run_id: mlflow run_id to log metrics/artifacts into (must already exist -- e.g.
                 from setup_mlflow(), or TabularModel.eval_model's own already-open run_id).
             csv_path: Where to write the predictions CSV (e.g. from build_predictions_csv_path()).
-            split: Name of the dataset split to evaluate agains ("eval" or "test", default: "test").
+            split: Name of the dataset split to evaluate against ("eval" or "test", default: "test").
             top_n_rows: For each n, also logs top_{n}_r2/top_{n}_rmse. None (default) skips
                 top-n metrics entirely.
 

@@ -193,7 +193,7 @@ class TestModelInference:
         assert self.inference.source_run_id == self.train_run_id
         assert self.inference.config == self.config
 
-    # -- setup_mlflow / build_predictions_csv_path (from_registry only) ---------------------
+    # -- setup_mlflow / build_predictions_csv_path -------------
 
     def test_setup_mlflow__tags_phase_and_links_back_to_the_source_run(self):
         run_id = self.inference.setup_mlflow(phase="test", run_name_suffix="test")
