@@ -25,7 +25,7 @@ TEAM_RELOCATIONS = {
     "JAC": "JAX",  # Jacksonville
 }
 
-FF_RANKINGS_PLAYER_LIMIT = 250
+FF_RANKINGS_LIMIT = 250
 
 class NflverseProcessor:
     """Generates silver layer data from nflverse bronze layer data."""
@@ -226,7 +226,7 @@ class NflverseProcessor:
         rankings_df = self._load_bronze("ff_rankings.csv")
         rankings_df = rankings_df[rankings_df["page_type"] == "redraft-overall"]
         rankings_df = rankings_df[rankings_df["pos"].isin(FANTASY_POSITIONS)]
-        rankings_df = rankings_df.sort_values("ecr", kind="stable").head(FF_RANKINGS_PLAYER_LIMIT)
+        rankings_df = rankings_df.sort_values("ecr", kind="stable").head(FF_RANKINGS_LIMIT)
 
         ids_df = self._load_bronze("ff_playerids.csv")
         ids_df = ids_df[ids_df["fantasypros_id"].notna() & ids_df["gsis_id"].notna()]
