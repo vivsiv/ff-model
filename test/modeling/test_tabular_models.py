@@ -80,11 +80,15 @@ class TestTabularModel:
         assert model.data_prep is self.data_prep
         assert os.path.isdir(os.path.join(self.test_dir, "predictions"))
 
-    def test_init__eagerly_splits_data_from_data_prep(self):
-        expected = self.data_prep.split()
-
-        pd.testing.assert_frame_equal(self.model.data["X_train"], expected["X_train"])
-        pd.testing.assert_series_equal(self.model.data["y_train"], expected["y_train"])
+    def test_init__gets_the_train_eval_test_split_from_data_prep(self):
+        # TabularModel.__init__ calls data_prep.prep_training_data() itself to get the
+        # train/eval/test split, rather than requiring the caller to do it beforehand.
+        assert set(self.model.data.keys()) == {
+            "X_train", "X_eval", "X_test",
+            "y_train", "y_eval", "y_test",
+            "identity_train", "identity_eval", "identity_test",
+            "sample_weight_train",
+        }
         assert set(self.model.data["identity_test"]["target_season"]) == {2024}
 
     def test_base_model_name__defaults_to_target_when_positions_not_set(self):

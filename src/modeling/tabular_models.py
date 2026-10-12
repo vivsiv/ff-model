@@ -45,7 +45,8 @@ class TabularModel:
         Args:
             data_dir: Parent directory in which to log model artifacts
             tracking_dir: mlflow tracking/registry store directory
-            data_prep: Prepared data source -- see TabularModelDataPrep.
+            data_prep: Data source to fit/evaluate against -- see TabularModelDataPrep.
+                prep_training_data() is called on it here to get the train/eval/test split.
             model_type: Type of model being fit (i.e.) random forest
         """
         self.data_dir = data_dir
@@ -54,7 +55,7 @@ class TabularModel:
         os.makedirs(self.predictions_dir, exist_ok=True)
 
         self.data_prep = data_prep
-        self.data = data_prep.split()
+        self.data = data_prep.prep_training_data()
         self.target = data_prep.target
 
         self.model_type = model_type
@@ -188,7 +189,7 @@ class TabularModel:
 
         inference = ModelInference.from_fit_pipeline(pipeline, self.data_prep)
         return inference.evaluate(
-            dataset=split,
+            split=split,
             run_id=run_id,
             csv_path=csv_path,
             top_n_rows=top_n_rows,

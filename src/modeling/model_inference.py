@@ -26,40 +26,21 @@ logger = logging.getLogger(__name__)
 
 class ModelInference:
     """
-    Predicts/scores a fit pipeline against a dataset built from a TabularModelDataPrep,
-    logging results to mlflow. Two methods, cleanly split by whether ground truth is
-    available to score against:
-      - evaluate(dataset): scores against one of the pipeline's own train/eval/test splits
-        (dataset has ground truth -- always scores).
-      - predict(): predicts against the live/upcoming-season gold prediction set (no ground
-        truth yet -- never scores).
+    Predicts and possibly scores a fit TabularModel against a dataset built from a TabularModelDataPrep,
+    logging results to mlflow. Two methods, split by whether ground truth target values are available to score against:
+      - evaluate(run_id, csv_path, split): predicts then scores against the ground truth values in the provided split.
+      - predict(run_id, csv_path): predicts against live data.
 
-    Two ways to build one:
-      - from_fit_pipeline: wraps an already-fit pipeline + in-memory TabularModelDataPrep,
-        no I/O. Used by TabularModel.eval_model to score a just-fit model against one of its
-        own train/eval/test splits, in the same run fit_model logged it to -- pass that run's
-        run_id/csv_path into evaluate() explicitly.
-      - from_registry: loads a registered model plus the TabularModelDataPrep config it was
-        trained with (reconstructed from its logged data_prep_config.json artifact), for
-        post-hoc use once the model already exists in the mlflow registry. evaluate()/
-        predict() can then be called with no run_id/csv_path -- each creates its own new run
-        (tagged phase=dataset/predict, alongside a source_run_id param pointing back at the
-        training run) into the same mlflow experiment as the model's training/eval runs
-        (found by looking up which experiment source_run_id itself lives in, rather than
-        recomputing the name -- this also means a positional model's own
-        "{target}_{positions}_tabular" experiment is used automatically, not just the
-        general model's).
-
-    Caveat: a from_registry-built instance assumes gold_dir/{target}__training_set.csv
-    hasn't fundamentally changed (rows added/removed/changed or columns removed/changed)
-    since the model was trained.
+    Two ways to build:
+      - from_fit_pipeline: wraps an already-fit pipeline + in-memory TabularModelDataPrep.
+      - from_registry: loads a registered model from mlflow plus the TabularModelDataPrep config it was trained with.
+        - caveat: assumes the training set hasn't fundamentally changed since the model was trained.
     """
 
     def __init__(
             self,
             pipeline: Pipeline,
             data_prep: TabularModelDataPrep,
-            predictions_dir: Optional[str] = None,
             tracking_dir: Optional[str] = None,
             registered_model: Optional[str] = None,
             model_version: Optional[int] = None,
@@ -71,22 +52,15 @@ class ModelInference:
         Args:
             pipeline: A fit pipeline to predict with.
             data_prep: The TabularModelDataPrep the pipeline was (or will be) fit under.
-            predictions_dir: Where to write predictions CSVs, when evaluate()/predict() are
-                called without an explicit csv_path. Required in that case.
-            tracking_dir: mlflow tracking/registry store directory, when evaluate()/
-                predict() are called without an explicit run_id. Required in that case.
-            registered_model: The pipeline's registered model name, if loaded from the
-                registry. Used to name csv/run outputs when evaluate()/predict() build their
-                own run_id/csv_path.
-            model_version: The pipeline's registered version, if loaded from the registry.
-                Same use as registered_model.
-            source_run_id: The mlflow run the pipeline was trained in, if loaded from the
-                registry. Used to log a new run into the same experiment, and to look up its
-                data_prep_config.json, when evaluate()/predict() build their own run_id.
+            tracking_dir: mlflow tracking/registry store directory.
+            registered_model: The pipeline's registered model name in mlflow.
+            model_version: The pipeline's registered version in mlflow
+            source_run_id: The mlflow run the pipeline was trained in.
+                Used by setup_mlflow() to log a new run into the same experiment, 
+                and to look up its data_prep_config.json.
         """
         self.pipeline = pipeline
         self.data_prep = data_prep
-        self.predictions_dir = predictions_dir
         self.tracking_dir = tracking_dir
         self.registered_model = registered_model
         self.model_version = model_version
@@ -96,16 +70,14 @@ class ModelInference:
     @classmethod
     def from_fit_pipeline(cls, pipeline: Pipeline, data_prep: TabularModelDataPrep) -> "ModelInference":
         """
-        Wraps an already-fit pipeline + in-memory data_prep -- no I/O.
+        Wraps an already-fit pipeline + in-memory data_prep.
 
         Args:
             pipeline: A fit pipeline to predict with.
             data_prep: The TabularModelDataPrep the pipeline was fit under.
 
         Returns:
-            A ModelInference that can evaluate() the pipeline's own splits (pass an explicit
-            run_id/csv_path -- there's no registry metadata to build defaults from). Can't
-            predict() -- that requires from_registry's gold prediction set/run metadata.
+            A ModelInference that can evaluate()/predict().
         """
         return cls(pipeline=pipeline, data_prep=data_prep)
 
@@ -130,9 +102,6 @@ class ModelInference:
         Returns:
             A ModelInference ready for evaluate()/predict().
         """
-        predictions_dir = os.path.join(data_dir, "predictions")
-        os.makedirs(predictions_dir, exist_ok=True)
-
         pipeline, mv = load_mlflow_model(registered_model, model_version, tracking_dir)
         model_version, source_run_id = int(mv.version), mv.run_id
         config = load_data_prep_config(source_run_id)
@@ -141,7 +110,6 @@ class ModelInference:
         return cls(
             pipeline=pipeline,
             data_prep=data_prep,
-            predictions_dir=predictions_dir,
             tracking_dir=tracking_dir,
             registered_model=registered_model,
             model_version=model_version,
@@ -171,16 +139,17 @@ class ModelInference:
 
         return X[required_features]
 
-    def _setup_run(self, phase: str, run_name_suffix: str) -> str:
+    def setup_mlflow(self, phase: str, run_name_suffix: str) -> str:
         """
         Creates a new run (tagged phase, with a source_run_id/model_version param pointing
         back at the training run) in the same mlflow experiment as self.source_run_id, and
         logs self.config onto it as a data_prep_config.json artifact.
 
-        Only valid on a ModelInference built via from_registry.
+        Only valid on a ModelInference built via from_registry (needs self.source_run_id/
+        registered_model/model_version/tracking_dir).
 
         Args:
-            phase: "test" or "predict" -- tagged onto the new run.
+            phase: "eval"/"test"/"predict" -- tagged onto the new run.
             run_name_suffix: Appended to the run name, after the registered model/version.
 
         Returns:
@@ -202,18 +171,46 @@ class ModelInference:
 
         return run_id
 
+    @staticmethod
+    def build_predictions_csv_path(
+        predictions_dir: str,
+        registered_model: str,
+        model_version: int,
+        run_id: str,
+        split: Optional[str] = None,
+    ) -> str:
+        """
+        Builds a predictions CSV path under predictions_dir (creating it if it doesn't
+        exist), named "{registered_model}_v{model_version}_{split}_predictions_{run_id}.csv"
+        (or, if split is omitted, "{registered_model}_v{model_version}_predictions_{run_id}.csv").
+
+        Args:
+            predictions_dir: Directory to write the CSV under.
+            registered_model: The registered model name to embed in the filename.
+            model_version: The registered model version to embed in the filename.
+            run_id: The run_id the predictions are being logged into.
+            split: "eval"/"test", if scoring against a split. Omit for live predictions.
+
+        Returns:
+            The csv path.
+        """
+        os.makedirs(predictions_dir, exist_ok=True)
+        middle = f"{split}_predictions" if split else "predictions"
+        return os.path.join(predictions_dir, f"{registered_model}_v{model_version}_{middle}_{run_id}.csv")
+
     def _predict(
         self,
         X: pd.DataFrame,
         identity: pd.DataFrame,
         run_id: str,
         csv_path: str,
-        artifact_path: str,
         y: Optional[pd.Series] = None,
     ) -> pd.DataFrame:
         """
         Predicts with self.pipeline on X, and logs the predictions (+ actual, if y is given)
-        as a CSV artifact under run_id.
+        as a CSV artifact under run_id (at the run's artifact root -- csv_path's own
+        filename already says what it is, so there's no need to also nest it under a nested
+        artifact directory).
 
         If y is given: includes an "actual" column, and sorts rows by
         [target_season, predictions, actual]. Pair this with _score to also log R^2/RMSE.
@@ -223,11 +220,10 @@ class ModelInference:
 
         Args:
             X: Feature set to predict on.
-            identity: Identity columns (e.g. player_display_name, target_season) aligned
-                positionally with X, kept in the output for context.
+            identity: Identity columns (e.g. player_display_name, target_season), aligned
+                positionally with X, used to build the preds_df.
             run_id: mlflow run_id to log the artifact into (must already exist).
             csv_path: Where to write the predictions CSV on disk.
-            artifact_path: mlflow artifact path to log csv_path under.
             y: Optional actual/ground-truth values, aligned positionally with X.
 
         Returns:
@@ -253,7 +249,7 @@ class ModelInference:
             output_cols = ["player_display_name", "target_season", target] + (["actual"] if y is not None else [])
             output_df[output_cols].to_csv(csv_path, index=False)
 
-            mlflow.log_artifact(csv_path, artifact_path)
+            mlflow.log_artifact(csv_path)
 
         return preds_df
 
@@ -326,87 +322,61 @@ class ModelInference:
 
     def evaluate(
         self,
-        dataset: str = "test",
-        run_id: Optional[str] = None,
-        csv_path: Optional[str] = None,
+        run_id: str,
+        csv_path: str,
+        split: str = "test",
         top_n_rows: Optional[List[int]] = None,
     ) -> pd.DataFrame:
         """
-        Scores self.pipeline against one of its own train/eval/test splits (from
-        self.data_prep.split()) and logs the results. Always scores -- dataset always has
-        ground truth (it's part of the training set).
+        Predicts + Scores self.pipeline against the model's eval or test split and logs the results.
 
         Args:
-            dataset: Which split to evaluate against, "eval" or "test" (default: "test").
-            run_id: mlflow run_id to log metrics/artifacts into. If omitted, creates a new
-                run (tagged phase=dataset, linked back to self.source_run_id) -- only valid
-                on a ModelInference built via from_registry. A from_fit_pipeline instance
-                (e.g. TabularModel.eval_model) must pass its own already-open run_id.
-            csv_path: Where to write the predictions CSV. If omitted, named
-                "{registered_model}_v{model_version}_{dataset}_predictions_{run_id}.csv" --
-                only valid via from_registry; a from_fit_pipeline instance must pass its own.
+            run_id: mlflow run_id to log metrics/artifacts into (must already exist -- e.g.
+                from setup_mlflow(), or TabularModel.eval_model's own already-open run_id).
+            csv_path: Where to write the predictions CSV (e.g. from build_predictions_csv_path()).
+            split: Name of the dataset split to evaluate agains ("eval" or "test", default: "test").
             top_n_rows: For each n, also logs top_{n}_r2/top_{n}_rmse. None (default) skips
                 top-n metrics entirely.
 
         Returns:
             DataFrame of predictions vs actuals (see _predict()).
         """
-        data = self.data_prep.split()
-        X = self._select_pipeline_features(data[f"X_{dataset}"])
-
-        if run_id is None:
-            run_id = self._setup_run(phase=dataset, run_name_suffix=dataset)
-        if csv_path is None:
-            csv_path = os.path.join(
-                self.predictions_dir,
-                f"{self.registered_model}_v{self.model_version}_{dataset}_predictions_{run_id}.csv",
-            )
+        data = self.data_prep.prep_training_data()
+        X = self._select_pipeline_features(data[f"X_{split}"])
 
         preds_df = self._predict(
             X=X,
-            identity=data[f"identity_{dataset}"],
+            identity=data[f"identity_{split}"],
             run_id=run_id,
             csv_path=csv_path,
-            artifact_path=f"{dataset}_predictions",
-            y=data[f"y_{dataset}"],
+            y=data[f"y_{split}"],
         )
         self._score(preds_df, run_id, top_n_rows=top_n_rows)
 
         return preds_df
 
-    def predict(self, run_id: Optional[str] = None, csv_path: Optional[str] = None) -> pd.DataFrame:
+    def predict(self, run_id: str, csv_path: str) -> pd.DataFrame:
         """
         Loads the live (not-yet-played season) gold prediction set and predicts against it.
         There's no ground truth to score against yet, so this never scores -- see evaluate()
         for that.
 
         Args:
-            run_id: mlflow run_id to log the artifact into. If omitted, creates a new run
-                (tagged phase=predict, linked back to self.source_run_id) -- only valid on a
-                ModelInference built via from_registry.
-            csv_path: Where to write the predictions CSV. If omitted, named
-                "{registered_model}_v{model_version}_predictions_{run_id}.csv" -- only valid
-                via from_registry.
+            run_id: mlflow run_id to log the artifact into (must already exist -- e.g. from
+                setup_mlflow()).
+            csv_path: Where to write the predictions CSV (e.g. from build_predictions_csv_path()).
 
         Returns:
             DataFrame of live predictions (see _predict()).
         """
-        prediction_set = self.data_prep.load_prediction_set()
+        prediction_set = self.data_prep.prep_prediction_data()
         X = self._select_pipeline_features(prediction_set["features"])
-
-        if run_id is None:
-            run_id = self._setup_run(phase="predict", run_name_suffix="predictions")
-        if csv_path is None:
-            csv_path = os.path.join(
-                self.predictions_dir, f"{self.registered_model}_v{self.model_version}_predictions_{run_id}.csv"
-            )
 
         return self._predict(
             X=X,
             identity=prediction_set["identity"],
             run_id=run_id,
             csv_path=csv_path,
-            artifact_path="predictions",
         )
 
 
@@ -470,11 +440,20 @@ def main():
         registered_model=args.registered_model,
         model_version=args.model_version,
     )
+    predictions_dir = os.path.join(args.data_dir, "predictions")
 
     if args.mode in ("eval", "test"):
-        preds_df = inference.evaluate(dataset=args.mode, top_n_rows=args.top_n_rows)
+        run_id = inference.setup_mlflow(phase=args.mode, run_name_suffix=args.mode)
+        csv_path = ModelInference.build_predictions_csv_path(
+            predictions_dir, inference.registered_model, inference.model_version, run_id, split=args.mode
+        )
+        preds_df = inference.evaluate(run_id=run_id, csv_path=csv_path, split=args.mode, top_n_rows=args.top_n_rows)
     else:
-        preds_df = inference.predict()
+        run_id = inference.setup_mlflow(phase="predict", run_name_suffix="predictions")
+        csv_path = ModelInference.build_predictions_csv_path(
+            predictions_dir, inference.registered_model, inference.model_version, run_id
+        )
+        preds_df = inference.predict(run_id=run_id, csv_path=csv_path)
 
     print(preds_df)
 

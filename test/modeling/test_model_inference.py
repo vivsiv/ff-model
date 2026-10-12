@@ -137,15 +137,6 @@ class TestModelInference:
     def teardown_class(cls):
         shutil.rmtree(cls.test_dir)
 
-    def _runs_tagged(self, experiment_name: str, phase: str) -> pd.DataFrame:
-        mlflow.set_tracking_uri(self.tracking_dir)
-        experiment = mlflow.get_experiment_by_name(experiment_name)
-        return mlflow.search_runs(
-            experiment_ids=[experiment.experiment_id],
-            filter_string=f"tags.phase = '{phase}'",
-            output_format="pandas",
-        )
-
     def test_init__does_not_build_a_tabular_model(self):
         # ModelInference has everything it needs (pipeline, reconstructed data_prep) to run
         # predict()/score() directly -- it shouldn't need to build a TabularModel at all.
@@ -172,29 +163,122 @@ class TestModelInference:
         )
         csv_path = os.path.join(self.test_dir, "predictions", "direct_evaluate.csv")
 
-        preds_df = inference.evaluate(dataset="test", run_id=run_id, csv_path=csv_path)
+        preds_df = inference.evaluate(split="test", run_id=run_id, csv_path=csv_path)
 
         assert set(preds_df["target_season"]) == {2024}
         run = mlflow.get_run(run_id)
         assert "r2" in run.data.metrics
         assert "rmse" in run.data.metrics
 
+    def test_predict__also_works_from_a_fit_pipeline_given_explicit_run_id_and_csv_path(self):
+        # predict() only needs registry metadata to build run_id/csv_path defaults --
+        # prep_prediction_data() itself has no dependency on the registry, so a
+        # from_fit_pipeline instance can predict() too as long as both are passed explicitly.
+        inference = ModelInference.from_fit_pipeline(self.pipeline, self.data_prep)
+        run_id = setup_mlflow_run(
+            experiment_name="target_1_tabular", run_name="direct_predict", tracking_dir=self.tracking_dir
+        )
+        csv_path = os.path.join(self.test_dir, "predictions", "direct_predict.csv")
+
+        preds_df = inference.predict(run_id=run_id, csv_path=csv_path)
+
+        assert set(preds_df["target_season"]) == {2025}
+        assert "actual" not in preds_df.columns
+        run = mlflow.get_run(run_id)
+        assert "r2" not in run.data.metrics
+        assert "rmse" not in run.data.metrics
+
     def test_init__loads_the_pipeline_and_source_run_from_the_registered_model(self):
         assert self.inference.model_version == 1
         assert self.inference.source_run_id == self.train_run_id
         assert self.inference.config == self.config
 
+    # -- setup_mlflow / build_predictions_csv_path (from_registry only) ---------------------
+
+    def test_setup_mlflow__tags_phase_and_links_back_to_the_source_run(self):
+        run_id = self.inference.setup_mlflow(phase="test", run_name_suffix="test")
+
+        run = mlflow.get_run(run_id)
+        assert run.data.tags["phase"] == "test"
+        assert run.data.params["source_run_id"] == self.train_run_id
+        assert run.data.params["model_version"] == "1"
+
+    def test_setup_mlflow__logs_into_the_same_experiment_as_the_source_run(self):
+        run_id = self.inference.setup_mlflow(phase="test", run_name_suffix="test")
+
+        run = mlflow.get_run(run_id)
+        experiment = mlflow.get_experiment(run.info.experiment_id)
+        assert experiment.name == "target_1_tabular"
+
+    def test_setup_mlflow__also_logs_the_reconstructed_data_prep_config(self):
+        run_id = self.inference.setup_mlflow(phase="test", run_name_suffix="test")
+
+        logged_config = mlflow.artifacts.load_dict(f"runs:/{run_id}/data_prep_config.json")
+        assert logged_config == self.config
+
+    def test_setup_mlflow__uses_the_positional_models_own_experiment_when_positions_are_set(self):
+        # A positional model's training run lives in its own "{target}_{positions}_tabular"
+        # experiment (see TabularModel.base_model_name) -- setup_mlflow() must log into that
+        # same experiment (found by looking up which experiment source_run_id itself lives
+        # in), not the general one.
+        test_dir = tempfile.mkdtemp()
+        try:
+            gold_dir = os.path.join(test_dir, "gold")
+            tracking_dir = os.path.join(test_dir, "mlruns")
+            os.makedirs(gold_dir)
+
+            training_data = _build_training_data({"f1": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]})
+            training_data["position"] = ["RB", "WR"] * 5
+            training_data.to_csv(os.path.join(gold_dir, "target_3__training_set.csv"), index=False)
+
+            data_prep = TabularModelDataPrep(
+                data_dir=test_dir, config={"target": "target_3", "positions": ["RB"]}
+            )
+            model = TabularModel(
+                data_dir=test_dir, tracking_dir=tracking_dir, data_prep=data_prep, model_type="ridge"
+            )
+            train_run_id = model.setup_mlflow()
+            model.fit_model(run_id=train_run_id)
+
+            inference = ModelInference.from_registry(
+                data_dir=test_dir, tracking_dir=tracking_dir, registered_model="target_3_rb_ridge", model_version=1
+            )
+            run_id = inference.setup_mlflow(phase="test", run_name_suffix="test")
+
+            run = mlflow.get_run(run_id)
+            experiment = mlflow.get_experiment(run.info.experiment_id)
+            assert experiment.name == "target_3_rb_tabular"
+            assert run.data.params["source_run_id"] == train_run_id
+        finally:
+            shutil.rmtree(test_dir)
+
+    def test_build_predictions_csv_path__names_the_path_with_registered_model_version_and_split(self):
+        path = self.inference.build_predictions_csv_path(
+            os.path.join(self.test_dir, "predictions"), "target_1_ridge", 1, "abc123", split="test"
+        )
+        assert path == os.path.join(self.test_dir, "predictions", "target_1_ridge_v1_test_predictions_abc123.csv")
+
+    def test_build_predictions_csv_path__omits_the_split_from_the_name_when_not_given(self):
+        path = self.inference.build_predictions_csv_path(
+            os.path.join(self.test_dir, "predictions"), "target_1_ridge", 1, "abc123"
+        )
+        assert path == os.path.join(self.test_dir, "predictions", "target_1_ridge_v1_predictions_abc123.csv")
+
     # -- evaluate ------------------------------------------------------------------------
 
     def test_evaluate__reconstructs_the_same_test_split_the_model_was_trained_with(self):
-        preds_df = self.inference.evaluate()
+        run_id = self.inference.setup_mlflow(phase="test", run_name_suffix="test")
+        csv_path = self.inference.build_predictions_csv_path(os.path.join(self.test_dir, "predictions"), self.inference.registered_model, self.inference.model_version, run_id, split="test")
+        preds_df = self.inference.evaluate(run_id=run_id, csv_path=csv_path, split="test")
 
         # test split held out 2024 (most recent season), per the logged config
         assert set(preds_df["target_season"]) == {2024}
         assert len(preds_df) == len(self.data["X_test"])
 
     def test_evaluate__predictions_match_the_source_pipeline_predicting_on_X_test(self):
-        preds_df = self.inference.evaluate()
+        run_id = self.inference.setup_mlflow(phase="test", run_name_suffix="test")
+        csv_path = self.inference.build_predictions_csv_path(os.path.join(self.test_dir, "predictions"), self.inference.registered_model, self.inference.model_version, run_id, split="test")
+        preds_df = self.inference.evaluate(run_id=run_id, csv_path=csv_path, split="test")
 
         expected = pd.Series(
             self.pipeline.predict(self.data["X_test"]), index=self.data["X_test"].index
@@ -205,49 +289,35 @@ class TestModelInference:
             expected.sort_index(), actual.sort_index(), check_names=False
         )
 
-    def test_evaluate__logs_a_new_run_tagged_phase_test_linked_to_the_source_run(self):
-        self.inference.evaluate()
+    def test_evaluate__logs_r2_and_rmse_metrics_into_the_given_run(self):
+        run_id = self.inference.setup_mlflow(phase="test", run_name_suffix="test")
+        csv_path = self.inference.build_predictions_csv_path(os.path.join(self.test_dir, "predictions"), self.inference.registered_model, self.inference.model_version, run_id, split="test")
+        self.inference.evaluate(run_id=run_id, csv_path=csv_path, split="test")
 
-        runs = self._runs_tagged("target_1_tabular", "test")
+        run = mlflow.get_run(run_id)
+        assert "r2" in run.data.metrics
+        assert "rmse" in run.data.metrics
 
-        assert len(runs) >= 1
-        latest_test_run = runs.iloc[0]
-        assert latest_test_run["params.source_run_id"] == self.train_run_id
-        assert latest_test_run["params.model_version"] == "1"
-        assert "metrics.r2" in latest_test_run
-        assert "metrics.rmse" in latest_test_run
+    def test_evaluate__writes_a_predictions_csv_at_the_given_path(self):
+        run_id = self.inference.setup_mlflow(phase="test", run_name_suffix="test")
+        csv_path = self.inference.build_predictions_csv_path(os.path.join(self.test_dir, "predictions"), self.inference.registered_model, self.inference.model_version, run_id, split="test")
+        self.inference.evaluate(run_id=run_id, csv_path=csv_path, split="test")
 
-    def test_evaluate__also_logs_the_reconstructed_data_prep_config(self):
-        self.inference.evaluate()
+        assert os.path.exists(csv_path)
 
-        runs = self._runs_tagged("target_1_tabular", "test")
-        latest_test_run_id = runs.iloc[0]["run_id"]
-
-        logged_config = mlflow.artifacts.load_dict(f"runs:/{latest_test_run_id}/data_prep_config.json")
-        assert logged_config == self.config
-
-    def test_evaluate__writes_a_predictions_csv_named_with_registered_model_and_version(self):
-        self.inference.evaluate()
-
-        predictions_dir = os.path.join(self.test_dir, "predictions")
-        matching = [f for f in os.listdir(predictions_dir) if f.startswith("target_1_ridge_v1_test_predictions_")]
-        assert len(matching) >= 1
-
-    def test_evaluate__dataset_eval_scores_the_eval_split_instead_of_test(self):
-        preds_df = self.inference.evaluate(dataset="eval")
+    def test_evaluate__split_eval_scores_the_eval_split_instead_of_test(self):
+        run_id = self.inference.setup_mlflow(phase="eval", run_name_suffix="eval")
+        csv_path = self.inference.build_predictions_csv_path(os.path.join(self.test_dir, "predictions"), self.inference.registered_model, self.inference.model_version, run_id, split="eval")
+        preds_df = self.inference.evaluate(run_id=run_id, csv_path=csv_path, split="eval")
 
         # eval split held out 2023 (the year before the held-out test year), per the logged config
         assert set(preds_df["target_season"]) == {2023}
         assert len(preds_df) == len(self.data["X_eval"])
 
-        runs = self._runs_tagged("target_1_tabular", "eval")
-        assert len(runs) >= 1
-        assert "metrics.r2" in runs.iloc[0]
-        assert "metrics.rmse" in runs.iloc[0]
-
-        predictions_dir = os.path.join(self.test_dir, "predictions")
-        matching = [f for f in os.listdir(predictions_dir) if f.startswith("target_1_ridge_v1_eval_predictions_")]
-        assert len(matching) >= 1
+        run = mlflow.get_run(run_id)
+        assert "r2" in run.data.metrics
+        assert "rmse" in run.data.metrics
+        assert os.path.exists(csv_path)
 
     def test_evaluate__ignores_feature_columns_added_to_the_training_set_after_training(self):
         # Simulates incremental feature growth: a column is added to the gold training set on
@@ -272,7 +342,9 @@ class TestModelInference:
             inference = ModelInference.from_registry(
                 data_dir=test_dir, tracking_dir=tracking_dir, registered_model="target_2_ridge", model_version=1
             )
-            preds_df = inference.evaluate()
+            run_id = inference.setup_mlflow(phase="test", run_name_suffix="test")
+            csv_path = inference.build_predictions_csv_path(os.path.join(test_dir, "predictions"), inference.registered_model, inference.model_version, run_id, split="test")
+            preds_df = inference.evaluate(run_id=run_id, csv_path=csv_path, split="test")
 
             test_rows = training_data[training_data["target_season"] == 2024]
             expected = pipeline.predict(test_rows[["f1", "f2"]])
@@ -305,16 +377,14 @@ class TestModelInference:
             inference = ModelInference.from_registry(
                 data_dir=test_dir, tracking_dir=tracking_dir, registered_model="target_2_ridge", model_version=1
             )
+            run_id = inference.setup_mlflow(phase="test", run_name_suffix="test")
+            csv_path = inference.build_predictions_csv_path(os.path.join(test_dir, "predictions"), inference.registered_model, inference.model_version, run_id, split="test")
             with pytest.raises(ValueError, match="f1"):
-                inference.evaluate()
+                inference.evaluate(run_id=run_id, csv_path=csv_path, split="test")
         finally:
             shutil.rmtree(test_dir)
 
-    def test_evaluate__uses_the_positional_models_own_experiment_when_positions_are_set(self):
-        # A positional model's training run lives in its own "{target}_{positions}_tabular"
-        # experiment (see TabularModel.base_model_name) -- evaluate() must log the test run
-        # into that same experiment (found by looking up which experiment source_run_id
-        # itself lives in), not the general one.
+    def test_evaluate__respects_position_filtering_for_a_positional_model(self):
         test_dir = tempfile.mkdtemp()
         try:
             gold_dir = os.path.join(test_dir, "gold")
@@ -337,34 +407,30 @@ class TestModelInference:
             inference = ModelInference.from_registry(
                 data_dir=test_dir, tracking_dir=tracking_dir, registered_model="target_3_rb_ridge", model_version=1
             )
-            preds_df = inference.evaluate()
+            run_id = inference.setup_mlflow(phase="test", run_name_suffix="test")
+            csv_path = inference.build_predictions_csv_path(os.path.join(test_dir, "predictions"), inference.registered_model, inference.model_version, run_id, split="test")
+            preds_df = inference.evaluate(run_id=run_id, csv_path=csv_path, split="test")
 
             assert set(preds_df["position"]) == {"RB"}
-
-            mlflow.set_tracking_uri(tracking_dir)
-            experiment = mlflow.get_experiment_by_name("target_3_rb_tabular")
-            assert experiment is not None
-            test_runs = mlflow.search_runs(
-                experiment_ids=[experiment.experiment_id],
-                filter_string="tags.phase = 'test'",
-                output_format="pandas",
-            )
-            assert test_runs.iloc[0]["params.source_run_id"] == train_run_id
         finally:
             shutil.rmtree(test_dir)
 
     # -- predict -----------------------------------------------------------------------
 
     def test_predict__predicts_against_the_live_prediction_set(self):
-        preds_df = self.inference.predict()
+        run_id = self.inference.setup_mlflow(phase="predict", run_name_suffix="predictions")
+        csv_path = self.inference.build_predictions_csv_path(os.path.join(self.test_dir, "predictions"), self.inference.registered_model, self.inference.model_version, run_id)
+        preds_df = self.inference.predict(run_id=run_id, csv_path=csv_path)
 
         assert set(preds_df["target_season"]) == {2025}
         assert len(preds_df) == 2
 
     def test_predict__predictions_match_the_source_pipeline_predicting_on_resolved_features(self):
-        preds_df = self.inference.predict()
+        run_id = self.inference.setup_mlflow(phase="predict", run_name_suffix="predictions")
+        csv_path = self.inference.build_predictions_csv_path(os.path.join(self.test_dir, "predictions"), self.inference.registered_model, self.inference.model_version, run_id)
+        preds_df = self.inference.predict(run_id=run_id, csv_path=csv_path)
 
-        prediction_set = self.data_prep.load_prediction_set()
+        prediction_set = self.data_prep.prep_prediction_data()
         expected = pd.Series(
             self.pipeline.predict(prediction_set["features"][["f1", "f2"]]),
             index=prediction_set["features"].index,
@@ -376,41 +442,20 @@ class TestModelInference:
 
     def test_predict__does_not_log_score_metrics(self):
         # There's no ground truth for the live prediction set, so no r2/rmse should be logged.
-        self.inference.predict()
+        run_id = self.inference.setup_mlflow(phase="predict", run_name_suffix="predictions")
+        csv_path = self.inference.build_predictions_csv_path(os.path.join(self.test_dir, "predictions"), self.inference.registered_model, self.inference.model_version, run_id)
+        self.inference.predict(run_id=run_id, csv_path=csv_path)
 
-        runs = self._runs_tagged("target_1_tabular", "predict")
-        latest_predict_run = runs.iloc[0]
-        assert "metrics.r2" not in latest_predict_run or pd.isna(latest_predict_run.get("metrics.r2"))
-        assert "metrics.rmse" not in latest_predict_run or pd.isna(latest_predict_run.get("metrics.rmse"))
+        run = mlflow.get_run(run_id)
+        assert "r2" not in run.data.metrics
+        assert "rmse" not in run.data.metrics
 
-    def test_predict__logs_a_new_run_tagged_phase_predict_linked_to_the_source_run(self):
-        self.inference.predict()
+    def test_predict__writes_a_predictions_csv_at_the_given_path(self):
+        run_id = self.inference.setup_mlflow(phase="predict", run_name_suffix="predictions")
+        csv_path = self.inference.build_predictions_csv_path(os.path.join(self.test_dir, "predictions"), self.inference.registered_model, self.inference.model_version, run_id)
+        self.inference.predict(run_id=run_id, csv_path=csv_path)
 
-        runs = self._runs_tagged("target_1_tabular", "predict")
-
-        assert len(runs) >= 1
-        latest_predict_run = runs.iloc[0]
-        assert latest_predict_run["params.source_run_id"] == self.train_run_id
-        assert latest_predict_run["params.model_version"] == "1"
-
-    def test_predict__also_logs_the_reconstructed_data_prep_config(self):
-        self.inference.predict()
-
-        runs = self._runs_tagged("target_1_tabular", "predict")
-        latest_predict_run_id = runs.iloc[0]["run_id"]
-
-        logged_config = mlflow.artifacts.load_dict(f"runs:/{latest_predict_run_id}/data_prep_config.json")
-        assert logged_config == self.config
-
-    def test_predict__writes_a_predictions_csv_named_with_registered_model_and_version(self):
-        self.inference.predict()
-
-        predictions_dir = os.path.join(self.test_dir, "predictions")
-        matching = [
-            f for f in os.listdir(predictions_dir)
-            if f.startswith("target_1_ridge_v1_predictions_") and "_test_" not in f
-        ]
-        assert len(matching) >= 1
+        assert os.path.exists(csv_path)
 
     def test_predict__respects_position_filtering(self):
         # A positional model's live prediction set is filtered down to just its own
@@ -444,12 +489,35 @@ class TestModelInference:
             inference = ModelInference.from_registry(
                 data_dir=test_dir, tracking_dir=tracking_dir, registered_model="target_3_rb_ridge", model_version=1
             )
-            preds_df = inference.predict()
+            run_id = inference.setup_mlflow(phase="predict", run_name_suffix="predictions")
+            csv_path = inference.build_predictions_csv_path(os.path.join(test_dir, "predictions"), inference.registered_model, inference.model_version, run_id)
+            preds_df = inference.predict(run_id=run_id, csv_path=csv_path)
 
             assert set(preds_df["position"]) == {"RB"}
             assert len(preds_df) == 2
         finally:
             shutil.rmtree(test_dir)
+
+    def test_predict__never_needs_the_training_set_on_disk(self):
+        # The whole point of ModelInference.predict() calling data_prep.prep_prediction_data()
+        # directly (never data_prep.prep_training_data()): a ModelInference built purely to
+        # make live predictions from an already-trained model should never need to load (or
+        # even have) a training set on disk.
+        training_set_path = os.path.join(self.gold_dir, "target_1__training_set.csv")
+        moved_path = training_set_path + ".moved"
+        os.rename(training_set_path, moved_path)
+        try:
+            inference = ModelInference.from_registry(
+                data_dir=self.test_dir, tracking_dir=self.tracking_dir, registered_model="target_1_ridge", model_version=1
+            )
+            run_id = inference.setup_mlflow(phase="predict", run_name_suffix="predictions")
+            csv_path = inference.build_predictions_csv_path(os.path.join(self.test_dir, "predictions"), inference.registered_model, inference.model_version, run_id)
+            preds_df = inference.predict(run_id=run_id, csv_path=csv_path)
+
+            assert len(preds_df) == 2
+            assert not hasattr(inference.data_prep, "training_data")
+        finally:
+            os.rename(moved_path, training_set_path)
 
 
 class TestModelInferencePredictAndScore:
@@ -587,7 +655,6 @@ class TestModelInferencePredictAndScore:
             identity=identity,
             run_id=run_id,
             csv_path=csv_path,
-            artifact_path="predictions",
         )
 
         assert list(preds_df["predictions"]) == [3.0, 2.0, 1.0]
@@ -607,7 +674,6 @@ class TestModelInferencePredictAndScore:
             identity=identity,
             run_id=run_id,
             csv_path=csv_path,
-            artifact_path="predictions",
             y=y,
         )
 
@@ -625,7 +691,6 @@ class TestModelInferencePredictAndScore:
             identity=identity,
             run_id=run_id,
             csv_path=csv_path,
-            artifact_path="predictions",
         )
 
         written = pd.read_csv(csv_path)
@@ -642,7 +707,6 @@ class TestModelInferencePredictAndScore:
             identity=identity,
             run_id=run_id,
             csv_path=with_y_path,
-            artifact_path="predictions",
             y=pd.Series([5]),
         )
         assert "actual" in pd.read_csv(with_y_path).columns
@@ -653,7 +717,6 @@ class TestModelInferencePredictAndScore:
             identity=identity,
             run_id=run_id,
             csv_path=without_y_path,
-            artifact_path="predictions",
         )
         assert "actual" not in pd.read_csv(without_y_path).columns
 
@@ -667,10 +730,9 @@ class TestModelInferencePredictAndScore:
             identity=identity,
             run_id=run_id,
             csv_path=csv_path,
-            artifact_path="predictions",
         )
 
         mlflow.set_tracking_uri(self.tracking_dir)
-        downloaded_path = mlflow.artifacts.download_artifacts(run_id=run_id, artifact_path="predictions")
+        downloaded_path = mlflow.artifacts.download_artifacts(run_id=run_id)
         assert os.path.exists(downloaded_path)
         assert "artifact.csv" in os.listdir(downloaded_path)

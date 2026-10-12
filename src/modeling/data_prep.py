@@ -1,6 +1,7 @@
 import os
 import logging
-from typing import Any, List
+from dataclasses import dataclass
+from typing import Any, List, Optional
 
 import yaml
 import pandas as pd
@@ -18,10 +19,17 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# mlflow artifact filename a TabularModelDataPrep's config is logged/read under (see
-# tabular_models.py's setup_mlflow -- the write side -- and utils.load_data_prep_config --
-# the read side).
 DATA_PREP_CONFIG_ARTIFACT_PATH = "data_prep_config.json"
+
+
+@dataclass
+class SplitYears:
+    """How many seasons go to each of train/eval/test -- see TabularModelDataPrep's config
+    schema ("split") for field meanings. Parsed from config by prep_training_data(), passed
+    into split()."""
+    eval_data_years: int = 1
+    test_data_years: int = 1
+    num_training_seasons: Optional[int] = None
 
 
 class TabularModelDataPrep:
@@ -69,20 +77,7 @@ class TabularModelDataPrep:
         self.config = config
         self.target = config["target"]
         self.positions = config.get("positions") or None
-
-        self.training_data = self._load_data()
-        if self.positions:
-            self.training_data = self._filter_positions(self.training_data, self.positions)
-
         self.identity_cols = get_identity_columns("nflverse", "player_stats") + ["target_season"]
-        self.identity_df = self.training_data[self.identity_cols]
-
-        self.feature_cols = self._resolve_feature_columns()
-        self.features_df = self.training_data[self.feature_cols]
-
-        self.target_df = self.training_data[TARGET_COL]
-        
-        self.sample_weights = self._compute_sample_weights(self.target_df)
 
     @classmethod
     def from_config_file(cls, data_dir: str, config_path: str) -> "TabularModelDataPrep":
@@ -99,21 +94,64 @@ class TabularModelDataPrep:
 
         return cls(data_dir=data_dir, config=config)
 
-    def _load_data(self) -> pd.DataFrame:
-        filename = training_set_filename(self.target)
-        data = pd.read_csv(os.path.join(self.gold_data_dir, filename))
-        logger.info(f"Loaded data: {len(data)} rows")
-
-        return data
-
-    def load_prediction_set(self) -> dict[str, pd.DataFrame]:
+    def prep_training_data(self) -> dict[str, pd.DataFrame]:
         """
-        Loads gold_dir/{target}__prediction_set.csv -- the live, not-yet-played season's
-        rows (target left blank) -- and prepares it the same way the training set is:
-        restricted to self.positions (if set), then split into identity/feature columns
-        using the exact identity_cols/feature_cols resolved from the training set, so a
-        positional and/or feature-filtered model gets the same columns at prediction time
-        it was trained on.
+        Loads the gold training set and prepares it for modeling.
+
+        Returns a dict with:
+            - X_{train/eval/test}
+            - y_{train/eval/test}
+            - identity_{train,eval,test}
+            - sample_weight_train
+
+        Raises:
+            ValueError: If split config's num_training_seasons + eval_data_years +
+                test_data_years exceeds the total number of distinct seasons available.
+        """
+        filename = training_set_filename(self.target)
+        self.training_data = pd.read_csv(os.path.join(self.gold_data_dir, filename))
+        logger.info(f"Loaded data: {len(self.training_data)} rows")
+
+        if self.positions:
+            self.training_data = self._filter_positions(self.training_data, self.positions)
+
+        feature_cols = self._resolve_feature_columns(self.training_data.columns)
+        target_df = self.training_data[TARGET_COL]
+        target_season = self.training_data["target_season"]
+
+        split_config = self.config.get("split", {})
+        split_years = SplitYears(
+            eval_data_years=split_config.get("eval_data_years", 1),
+            test_data_years=split_config.get("test_data_years", 1),
+            num_training_seasons=split_config.get("num_training_seasons"),
+        )
+
+        if split_years.num_training_seasons is not None:
+            total_seasons = target_season.nunique()
+            requested_seasons = (
+                split_years.num_training_seasons + split_years.eval_data_years + split_years.test_data_years
+            )
+            if requested_seasons > total_seasons:
+                raise ValueError(
+                    f"num_training_seasons ({split_years.num_training_seasons}) + eval_data_years "
+                    f"({split_years.eval_data_years}) + test_data_years ({split_years.test_data_years}) = "
+                    f"{requested_seasons}, which exceeds the {total_seasons} distinct "
+                    "season(s) available in the training set"
+                )
+
+        return self.split(
+            split_years=split_years,
+            target_season=target_season,
+            features_df=self.training_data[feature_cols],
+            target_df=target_df,
+            identity_df=self.training_data[self.identity_cols],
+            sample_weights=self._compute_sample_weights(target_df),
+        )
+
+    def prep_prediction_data(self) -> dict[str, pd.DataFrame]:
+        """
+        Loads the prediction set (the live, not-yet-played season's rows) 
+        and prepares it the same way the training set is prepared.
 
         Returns:
             dict with "identity" and "features" DataFrames, row-aligned.
@@ -125,9 +163,11 @@ class TabularModelDataPrep:
         if self.positions:
             data = self._filter_positions(data, self.positions)
 
+        feature_cols = self._resolve_feature_columns(data.columns)
+
         return {
             "identity": data[self.identity_cols],
-            "features": data[self.feature_cols],
+            "features": data[feature_cols],
         }
 
     @staticmethod
@@ -152,6 +192,7 @@ class TabularModelDataPrep:
         """Returns True if col matches any entry in patterns. "*" on both ends matches col as
         a substring, on one end matches col as a prefix/suffix; entries with no "*" must match
         col exactly."""
+
         for pattern in patterns:
             if pattern.startswith("*") and pattern.endswith("*"):
                 if pattern[1:-1] in col:
@@ -167,11 +208,14 @@ class TabularModelDataPrep:
 
         return False
 
-    def _resolve_feature_columns(self) -> List[str]:
+    def _resolve_feature_columns(self, columns: List[str]) -> List[str]:
         """
-        Collects the set of relevant feature columns by:
+        Collects the set of relevant feature columns from the full column list by:
             - excluding identity and target columns.
             - applying feature exclusion/inclusion rules in config.
+
+        Args:
+            columns: Training set or prediction set's own columns, to resolve candidates from.
 
         Returns:
             List of feature column names, in their original column order.
@@ -180,9 +224,7 @@ class TabularModelDataPrep:
         mode = features_config.get("mode", "")
         patterns = features_config.get("columns", [])
 
-        candidate_cols = [
-            col for col in self.training_data.columns if col not in [*self.identity_cols, TARGET_COL]
-        ]
+        candidate_cols = [col for col in columns if col not in [*self.identity_cols, TARGET_COL]]
 
         if mode == "include":
             return [col for col in candidate_cols if self._matches_any(col, patterns)]
@@ -193,11 +235,12 @@ class TabularModelDataPrep:
 
     def _compute_sample_weights(self, target_vals: pd.Series) -> pd.Series:
         """
-        Computes a per-row weight from config["sample_weights"]. When buckets of weights
-        are provided the weight bucket_n.min <= target < bucket_n+1.min is applied to each row,
-        otherwise the global_weight (default 1) is applied to each row. Rows below the lowest
-        bucket's own min get a weight of 0 (buckets should include a min: 0 entry to avoid
-        zero-weighting rows unintentionally).
+        Computes a per-row weight from config["sample_weights"].
+
+        When buckets of weights are provided the weight bucket_n.min <= target < bucket_n+1.min is applied to each row,
+        otherwise the global_weight (default 1) is applied to each row.
+
+        Rows below the lowest bucket's own min get a weight of 0.
 
         Args:
             target_vals: Target values to compute weights for.
@@ -218,64 +261,60 @@ class TabularModelDataPrep:
 
         return weights
 
-    def split(self) -> dict[str, pd.DataFrame]:
+    @staticmethod
+    def split(
+        split_years: SplitYears,
+        target_season: pd.Series,
+        features_df: pd.DataFrame,
+        target_df: pd.Series,
+        identity_df: pd.DataFrame,
+        sample_weights: pd.Series,
+    ) -> dict[str, pd.DataFrame]:
         """
-        Splits training data chronologically by target_season into train/eval/test sets based
-        on the config's "split" field.
+        Splits the given data chronologically by target_season into train/eval/test sets
+        based on split_years.
 
-        The most recent test_data_years worth of seasons become the test set. The most recent
-        eval_data_years worth of seasons not already claimed by the test set become the eval
-        set. The remaining seasons are training data, the number of seasons used for training
-        can be limited with num_training_seasons.
+        The most recent split_years.test_data_years worth of seasons become the test set.
+        The most recent split_years.eval_data_years worth of seasons not already claimed by
+        the test set become the eval set. The remaining seasons are training data, the
+        number of seasons used for training can be limited with
+        split_years.num_training_seasons.
+
+        Args:
+            split_years: How many seasons to allocate to each of train/eval/test. Callers
+                are responsible passing a valid SplitYears.
+            target_season: target_season column.
+            features_df: Resolved feature columns to split.
+            target_df: Target column to split.
+            identity_df: Identity columns to split.
+            sample_weights: Per-row sample weights to split.
 
         Returns:
             dict with X_train/X_eval/X_test, y_train/y_eval/y_test,
             identity_train/identity_eval/identity_test, sample_weight_train
-
-        Raises:
-            ValueError: If num_training_seasons + eval_data_years + test_data_years exceeds
-                the total number of distinct seasons in the training set.
         """
-        split_config = self.config.get("split", {})
-        eval_data_years = split_config.get("eval_data_years", 1)
-        test_data_years = split_config.get("test_data_years", 1)
-        num_training_seasons = split_config.get("num_training_seasons")
-
-        target_season = self.training_data["target_season"]
-        total_seasons = target_season.nunique()
-
-        if num_training_seasons is not None:
-            requested_seasons = num_training_seasons + eval_data_years + test_data_years
-            if requested_seasons > total_seasons:
-                raise ValueError(
-                    f"num_training_seasons ({num_training_seasons}) + eval_data_years "
-                    f"({eval_data_years}) + test_data_years ({test_data_years}) = "
-                    f"{requested_seasons}, which exceeds the {total_seasons} distinct "
-                    "season(s) available in the training set"
-                )
-
         max_target_season = target_season.max()
-        test_cutoff_season = max_target_season - test_data_years + 1
-        eval_cutoff_season = test_cutoff_season - eval_data_years
+        test_cutoff_season = max_target_season - split_years.test_data_years + 1
+        eval_cutoff_season = test_cutoff_season - split_years.eval_data_years
 
         is_test = target_season >= test_cutoff_season
         is_eval = (target_season >= eval_cutoff_season) & ~is_test
 
-        if num_training_seasons is None:
+        if split_years.num_training_seasons is None:
             is_train = ~is_eval & ~is_test
         else:
-            train_cutoff_season = eval_cutoff_season - num_training_seasons
+            train_cutoff_season = eval_cutoff_season - split_years.num_training_seasons
             is_train = (target_season >= train_cutoff_season) & ~is_eval & ~is_test
 
         return {
-            "X_train": self.features_df[is_train],
-            "X_eval": self.features_df[is_eval],
-            "X_test": self.features_df[is_test],
-            "y_train": self.target_df[is_train],
-            "y_eval": self.target_df[is_eval],
-            "y_test": self.target_df[is_test],
-            "identity_train": self.identity_df[is_train],
-            "identity_eval": self.identity_df[is_eval],
-            "identity_test": self.identity_df[is_test],
-            "sample_weight_train": self.sample_weights[is_train],
+            "X_train": features_df[is_train],
+            "X_eval": features_df[is_eval],
+            "X_test": features_df[is_test],
+            "y_train": target_df[is_train],
+            "y_eval": target_df[is_eval],
+            "y_test": target_df[is_test],
+            "identity_train": identity_df[is_train],
+            "identity_eval": identity_df[is_eval],
+            "identity_test": identity_df[is_test],
+            "sample_weight_train": sample_weights[is_train],
         }
