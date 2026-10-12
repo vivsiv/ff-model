@@ -80,11 +80,15 @@ class TestTabularModel:
         assert model.data_prep is self.data_prep
         assert os.path.isdir(os.path.join(self.test_dir, "predictions"))
 
-    def test_init__eagerly_splits_data_from_data_prep(self):
-        expected = self.data_prep.split()
-
-        pd.testing.assert_frame_equal(self.model.data["X_train"], expected["X_train"])
-        pd.testing.assert_series_equal(self.model.data["y_train"], expected["y_train"])
+    def test_init__gets_the_train_eval_test_split_from_data_prep(self):
+        # TabularModel.__init__ calls data_prep.prep_training_data() itself to get the
+        # train/eval/test split, rather than requiring the caller to do it beforehand.
+        assert set(self.model.data.keys()) == {
+            "X_train", "X_eval", "X_test",
+            "y_train", "y_eval", "y_test",
+            "identity_train", "identity_eval", "identity_test",
+            "sample_weight_train",
+        }
         assert set(self.model.data["identity_test"]["target_season"]) == {2024}
 
     def test_base_model_name__defaults_to_target_when_positions_not_set(self):
@@ -183,12 +187,12 @@ class TestTabularModel:
         assert fake_model.received_sample_weight is not None
         np.testing.assert_array_equal(fake_model.received_sample_weight, self.model.data["sample_weight_train"])
 
-    def test_eval_model__logs_top_n_and_whole_split_metrics_by_default(self):
+    def test_eval_model__logs_top_n_metrics_when_top_n_rows_is_given(self):
         # Eval split (target_season 2023) has targets [16, 17] -- fewer than 50/100/200, so
         # all three cap at the full eval split size (2).
         run_id = self.model.setup_mlflow()
         pipeline = self.model.fit_model(run_id=run_id)
-        self.model.eval_model(pipeline, run_id)
+        self.model.eval_model(pipeline, run_id, top_n_rows=[50, 100, 200])
 
         run = mlflow.get_run(run_id)
         assert "r2" in run.data.metrics
@@ -197,14 +201,25 @@ class TestTabularModel:
             assert f"top_{n}_r2" in run.data.metrics
             assert f"top_{n}_rmse" in run.data.metrics
 
-    def test_eval_model__empty_top_ns_skips_top_n_metrics_entirely(self):
+    def test_eval_model__omitting_top_n_rows_skips_top_n_metrics_entirely(self):
         run_id = self.model.setup_mlflow()
         pipeline = self.model.fit_model(run_id=run_id)
-        self.model.eval_model(pipeline, run_id, top_ns=[])
+        self.model.eval_model(pipeline, run_id)
 
         run = mlflow.get_run(run_id)
         assert not any(key.startswith("top_") for key in run.data.metrics)
-        # whole-split r2/rmse are always logged regardless of top_ns
+        # whole-split r2/rmse are always logged regardless of top_n_rows
+        assert "r2" in run.data.metrics
+        assert "rmse" in run.data.metrics
+
+    def test_eval_model__empty_top_n_rows_skips_top_n_metrics_entirely(self):
+        run_id = self.model.setup_mlflow()
+        pipeline = self.model.fit_model(run_id=run_id)
+        self.model.eval_model(pipeline, run_id, top_n_rows=[])
+
+        run = mlflow.get_run(run_id)
+        assert not any(key.startswith("top_") for key in run.data.metrics)
+        # whole-split r2/rmse are always logged regardless of top_n_rows
         assert "r2" in run.data.metrics
         assert "rmse" in run.data.metrics
 
