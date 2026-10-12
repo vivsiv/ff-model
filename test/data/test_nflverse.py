@@ -1,6 +1,7 @@
 import os
 import tempfile
 import shutil
+from unittest.mock import patch
 
 import pandas as pd
 
@@ -31,3 +32,24 @@ class TestNflverseScraper():
 
         result = pd.read_csv(path)
         pd.testing.assert_frame_equal(result, df)
+
+    def test_fetch_ff_rankings__fetches_draft_rankings_and_saves_to_bronze(self):
+        import polars as pl
+        rankings_df = pl.DataFrame({"id": [1], "player": ["One"], "page_type": ["redraft-qb"]})
+
+        with patch("src.data.nflverse.nfl.load_ff_rankings", return_value=rankings_df) as mock_load:
+            result = self.scraper.fetch_ff_rankings()
+
+        mock_load.assert_called_once_with(type="draft")
+        saved = pd.read_csv(os.path.join(self.scraper.bronze_dir, "ff_rankings.csv"))
+        pd.testing.assert_frame_equal(saved, result)
+
+    def test_fetch_ff_playerids__saves_to_bronze(self):
+        import polars as pl
+        ids_df = pl.DataFrame({"fantasypros_id": [1.0], "gsis_id": ["p1"]})
+
+        with patch("src.data.nflverse.nfl.load_ff_playerids", return_value=ids_df):
+            result = self.scraper.fetch_ff_playerids()
+
+        saved = pd.read_csv(os.path.join(self.scraper.bronze_dir, "ff_playerids.csv"))
+        pd.testing.assert_frame_equal(saved, result)
