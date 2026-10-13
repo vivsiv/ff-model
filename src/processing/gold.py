@@ -523,28 +523,32 @@ class TrainingSetBuilder:
     def _build_prediction_rows(
         self,
         features_df: pd.DataFrame,
+        players_df: pd.DataFrame,
         prediction_season: int,
         player_grouping_col: str = "player_id",
     ) -> pd.DataFrame:
         """
-        Takes each player's most recent season from the features dataframe and reframes it as a row
-        for predicting next season's target values.
+        Takes each player's most recent season from the features dataframe and reframes it as
+        a row for predicting prediction_season's target values.
 
-        Includes every player with at least one season on record, final predictions need
-        to filtering down to who's actually still active/rostered for prediction_season.
+        Only players present in players_df get a row, so retired players are excluded. A player who
+        missed some seasons still gets a row built from their last active season, and players with no prior
+        season on record (rookies) are dropped as there is nothing to build features from.
 
         Args:
             features_df: Output of load_player_features (one row per player-season)
+            players_df: Output of load_prediction_players, the players to build prediction rows for
             prediction_season: The season to build a prediction row for, e.g. 2026
             player_grouping_col: Column identifying a unique player (default: "player_id")
 
         Returns:
-            DataFrame with one row per player, "target_season" set to prediction_season,
-            "target" as NaN, and "seasons_since_played" computed the same way as
+            DataFrame with one row per player in players_df with prior stats, "target_season" set to
+            prediction_season, "target" as NaN, and "seasons_since_played" computed the same way as
             _join_with_target
         """
         latest_df = (
-            features_df.sort_values("season")
+            features_df[features_df[player_grouping_col].isin(players_df[player_grouping_col])]
+            .sort_values("season")
             .groupby(player_grouping_col, as_index=False)
             .tail(1)
             .copy()
@@ -553,25 +557,45 @@ class TrainingSetBuilder:
         latest_df["seasons_since_played"] = prediction_season - latest_df["season"] - 1
         latest_df[TARGET_COL] = np.nan
 
-        return latest_df
+        return latest_df.reset_index(drop=True)
+
+    def load_prediction_players(self, prediction_season: int) -> pd.DataFrame:
+        """
+        Loads the `ff_rankings` silver table: the fantasy viable players we want predictions for, and the
+        team each is currently listed on.
+
+        Args:
+            prediction_season: The season the rankings are for, e.g. 2026
+
+        Returns:
+            One row per player with "player_id", "season" (== prediction_season), and "recent_team"
+            (the team they're on in prediction_season, NaN for free agents)
+        """
+        players_df = pd.read_csv(os.path.join(self.silver_dir, "ff_rankings.csv"), low_memory=False)
+        players_df["season"] = prediction_season
+
+        return players_df.rename(columns={"team": "recent_team"})[["player_id", "season", "recent_team"]]
 
     def build_prediction_set(
         self,
         features_df: pd.DataFrame,
         team_features_df: pd.DataFrame,
         draft_features_df: pd.DataFrame,
+        players_df: pd.DataFrame,
         target_col: str,
         prediction_season: int,
     ) -> pd.DataFrame:
         """
-        Builds the gold prediction set from career-feature rows: each player's most recent
+        Builds the gold prediction set from career-feature rows: each listed player's most recent
         season reframed as a row for predicting prediction_season, with target left blank
-        (NaN).
+        (NaN). The team each player is on in prediction_season comes from players_df, so
+        team change features reflect any offseason moves (free agents are assumed to stay on their last team).
 
         Args:
             features_df: Output of load_player_features
             team_features_df: Output of load_team_features
             draft_features_df: Output of load_draft_features
+            players_df: Output of load_prediction_players, the players to predict and their prediction_season teams
             target_col: Column that will eventually be predicted; must be a registered target
                 for player_stats (only used for naming the output file consistently with
                 build_training_set -- the actual target values are blank)
@@ -586,14 +610,12 @@ class TrainingSetBuilder:
 
         team_stat_columns = get_stat_columns("nflverse", "team_stats")
 
-        prediction_df = self._build_prediction_rows(features_df, prediction_season)
+        prediction_df = self._build_prediction_rows(features_df, players_df, prediction_season)
 
-        # TODO: This is wrong, this method should actually take a df of players for whom we want to make predictions
-        # along with their teams for the current season. For now we pass an empty df which has the effect of assuming
-        # everyone stayed on the same team.
-        no_destination_teams_df = pd.DataFrame(columns=["player_id", "season", "recent_team"])
+        # players_df's "season" is prediction_season, which is what _join_team_features matches on
+        # "target_season" to look up each player's destination team.
         prediction_df = self._join_team_features(
-            prediction_df, no_destination_teams_df, team_features_df, team_stat_columns
+            prediction_df, players_df, team_features_df, team_stat_columns
         )
         prediction_df = self._join_draft_features(prediction_df, draft_features_df)
 
@@ -643,9 +665,10 @@ def main():
     features_df = builder.load_player_features(shrinkage_k=args.shrinkage_k)
     team_features_df = builder.load_team_features()
     draft_features_df = builder.load_draft_features()
+    players_df = builder.load_prediction_players(args.prediction_season)
     builder.build_training_set(features_df, team_features_df, draft_features_df, target_col=args.target_col)
     builder.build_prediction_set(
-        features_df, team_features_df, draft_features_df,
+        features_df, team_features_df, draft_features_df, players_df,
         target_col=args.target_col, prediction_season=args.prediction_season
     )
 

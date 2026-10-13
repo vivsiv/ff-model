@@ -25,6 +25,8 @@ TEAM_RELOCATIONS = {
     "JAC": "JAX",  # Jacksonville
 }
 
+FF_RANKINGS_LIMIT = 250
+
 class NflverseProcessor:
     """Generates silver layer data from nflverse bronze layer data."""
 
@@ -205,6 +207,51 @@ class NflverseProcessor:
 
         return season_snap_counts_df
 
+    def build_ff_rankings(self) -> pd.DataFrame:
+        """
+        Loads the nflverse draft fantasy rankings, keeps the overall redraft ranking page, filters to
+        fantasy-relevant positions (dropping K/DST), keeps the top FF_RANKINGS_LIMIT players by ECR, joins in
+        "player_id" (gsis_id) via the fantasy player ID dictionary, and saves the result to the silver layer.
+        This is the set of fantasy viable players to make predictions for.
+
+        Returns:
+            DataFrame with one row per ranked player sorted best-first (ascending "ecr", i.e. rank 1 first):
+            "player_id", "player_name", "position", "team" (normalized to a single code per franchise, NaN for
+            free agents), and "ecr" (expert consensus rank overall).
+
+            Players with no gsis match in the ID dictionary are dropped (logged) -- they can't be
+            joined to player_stats. This happens after the top FF_RANKINGS_LIMIT cut, so slightly
+            fewer rows may remain.
+        """
+        rankings_df = self._load_bronze("ff_rankings.csv")
+        rankings_df = rankings_df[rankings_df["page_type"] == "redraft-overall"]
+        rankings_df = rankings_df[rankings_df["pos"].isin(FANTASY_POSITIONS)]
+        rankings_df = rankings_df.sort_values("ecr", kind="stable").head(FF_RANKINGS_LIMIT)
+
+        ids_df = self._load_bronze("ff_playerids.csv")
+        ids_df = ids_df[ids_df["fantasypros_id"].notna() & ids_df["gsis_id"].notna()]
+        ids_df = ids_df[["fantasypros_id", "gsis_id"]].astype({"fantasypros_id": "int64"})
+        ids_df = ids_df.drop_duplicates(subset="fantasypros_id", keep="last")
+
+        rankings_df = rankings_df.merge(ids_df, left_on="id", right_on="fantasypros_id", how="left")
+        unmatched = rankings_df[rankings_df["gsis_id"].isna()]
+        if not unmatched.empty:
+            logger.warning(f"Dropping {len(unmatched)} ranked players with no gsis_id: {list(unmatched['player'])}")
+        rankings_df = rankings_df[rankings_df["gsis_id"].notna()]
+
+        rankings_df = rankings_df.rename(columns={"gsis_id": "player_id", "player": "player_name", "pos": "position"})
+        # ff_rankings uses "LAR" for the Rams where the rest of nflverse uses "LA"
+        rankings_df["team"] = rankings_df["team"].replace(TEAM_RELOCATIONS).replace({"LAR": "LA"})
+        rankings_df["team"] = rankings_df["team"].where(rankings_df["team"] != "FA", np.nan)
+        rankings_df = rankings_df[["player_id", "player_name", "position", "team", "ecr"]]
+        rankings_df = rankings_df.drop_duplicates(subset="player_id", keep="first")
+
+        output_path = os.path.join(self.silver_dir, "ff_rankings.csv")
+        rankings_df.to_csv(output_path, index=False)
+        logger.info(f"Saved fantasy rankings to {output_path}")
+
+        return rankings_df
+
     def process_all_data(self, positions: list[str] = FANTASY_POSITIONS) -> None:
         """Builds all silver layer tables from bronze layer data."""
         self.build_player_stats()
@@ -212,6 +259,7 @@ class NflverseProcessor:
         self.build_draft_picks()
         player_ids_df = self.build_player_ids()
         self.build_snap_counts(player_ids_df)
+        self.build_ff_rankings()
 
 
 def main():

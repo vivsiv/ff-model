@@ -135,13 +135,59 @@ class NflverseScraper:
 
         return df
 
+    def fetch_ff_rankings(self) -> pd.DataFrame:
+        """
+        Fetch the latest "draft" fantasy football rankings (a snapshot of the current consensus
+        rankings, one row per player per ranking page) and save them to the bronze layer as a single file.
+
+        Used as the source of which players are fantasy viable, and so should be predicted for.
+
+        Returns:
+            DataFrame with one row per player per ranking "page_type" (e.g. "redraft-overall",
+            "redraft-qb", "dynasty-wr"), identified by the FantasyPros "id" (not gsis).
+        """
+        logger.info("Fetching nflverse draft fantasy rankings")
+
+        df = nfl.load_ff_rankings(type="draft").to_pandas()
+        if not df.empty:
+            self._save(df, "ff_rankings.csv")
+        else:
+            logger.warning("No fantasy rankings returned")
+
+        return df
+
+    def fetch_ff_playerids(self) -> pd.DataFrame:
+        """
+        Fetch the nflverse fantasy player ID dictionary (one row per player, mapping
+        "fantasypros_id" to "gsis_id" and other fantasy platforms' IDs), save it to the bronze
+        layer as a single file.
+
+        Used to join ff_rankings (which only carries the FantasyPros id) back onto "player_id" (gsis_id).
+
+        Returns:
+            DataFrame with one row per player
+        """
+        logger.info("Fetching nflverse fantasy player ID dictionary")
+
+        df = nfl.load_ff_playerids().to_pandas()
+        if not df.empty:
+            self._save(df, "ff_playerids.csv")
+        else:
+            logger.warning("No fantasy player IDs returned")
+
+        return df
+
     def fetch_all(self) -> None:
-        """Fetch player, team, draft pick, snap count, and player ID data for all available seasons."""
+        """
+        Fetch player, team, draft pick, snap count, player ID, fantasy rankings, and fantasy player ID data.
+        """
         self.fetch_player_stats()
         self.fetch_team_stats()
         self.fetch_draft_picks()
         self.fetch_snap_counts()
         self.fetch_players()
+        self.fetch_ff_rankings()
+        self.fetch_ff_playerids()
 
 
 def main():

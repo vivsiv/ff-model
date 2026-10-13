@@ -1,6 +1,7 @@
 import os
 import tempfile
 import shutil
+from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
@@ -353,3 +354,66 @@ class TestNflverseProcessor():
             "offense_pct": [0.4],
         })
         pd.testing.assert_frame_equal(result, expected)
+
+    def test_build_ff_rankings__filters_page_and_positions_sorts_by_ecr_maps_ids_and_normalizes_teams(self):
+        test_dir = tempfile.mkdtemp()
+        try:
+            bronze_dir = os.path.join(test_dir, "bronze", "nflv")
+            os.makedirs(bronze_dir)
+            pd.DataFrame({
+                "id": [3, 2, 1, 4, 5, 6, 1, 7],
+                "player": ["Three", "Two", "One", "Four", "Kicker", "Six", "One", "Seven"],
+                "page_type": ["redraft-overall"] * 6 + ["redraft-qb", "dynasty-overall"],
+                "pos": ["RB", "WR", "QB", "TE", "K", "WR", "QB", "WR"],
+                "team": ["FA", "LAR", "JAC", "KC", "SF", "SF", "JAC", "SF"],
+                "ecr": [3.0, 2.0, 1.0, 4.0, 5.0, 6.0, 1.0, 7.0],
+            }).to_csv(os.path.join(bronze_dir, "ff_rankings.csv"), index=False)
+            # id 4 has no gsis_id, id 6 has no row at all; ids are floats in the real file
+            pd.DataFrame({
+                "fantasypros_id": [1.0, 2.0, 3.0, 4.0, np.nan],
+                "gsis_id": ["p1", "p2", "p3", np.nan, "p_no_fp"],
+            }).to_csv(os.path.join(bronze_dir, "ff_playerids.csv"), index=False)
+
+            processor = NflverseProcessor(data_dir=test_dir)
+            result = processor.build_ff_rankings().reset_index(drop=True)
+
+            # Only the overall page, K dropped, sorted best ecr first, unmatched dropped,
+            # JAC -> JAX, LAR -> LA, FA -> NaN
+            expected = pd.DataFrame({
+                "player_id": ["p1", "p2", "p3"],
+                "player_name": ["One", "Two", "Three"],
+                "position": ["QB", "WR", "RB"],
+                "team": ["JAX", "LA", np.nan],
+                "ecr": [1.0, 2.0, 3.0],
+            })
+            pd.testing.assert_frame_equal(result, expected)
+            pd.testing.assert_frame_equal(
+                pd.read_csv(os.path.join(processor.silver_dir, "ff_rankings.csv")), expected
+            )
+        finally:
+            shutil.rmtree(test_dir)
+
+    def test_build_ff_rankings__keeps_only_the_top_players_by_ecr(self):
+        test_dir = tempfile.mkdtemp()
+        try:
+            bronze_dir = os.path.join(test_dir, "bronze", "nflv")
+            os.makedirs(bronze_dir)
+            pd.DataFrame({
+                "id": [1, 2, 3],
+                "player": ["One", "Two", "Three"],
+                "page_type": ["redraft-overall"] * 3,
+                "pos": ["QB", "WR", "RB"],
+                "team": ["KC", "SF", "DAL"],
+                "ecr": [30.0, 10.0, 20.0],
+            }).to_csv(os.path.join(bronze_dir, "ff_rankings.csv"), index=False)
+            pd.DataFrame({
+                "fantasypros_id": [1.0, 2.0, 3.0], "gsis_id": ["p1", "p2", "p3"],
+            }).to_csv(os.path.join(bronze_dir, "ff_playerids.csv"), index=False)
+
+            processor = NflverseProcessor(data_dir=test_dir)
+            with patch("src.processing.nflverse.FF_RANKINGS_LIMIT", 2):
+                result = processor.build_ff_rankings()
+
+            assert list(result["player_id"]) == ["p2", "p3"]
+        finally:
+            shutil.rmtree(test_dir)

@@ -397,8 +397,9 @@ class TestTrainingSetBuilder():
             "season": [2020, 2021, 2022],
             "fantasy_points_ppr_career_avg": [10.0, 15.0, 20.0],
         })
+        players_df = pd.DataFrame({"player_id": ["p1"], "season": [2023], "recent_team": ["KC"]})
 
-        result = self.builder._build_prediction_rows(features_df, prediction_season=2023)
+        result = self.builder._build_prediction_rows(features_df, players_df, prediction_season=2023)
 
         assert len(result) == 1
         assert result["season"].iloc[0] == 2022
@@ -408,19 +409,35 @@ class TestTrainingSetBuilder():
         # 2022 -> predicting 2023 is a normal adjacent-year gap (no seasons missed)
         assert result["seasons_since_played"].iloc[0] == 0
 
-    def test_build_prediction_rows__reflects_a_real_gap_since_last_played(self):
+    def test_build_prediction_rows__listed_player_with_a_gap_still_gets_a_row(self):
         features_df = pd.DataFrame({
             "player_id": ["p1", "p1"],
             "season": [2019, 2020],
             "fantasy_points_ppr_career_avg": [10.0, 15.0],
         })
+        players_df = pd.DataFrame({"player_id": ["p1"], "season": [2023], "recent_team": ["KC"]})
 
-        result = self.builder._build_prediction_rows(features_df, prediction_season=2023)
+        result = self.builder._build_prediction_rows(features_df, players_df, prediction_season=2023)
 
         # last played 2020, predicting 2023 -> 2021 and 2022 were missed (2 seasons)
         assert result["season"].iloc[0] == 2020
         assert result["target_season"].iloc[0] == 2023
         assert result["seasons_since_played"].iloc[0] == 2
+
+    def test_build_prediction_rows__only_includes_listed_players(self):
+        features_df = pd.DataFrame({
+            "player_id": ["retired", "active", "rookie_not_in_features"],
+            "season": [2015, 2022, 2022],
+            "fantasy_points_ppr_career_avg": [30.0, 20.0, 5.0],
+        })
+        players_df = pd.DataFrame({
+            "player_id": ["active", "rookie_with_no_stats"], "season": [2023, 2023], "recent_team": ["KC", "SF"]
+        })
+
+        result = self.builder._build_prediction_rows(features_df, players_df, prediction_season=2023)
+
+        # The retired player isn't in players_df, the listed rookie has no prior season to build a row from
+        assert list(result["player_id"]) == ["active"]
 
     def test_build_prediction_rows__does_not_mix_players(self):
         features_df = pd.DataFrame({
@@ -428,9 +445,12 @@ class TestTrainingSetBuilder():
             "season": [2020, 2021, 2019, 2020, 2022],
             "fantasy_points_ppr_career_avg": [10.0, 20.0, 1.0, 2.0, 30.0],
         })
+        players_df = pd.DataFrame({
+            "player_id": ["p1", "p2"], "season": [2023, 2023], "recent_team": ["KC", "SF"]
+        })
 
         result = self.builder._build_prediction_rows(
-            features_df, prediction_season=2023
+            features_df, players_df, prediction_season=2023
         ).sort_values("player_id").reset_index(drop=True)
 
         assert list(result["player_id"]) == ["p1", "p2"]
@@ -438,10 +458,33 @@ class TestTrainingSetBuilder():
         assert list(result["fantasy_points_ppr_career_avg"]) == [20.0, 30.0]
         assert list(result["seasons_since_played"]) == [1, 0]
 
+    def test_load_prediction_players__sets_season_and_renames_team(self):
+        test_dir = tempfile.mkdtemp()
+        try:
+            silver_dir = os.path.join(test_dir, "silver", "nflv")
+            os.makedirs(silver_dir)
+            pd.DataFrame({
+                "player_id": ["p1", "p2"],
+                "player_name": ["One", "Two"],
+                "position": ["QB", "WR"],
+                "team": ["KC", np.nan],
+                "ecr": [1.0, 5.0],
+            }).to_csv(os.path.join(silver_dir, "ff_rankings.csv"), index=False)
+
+            builder = TrainingSetBuilder(data_dir=test_dir)
+            result = builder.load_prediction_players(prediction_season=2026)
+
+            expected = pd.DataFrame({
+                "player_id": ["p1", "p2"], "season": [2026, 2026], "recent_team": ["KC", np.nan]
+            })
+            pd.testing.assert_frame_equal(result, expected)
+        finally:
+            shutil.rmtree(test_dir)
+
     def test_build_prediction_set__rejects_a_target_not_in_the_registry(self):
         with pytest.raises(AssertionError):
             self.builder.build_prediction_set(
-                pd.DataFrame(), pd.DataFrame(), pd.DataFrame(),
+                pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(),
                 target_col="not_a_real_target", prediction_season=2026
             )
 
