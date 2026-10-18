@@ -119,25 +119,8 @@ class TabularModelDataPrep:
         target_df = self.training_data[TARGET_COL]
         target_season = self.training_data["target_season"]
 
-        split_config = self.config.get("split", {})
-        split_years = SplitYears(
-            eval_data_years=split_config.get("eval_data_years", 1),
-            test_data_years=split_config.get("test_data_years", 1),
-            num_training_seasons=split_config.get("num_training_seasons"),
-        )
-
-        if split_years.num_training_seasons is not None:
-            total_seasons = target_season.nunique()
-            requested_seasons = (
-                split_years.num_training_seasons + split_years.eval_data_years + split_years.test_data_years
-            )
-            if requested_seasons > total_seasons:
-                raise ValueError(
-                    f"num_training_seasons ({split_years.num_training_seasons}) + eval_data_years "
-                    f"({split_years.eval_data_years}) + test_data_years ({split_years.test_data_years}) = "
-                    f"{requested_seasons}, which exceeds the {total_seasons} distinct "
-                    "season(s) available in the training set"
-                )
+        split_years = self._parse_split_years()
+        self._validate_split_years(split_years, target_season)
 
         return self.split(
             split_years=split_years,
@@ -147,6 +130,44 @@ class TabularModelDataPrep:
             identity_df=self.training_data[self.identity_cols],
             sample_weights=self._compute_sample_weights(target_df),
         )
+
+    def _parse_split_years(self) -> SplitYears:
+        """
+        Returns:
+            SplitYears built from config["split"], with the documented defaults.
+        """
+        split_config = self.config.get("split", {})
+        return SplitYears(
+            eval_data_years=split_config.get("eval_data_years", 1),
+            test_data_years=split_config.get("test_data_years", 1),
+            num_training_seasons=split_config.get("num_training_seasons"),
+        )
+
+    @staticmethod
+    def _validate_split_years(split_years: SplitYears, target_season: pd.Series) -> None:
+        """
+        Args:
+            split_years: Parsed split config.
+            target_season: target_season column of the data being split.
+
+        Raises:
+            ValueError: If num_training_seasons + eval_data_years + test_data_years exceeds the
+                total number of distinct seasons available.
+        """
+        if split_years.num_training_seasons is None:
+            return
+
+        total_seasons = target_season.nunique()
+        requested_seasons = (
+            split_years.num_training_seasons + split_years.eval_data_years + split_years.test_data_years
+        )
+        if requested_seasons > total_seasons:
+            raise ValueError(
+                f"num_training_seasons ({split_years.num_training_seasons}) + eval_data_years "
+                f"({split_years.eval_data_years}) + test_data_years ({split_years.test_data_years}) = "
+                f"{requested_seasons}, which exceeds the {total_seasons} distinct "
+                "season(s) available in the training set"
+            )
 
     def prep_prediction_data(self) -> dict[str, pd.DataFrame]:
         """
@@ -262,6 +283,34 @@ class TabularModelDataPrep:
         return weights
 
     @staticmethod
+    def split_masks(split_years: SplitYears, target_season: pd.Series) -> tuple[pd.Series, pd.Series, pd.Series]:
+        """
+        Computes the chronological train/eval/test row masks for split(), see its docstring for
+        how split_years maps to seasons.
+
+        Args:
+            split_years: How many seasons to allocate to each of train/eval/test.
+            target_season: target_season column. NaN values belong to no split.
+
+        Returns:
+            (is_train, is_eval, is_test) boolean Series aligned with target_season.
+        """
+        max_target_season = target_season.max()
+        test_cutoff_season = max_target_season - split_years.test_data_years + 1
+        eval_cutoff_season = test_cutoff_season - split_years.eval_data_years
+
+        is_test = target_season >= test_cutoff_season
+        is_eval = (target_season >= eval_cutoff_season) & ~is_test
+
+        if split_years.num_training_seasons is None:
+            is_train = (target_season < eval_cutoff_season)
+        else:
+            train_cutoff_season = eval_cutoff_season - split_years.num_training_seasons
+            is_train = (target_season >= train_cutoff_season) & (target_season < eval_cutoff_season)
+
+        return is_train, is_eval, is_test
+
+    @staticmethod
     def split(
         split_years: SplitYears,
         target_season: pd.Series,
@@ -293,18 +342,7 @@ class TabularModelDataPrep:
             dict with X_train/X_eval/X_test, y_train/y_eval/y_test,
             identity_train/identity_eval/identity_test, sample_weight_train
         """
-        max_target_season = target_season.max()
-        test_cutoff_season = max_target_season - split_years.test_data_years + 1
-        eval_cutoff_season = test_cutoff_season - split_years.eval_data_years
-
-        is_test = target_season >= test_cutoff_season
-        is_eval = (target_season >= eval_cutoff_season) & ~is_test
-
-        if split_years.num_training_seasons is None:
-            is_train = ~is_eval & ~is_test
-        else:
-            train_cutoff_season = eval_cutoff_season - split_years.num_training_seasons
-            is_train = (target_season >= train_cutoff_season) & ~is_eval & ~is_test
+        is_train, is_eval, is_test = TabularModelDataPrep.split_masks(split_years, target_season)
 
         return {
             "X_train": features_df[is_train],

@@ -2,6 +2,7 @@ import os
 import shutil
 import tempfile
 
+import numpy as np
 import pandas as pd
 import pytest
 import yaml
@@ -301,3 +302,15 @@ class TestTabularModelDataPrep:
         assert prep._resolve_feature_columns(prep.training_data.columns) == ["f1"]
         data = prep.prep_training_data()
         assert list(data["X_train"].columns) == ["f1"]
+
+    def test_split_masks__partitions_seasons_and_leaves_missing_target_seasons_in_no_split(self):
+        target_season = pd.Series([2019, 2020, 2021, 2022, 2023, 2024, np.nan])
+
+        is_train, is_eval, is_test = TabularModelDataPrep.split_masks(
+            SplitYears(eval_data_years=1, test_data_years=2, num_training_seasons=2), target_season
+        )
+
+        # test = 2023, 2024; eval = 2022; train = the 2 seasons before that (2020, 2021)
+        assert is_test.tolist() == [False, False, False, False, True, True, False]
+        assert is_eval.tolist() == [False, False, False, True, False, False, False]
+        assert is_train.tolist() == [False, True, True, False, False, False, False]
