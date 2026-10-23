@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 import torch
 
-from src.modeling.data_prep import TabularModelDataPrep
+from src.modeling.data_prep import SplitYears, TabularModelDataPrep
 from src.processing.gold import TARGET_COL, prediction_set_filename, training_set_filename
 
 logger = logging.getLogger(__name__)
@@ -118,16 +118,13 @@ class SequenceModelDataPrep(TabularModelDataPrep):
         feature_cols = self._resolve_feature_columns(data.columns)
         self._check_numeric(data, feature_cols)
 
-        split_years = self._parse_split_years()
-        self._validate_split_years(split_years, data[TARGET_SEASON_COL])
-
         steps = self._order_steps(data)
-        is_train, is_eval, is_test = self.split_masks(split_years, steps[TARGET_SEASON_COL])
+        masks = SplitYears.from_config(self.config.get("split", {})).to_masks(steps[TARGET_SEASON_COL])
         is_labeled = steps[TARGET_COL].notna() & steps[TARGET_SEASON_COL].notna()
         sample_weights = self._compute_sample_weights(steps[TARGET_COL])
 
         sets = {}
-        for name, in_split in [("train", is_train), ("eval", is_eval), ("test", is_test)]:
+        for name, in_split in [("train", masks.is_train), ("eval", masks.is_eval), ("test", masks.is_test)]:
             loss_rows = in_split & is_labeled
             keep = self._rows_up_to_last_loss_step(steps, loss_rows)
             sets[name] = self._build_sequence_set(
