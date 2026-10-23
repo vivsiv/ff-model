@@ -7,7 +7,13 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.processing.gold import TrainingSetBuilder
+from src.processing.gold import (
+    TrainingSetBuilder,
+    load_prediction_set,
+    load_training_set,
+    prediction_set_filename,
+    training_set_filename,
+)
 
 
 class TestTrainingSetBuilder():
@@ -685,3 +691,50 @@ class TestTrainingSetBuilder():
 
         assert list(result["draft_pick"]) == [15, 200]
         assert list(result["age"]) == [24, 29]  # 21+(2021-2018)=24, 23+(2021-2015)=29
+
+
+class TestLoadGoldSets:
+    def test_load_training_set__reads_the_file_build_training_set_saves(self):
+        gold_dir = tempfile.mkdtemp()
+        try:
+            expected = pd.DataFrame({"player_id": ["p1", "p2"], "target_season": [2021, 2022], "target": [1.5, 2.5]})
+            expected.to_csv(os.path.join(gold_dir, training_set_filename("target_1")), index=False)
+
+            pd.testing.assert_frame_equal(load_training_set(gold_dir, "target_1"), expected)
+        finally:
+            shutil.rmtree(gold_dir)
+
+    def test_load_prediction_set__reads_the_file_build_prediction_set_saves_with_blank_targets(self):
+        gold_dir = tempfile.mkdtemp()
+        try:
+            expected = pd.DataFrame({"player_id": ["p1"], "target_season": [2026], "target": [np.nan]})
+            expected.to_csv(os.path.join(gold_dir, prediction_set_filename("target_1")), index=False)
+
+            result = load_prediction_set(gold_dir, "target_1")
+
+            pd.testing.assert_frame_equal(result, expected)
+            assert result["target"].isna().all()
+        finally:
+            shutil.rmtree(gold_dir)
+
+    def test_loaders__read_each_targets_own_file(self):
+        gold_dir = tempfile.mkdtemp()
+        try:
+            for target, value in [("target_1", 1), ("target_2", 2)]:
+                pd.DataFrame({"x": [value]}).to_csv(os.path.join(gold_dir, training_set_filename(target)), index=False)
+                pd.DataFrame({"x": [value * 10]}).to_csv(os.path.join(gold_dir, prediction_set_filename(target)), index=False)
+
+            assert load_training_set(gold_dir, "target_2")["x"].tolist() == [2]
+            assert load_prediction_set(gold_dir, "target_1")["x"].tolist() == [10]
+        finally:
+            shutil.rmtree(gold_dir)
+
+    def test_loaders__raise_when_the_file_is_missing(self):
+        gold_dir = tempfile.mkdtemp()
+        try:
+            with pytest.raises(FileNotFoundError):
+                load_training_set(gold_dir, "target_1")
+            with pytest.raises(FileNotFoundError):
+                load_prediction_set(gold_dir, "target_1")
+        finally:
+            shutil.rmtree(gold_dir)

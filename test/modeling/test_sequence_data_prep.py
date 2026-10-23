@@ -47,9 +47,9 @@ def _write(data_dir, training_df, prediction_df):
     prediction_df.to_csv(os.path.join(gold_dir, "target_1__prediction_set.csv"), index=False)
 
 
-def _step_ids(sequence_set):
+def _step_ids(sequence_dataset):
     """(player, season) of every real step, in X[pad_mask] order."""
-    return list(zip(sequence_set.identity["player_id"], sequence_set.identity["season"]))
+    return list(zip(sequence_dataset.identity["player_id"], sequence_dataset.identity["season"]))
 
 
 class TestSequenceModelDataPrep:
@@ -66,15 +66,15 @@ class TestSequenceModelDataPrep:
         base = {"target": "target_1", "features": {"mode": "exclude", "columns": ["*_career_*"]}}
         return SequenceModelDataPrep(data_dir=self.test_dir, config={**base, **(config or {})})
 
-    def test_prep_training_data__returns_train_eval_test_sequence_sets(self):
+    def test_prep_training_data__returns_train_eval_test_sequence_datasets(self):
         data = self._prep().prep_training_data()
 
         assert set(data.keys()) == {"train", "eval", "test"}
-        for sequence_set in data.values():
-            assert sequence_set.X.dtype == torch.float32
-            assert sequence_set.X.shape[0] == len(sequence_set.lengths)
-            assert sequence_set.X.shape[2] == 2
-            assert sequence_set.feature_columns == ["f1", "f2"]
+        for sequence_dataset in data.values():
+            assert sequence_dataset.X.dtype == torch.float32
+            assert sequence_dataset.X.shape[0] == len(sequence_dataset.lengths)
+            assert sequence_dataset.X.shape[2] == 2
+            assert sequence_dataset.feature_columns == ["f1", "f2"]
 
     def test_prep_training_data__feature_columns_exclude_identity_target_and_configured_patterns(self):
         data = self._prep().prep_training_data()

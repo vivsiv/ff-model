@@ -94,12 +94,17 @@ PHASE 5. Sequential Model [TODO]
     - Features are selected by config like the tabular prep. The tabular gold rows carry 735 career-aggregate columns (*_career_*, *_trend, *_shrunk_avg,
       *_positional_baseline) that exist to approximate sequence information; the sequence config should exclude them by default (and can include them to ablate).
     - Implemented in src/modeling/sequence_data_prep.py (SequenceModelDataPrep, subclass of TabularModelDataPrep; config in configs/sequence_ppr_points_per_game.yaml).
-      PyTorch is now a dependency. prep_training_data() returns {"train","eval","test"} SequenceSets (padded [N, L, F] X, lengths, y, loss_mask, identity aligned with
+      PyTorch is now a dependency. prep_training_data() returns {"train","eval","test"} SequenceDatasets (padded [N, L, F] X, lengths, y, loss_mask, identity aligned with
       X[pad_mask], sample_weight on train only). Each split keeps a player's history only up to their last loss step in that split, so no split contains inputs from after
       what it scores whatever the architecture; the training window (num_training_seasons) limits loss steps, not input history. prep_prediction_data() joins training-set
       history + the prediction row internally (last step == the prediction). Loss steps per split match the tabular prep exactly (4509/471/486 for ppr_points_per_game).
     - Not handled yet (model's job, like the sklearn pipeline in the tabular model): NaN imputation (~3% of real feature values; snap counts pre-2013, age/draft_pick for
       undrafted) and feature scaling (fit on train loss steps only).
+    - TODO: gold.py's _join_with_target doesn't explicitly drop rows whose target is NaN (it only drops players with no prior season). No NaN targets exist today
+      (silver ppr_points_per_game/fantasy_points_ppr/fantasy_points have none and target_season comes from a real season row), so nothing is broken, but nothing
+      enforces it either. A NaN target in the training set would break tabular fitting and, in the sequence prep, silently be treated as unlabeled via its is_labeled
+      check. Fix in gold (filter target_df to non-null targets before the merge_asof; the season's features are still valid as a feature row for the next season)
+      and then decide whether sequence prep's is_labeled check becomes redundant.
     - Open: the sequence config excludes fantasy_points*/ppr_points_per_game* like the tabular config, which hides each step's own past ppr_points_per_game from the model. Revisit.
     - Open: whether to feed raw season / seasons_since_played-style gap features to the model (a modeling-layer config choice).
     - Open: seasons_since_played plays two roles. At the step a prediction is read from it is the forecast horizon; at every earlier step it is only
@@ -112,4 +117,5 @@ PHASE 5. Sequential Model [TODO]
       (own = team_* - team_shift_*), so dropping the shift there loses the origin team's context. Plan: keep both in the first run; then either ablate
       team_shift_*, or add own-team-vs-league columns to gold.py and drop the shift.
 2. Build an lstm model and evaluate it
-3. Build a trasformer model or finetune an existing one and evaluate it
+3. Implement per batch padding instead of global padding.
+4. Build a trasformer model or finetune an existing one and evaluate it

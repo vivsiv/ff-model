@@ -7,7 +7,7 @@ import yaml
 import pandas as pd
 
 from src.processing.column_registry import get_identity_columns
-from src.processing.gold import TARGET_COL, prediction_set_filename, training_set_filename
+from src.processing.gold import TARGET_COL, load_prediction_set, load_training_set
 
 logging.basicConfig(
     level=logging.INFO,
@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 DATA_PREP_CONFIG_ARTIFACT_PATH = "data_prep_config.json"
 
-
+# TODO: lets have generic data prep constants live in a utilities file while tabular and sequence get moved to their own subdirs.
 @dataclass
 class SplitMasks:
     """Boolean row masks assigning each row to the train, eval or test split, aligned with the
@@ -165,6 +165,8 @@ class TabularModelDataPrep:
 
         return cls(data_dir=data_dir, config=config)
 
+    # TODO: this isn't just training data its split data.
+    # TODO: while lazy this shouldn't recompute everytime its called on a dataprep, once its called it should cache.
     def prep_training_data(self) -> dict[str, pd.DataFrame]:
         """
         Loads the gold training set and prepares it for modeling.
@@ -179,9 +181,7 @@ class TabularModelDataPrep:
             ValueError: If split config's num_training_seasons + eval_data_years +
                 test_data_years exceeds the total number of distinct seasons available.
         """
-        filename = training_set_filename(self.target)
-        self.training_data = pd.read_csv(os.path.join(self.gold_data_dir, filename))
-        logger.info(f"Loaded data: {len(self.training_data)} rows")
+        self.training_data = load_training_set(self.gold_data_dir, self.target)
 
         if self.positions:
             self.training_data = self._filter_positions(self.training_data, self.positions)
@@ -199,6 +199,7 @@ class TabularModelDataPrep:
             sample_weights=self._compute_sample_weights(target_df),
         )
 
+    # TODO: can this just be done in prep_training_data?
     def prep_prediction_data(self) -> dict[str, pd.DataFrame]:
         """
         Loads the prediction set (the live, not-yet-played season's rows) 
@@ -207,9 +208,7 @@ class TabularModelDataPrep:
         Returns:
             dict with "identity" and "features" DataFrames, row-aligned.
         """
-        filename = prediction_set_filename(self.target)
-        data = pd.read_csv(os.path.join(self.gold_data_dir, filename))
-        logger.info(f"Loaded prediction data: {len(data)} rows")
+        data = load_prediction_set(self.gold_data_dir, self.target)
 
         if self.positions:
             data = self._filter_positions(data, self.positions)
