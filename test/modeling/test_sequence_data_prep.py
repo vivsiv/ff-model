@@ -47,9 +47,9 @@ class TestSequenceDataset:
             feature_columns=["f1", "f2"],
         )
 
-    def test_pad_mask(self):
+    def test_real_step_mask(self):
         _assert_tensors_equal(
-            self._dataset().pad_mask,
+            self._dataset().real_step_mask,
             torch.tensor([
                 [True, True, True],
                 [True, False, False],
@@ -141,29 +141,22 @@ class TestSequenceModelDataPrep:
         base = {"target": "target_1", "features": {"mode": "exclude", "columns": ["*_career_*"]}}
         return SequenceModelDataPrep(data_dir=self.test_dir, config={**base, **(config or {})})
 
-    def test_prep_training_data__returns_train_eval_test_sequence_datasets(self):
+    def test_prep_training_data__resolves_feature_columns_correctly(self):
         data = self._prep().prep_training_data()
-
-        assert set(data.keys()) == {"train", "eval", "test"}
-        for sequence_dataset in data.values():
-            assert sequence_dataset.X.dtype == torch.float32
-            assert sequence_dataset.X.shape[0] == len(sequence_dataset.lengths)
-            assert sequence_dataset.X.shape[2] == 2
-            assert sequence_dataset.feature_columns == ["f1", "f2"]
-
-    def test_prep_training_data__feature_columns_exclude_identity_target_and_configured_patterns(self):
-        data = self._prep().prep_training_data()
-
+        for seq_ds in data.values():
+            assert seq_ds.feature_columns == ["f1", "f2"]
         assert data["train"].feature_columns == ["f1", "f2"]
 
-        everything = self._prep({"features": {}}).prep_training_data()
-        assert everything["train"].feature_columns == ["f1", "f2", "f1_career_avg"]
+        data_no_exclude = self._prep({"features": {}}).prep_training_data()
+        for seq_ds in data_no_exclude.values():
+            assert seq_ds.feature_columns == ["f1", "f2", "f1_career_avg"]
 
-    def test_prep_training_data__train_split_only_has_players_with_train_loss_steps(self):
+
+    def test_prep_training_data__generates_train_split_set_correctly(self):
         train = self._prep().prep_training_data()["train"]
 
-        # A (T 2021, 2022) and D (T 2021). B and E only have T >= 2023.
-        # A's 2022 step (T 2023) is an eval T and is cut.
+        # - A & D's steps with T <= 2022 are in the training set sequences, (2 and 1 step respectively)
+        # - B & E have no steps with T <= 2022, they are eliminated entirely.
         nan = float("nan")
         expected = SequenceDataset(
             X=torch.tensor([
@@ -184,121 +177,126 @@ class TestSequenceModelDataPrep:
 
         _assert_sequence_datasets_equal(train, expected)
 
-    def test_prep_training_data__splits_hold_history_up_to_last_loss_step_only(self):
-        data = self._prep().prep_training_data()
+    def test_prep_training_data__generates_eval_split_set_correctly(self):
+        eval_split = self._prep().prep_training_data()["eval"]
 
-        # Train: A's step for season 2022 has T == 2023 (an eval target), so it and later steps are cut.
-        pd.testing.assert_frame_equal(
-            data["train"].identity[["player_id", "season"]],
-            pd.DataFrame([("A", 2020), ("A", 2021), ("D", 2020)], columns=["player_id", "season"]),
-        )
-        # Eval: A's training-era history is kept as input, steps after the eval target are cut.
-        pd.testing.assert_frame_equal(
-            data["eval"].identity[["player_id", "season"]],
-            pd.DataFrame(
-                [("A", 2020), ("A", 2021), ("A", 2022), ("B", 2022), ("E", 2021)],
-                columns=["player_id", "season"],
-            ),
-        )
-        # Test: full sequences.
-        pd.testing.assert_frame_equal(
-            data["test"].identity[["player_id", "season"]],
-            pd.DataFrame(
-                [
-                    ("A", 2020), ("A", 2021), ("A", 2022), ("A", 2023),
-                    ("B", 2022), ("B", 2023),
-                    ("E", 2021), ("E", 2023),
-                ],
-                columns=["player_id", "season"],
-            ),
+        nan = float("nan")
+        expected = SequenceDataset(
+            X=torch.tensor([
+                [[2020., 100.], [2021., 100.], [2022., 100.]],  # A: 3 real steps
+                [[2022., 200.], [nan, nan], [nan, nan]],        # B: 1 real step + 2 padding
+                [[2021., 500.], [nan, nan], [nan, nan]],        # E: 1 real step + 2 padding
+            ]),
+            lengths=torch.tensor([3, 1, 1]),
+            identity=self._identity_frame([
+                (0, 0, "A", 2020, 2021),
+                (0, 1, "A", 2021, 2022),
+                (0, 2, "A", 2022, 2023),
+                (1, 0, "B", 2022, 2023),
+                (2, 0, "E", 2021, 2023),
+            ]),
+            feature_columns=["f1", "f2"],
+            y=torch.tensor([[0., 0., 12.], [20., 0., 0.], [7., 0., 0.]]),
+            loss_mask=torch.tensor([
+                [False, False, True],
+                [True, False, False],
+                [True, False, False]
+            ]),
         )
 
-    def test_prep_training_data__train_inputs_contain_nothing_from_after_the_train_period(self):
-        train = self._prep().prep_training_data()["train"]
+        _assert_sequence_datasets_equal(eval_split, expected)
 
-        real_seasons = train.X[train.pad_mask][:, 0]  # f1 == season
-        # Latest train feature season is 2021 (target 2022); 2022+ would be eval/test-period information.
-        assert real_seasons.max().item() == 2021.0
+    def test_prep_training_data__generates_test_split_set_correctly(self):
+        test_split = self._prep().prep_training_data()["test"]
 
-    def test_prep_training_data__loss_mask_marks_only_steps_with_a_label_in_the_split(self):
-        data = self._prep().prep_training_data()
+        nan = float("nan")
+        expected = SequenceDataset(
+            X=torch.tensor([
+                [[2020., 100.], [2021., 100.], [2022., 100.], [2023., 100.]],  # A: 4 real steps
+                [[2022., 200.], [2023., 200.], [nan, nan], [nan, nan]],        # B: 2 real steps + 2 padding
+                [[2021., 500.], [2023., 500.], [nan, nan], [nan, nan]],        # E: 2 real steps (2022 missed) + 2 padding
+            ]),
+            lengths=torch.tensor([4, 2, 2]),
+            identity=self._identity_frame([
+                (0, 0, "A", 2020, 2021),
+                (0, 1, "A", 2021, 2022),
+                (0, 2, "A", 2022, 2023),
+                (0, 3, "A", 2023, 2024),
+                (1, 0, "B", 2022, 2023),
+                (1, 1, "B", 2023, 2024),
+                (2, 0, "E", 2021, 2023),
+                (2, 1, "E", 2023, 2024),
+            ]),
+            feature_columns=["f1", "f2"],
+            y=torch.tensor([[0., 0., 0., 13.], [0., 21., 0., 0.], [0., 8., 0., 0.]]),
+            loss_mask=torch.tensor([
+                [False, False, False, True],
+                [False, True, False, False],
+                [False, True, False, False],
+            ]),
+        )
 
-        assert data["train"].loss_mask.tolist() == [[True, True], [True, False]]
-        # Eval: only the step whose target_season is 2023 carries loss, earlier steps are context only.
-        assert data["eval"].loss_mask.tolist() == [
-            [False, False, True],  # A
-            [True, False, False],  # B
-            [True, False, False],  # E
-        ]
-        assert data["test"].loss_mask.tolist() == [
-            [False, False, False, True],
-            [False, True, False, False],
-            [False, True, False, False],
-        ]
-
-    def test_prep_training_data__y_holds_the_target_on_loss_steps_and_zero_elsewhere(self):
-        data = self._prep().prep_training_data()
-
-        assert data["train"].y.tolist() == [[10.0, 11.0], [5.0, 0.0]]
-        assert data["eval"].y.tolist() == [[0.0, 0.0, 12.0], [20.0, 0.0, 0.0], [7.0, 0.0, 0.0]]
-        assert data["test"].y.tolist() == [
-            [0.0, 0.0, 0.0, 13.0],  # A
-            [0.0, 21.0, 0.0, 0.0],  # B
-            [0.0, 8.0, 0.0, 0.0],   # E
-        ]
-
-    def test_prep_training_data__identity_is_aligned_with_real_steps_of_x(self):
-        test = self._prep().prep_training_data()["test"]
-
-        real_steps = test.X[test.pad_mask]
-        identity = test.identity
-        assert len(identity) == len(real_steps)
-        # f1 was set to each row's season, f2 to its player.
-        assert real_steps[:, 0].tolist() == identity["season"].tolist()
-        assert real_steps[:, 1].tolist() == [self.PLAYER_NUMBER[p] * 100.0 for p in identity["player_id"]]
-        assert identity["seq_idx"].tolist() == [0, 0, 0, 0, 1, 1, 2, 2]
-        assert identity["step_idx"].tolist() == [0, 1, 2, 3, 0, 1, 0, 1]
-        assert test.X[identity["seq_idx"].to_numpy(), identity["step_idx"].to_numpy()].equal(real_steps)
-
-    def test_prep_training_data__missed_season_is_a_gap_in_the_sequence_not_a_dummy_step(self):
-        test = self._prep().prep_training_data()["test"]
-
-        e_seasons = test.identity[test.identity["player_id"] == "E"]["season"].tolist()
-        assert e_seasons == [2021, 2023]
+        _assert_sequence_datasets_equal(test_split, expected)
+    
+    
 
     def test_prep_training_data__training_window_limits_loss_steps_but_not_input_history(self):
-        data = self._prep({"split": {"num_training_seasons": 1}}).prep_training_data()
-        train = data["train"]
+        train = self._prep({"split": {"num_training_seasons": 1}}).prep_training_data()["train"]
 
-        # Only T == 2022 (A's second step) is in the training window; T == 2021 rows are not scored.
-        assert int(train.loss_mask.sum()) == 1
-        assert train.loss_mask.tolist() == [[False, True]]
-        # But A's earlier season is still part of the input sequence.
-        pd.testing.assert_frame_equal(
-            train.identity[["player_id", "season"]],
-            pd.DataFrame([("A", 2020), ("A", 2021)], columns=["player_id", "season"]),
+        # Only T == 2022 (A's second step) is in the training window. A's earlier step is kept as unscored input,
+        # D's only label (T == 2021) is outside the window so D is left out.
+        expected = SequenceDataset(
+            X=torch.tensor([
+                [[2020., 100.], [2021., 100.]],  # A: 2 real steps
+            ]),
+            lengths=torch.tensor([2]),
+            identity=self._identity_frame([
+                (0, 0, "A", 2020, 2021),
+                (0, 1, "A", 2021, 2022),
+            ]),
+            feature_columns=["f1", "f2"],
+            y=torch.tensor([[0., 11.]]),
+            loss_mask=torch.tensor([[False, True]]),
+            sample_weight=torch.tensor([[0., 1.]]),
         )
+
+        _assert_sequence_datasets_equal(train, expected)
 
     def test_prep_training_data__splits_use_configured_years(self):
         data = self._prep({"split": {"eval_data_years": 2, "test_data_years": 1}}).prep_training_data()
 
-        # eval is T in {2022, 2023}: A (step 1 & 2), B, E.
-        assert int(data["eval"].loss_mask.sum()) == 4
-        assert sorted(data["train"].identity["player_id"].unique()) == ["A", "D"]
-        assert int(data["train"].loss_mask.sum()) == 2
+        def scored_steps(dataset: SequenceDataset) -> pd.DataFrame:
+            """(player, season, target_season) of the steps in dataset that count toward the loss."""
+            is_scored = dataset.loss_mask[dataset.real_step_mask].numpy()
+            return dataset.identity[is_scored][["player_id", "season", "target_season"]].reset_index(drop=True)
 
-    def test_prep_training_data__sample_weights_only_on_train_and_zero_outside_loss_steps(self):
+        columns = ["player_id", "season", "target_season"]
+        # train: T <= 2021, eval: T in {2022, 2023}, test: T == 2024
+        pd.testing.assert_frame_equal(
+            scored_steps(data["train"]),
+            pd.DataFrame([("A", 2020, 2021), ("D", 2020, 2021)], columns=columns),
+        )
+        pd.testing.assert_frame_equal(
+            scored_steps(data["eval"]),
+            pd.DataFrame([("A", 2021, 2022), ("A", 2022, 2023), ("B", 2022, 2023), ("E", 2021, 2023)], columns=columns),
+        )
+        pd.testing.assert_frame_equal(
+            scored_steps(data["test"]),
+            pd.DataFrame([("A", 2023, 2024), ("B", 2023, 2024), ("E", 2023, 2024)], columns=columns),
+        )
+
+    def test_prep_training_data__sample_weight_buckets_are_applied_per_step(self):
         config = {"sample_weights": {"buckets": [{"min": 0.0, "weight": 0.5}, {"min": 10.5, "weight": 1.0}]}}
-        data = self._prep(config).prep_training_data()
+        train = self._prep(config).prep_training_data()["train"]
 
-        assert data["train"].sample_weight.tolist() == [[0.5, 1.0], [0.5, 0.0]]
-        assert data["eval"].sample_weight is None
-        assert data["test"].sample_weight is None
-
-    def test_prep_training_data__default_sample_weight_is_one_on_loss_steps(self):
-        train = self._prep().prep_training_data()["train"]
-
-        assert train.sample_weight.tolist() == [[1.0, 1.0], [1.0, 0.0]]
+        # Weights follow each step's target: A's targets are 10.0 and 11.0, D's is 5.0.
+        _assert_tensors_equal(
+            train.sample_weight,
+            torch.tensor([
+                [0.5, 1.0],  # A
+                [0.5, 0.0],  # D: 1 real step + 1 padding
+            ]),
+        )
 
     def test_prep_training_data__positions_filter_drops_whole_players(self):
         data = self._prep({"positions": ["WR"]}).prep_training_data()
@@ -347,42 +345,38 @@ class TestSequenceModelDataPrep:
 
             train = prep.prep_training_data()["train"]
             d_row = train.identity.index[train.identity["player_id"] == "D"][0]
-            assert torch.isnan(train.X[train.pad_mask][d_row, 1])
+            assert torch.isnan(train.X[train.real_step_mask][d_row, 1])
         finally:
             shutil.rmtree(test_dir)
 
-    def test_prep_prediction_data__one_sequence_per_listed_player_history_then_prediction_row(self):
+    def test_prep_prediction_data__generates_prediction_set_correctly(self):
         prediction = self._prep().prep_prediction_data()
 
-        # D and E are not in the prediction set, F has only the prediction row.
-        pd.testing.assert_frame_equal(
-            prediction.identity[["player_id", "season"]],
-            pd.DataFrame(
-                [
-                    ("A", 2020), ("A", 2021), ("A", 2022), ("A", 2023), ("A", 2024),
-                    ("B", 2022), ("B", 2023), ("B", 2024),
-                    ("F", 2024),
-                ],
-                columns=["player_id", "season"],
-            ),
+        # - Each listed player's training steps are followed by their prediction row (2024, predicting 2025).
+        # - D & E aren't in the prediction set, F has only the prediction row.
+        nan = float("nan")
+        expected = SequenceDataset(
+            X=torch.tensor([
+                [[2020., 100.], [2021., 100.], [2022., 100.], [2023., 100.], [2024., 100.]],  # A: 5 real steps
+                [[2022., 200.], [2023., 200.], [2024., 200.], [nan, nan], [nan, nan]],        # B: 3 real steps + 2 padding
+                [[2024., 600.], [nan, nan], [nan, nan], [nan, nan], [nan, nan]],              # F: 1 real step + 4 padding
+            ]),
+            lengths=torch.tensor([5, 3, 1]),
+            identity=self._identity_frame([
+                (0, 0, "A", 2020, 2021),
+                (0, 1, "A", 2021, 2022),
+                (0, 2, "A", 2022, 2023),
+                (0, 3, "A", 2023, 2024),
+                (0, 4, "A", 2024, 2025),
+                (1, 0, "B", 2022, 2023),
+                (1, 1, "B", 2023, 2024),
+                (1, 2, "B", 2024, 2025),
+                (2, 0, "F", 2024, 2025),
+            ]),
+            feature_columns=["f1", "f2"],
         )
-        assert prediction.lengths.tolist() == [5, 3, 1]
-        assert prediction.X.shape == (3, 5, 2)
-        assert prediction.y is None and prediction.loss_mask is None and prediction.sample_weight is None
 
-    def test_prep_prediction_data__last_step_is_the_prediction_row(self):
-        prediction = self._prep().prep_prediction_data()
-
-        last = prediction.last_step_identity()
-        assert last["player_id"].tolist() == ["A", "B", "F"]
-        assert last["season"].tolist() == [2024, 2024, 2024]
-        assert last["target_season"].tolist() == [2025, 2025, 2025]
-        assert prediction.last_step_mask.tolist() == [
-            [False, False, False, False, True],
-            [False, False, True, False, False],
-            [True, False, False, False, False],
-        ]
-        assert prediction.X[prediction.last_step_mask][:, 0].tolist() == [2024.0, 2024.0, 2024.0]
+        _assert_sequence_datasets_equal(prediction, expected)
 
     def test_prep_prediction_data__respects_position_filter(self):
         prediction = self._prep({"positions": ["WR", "TE"]}).prep_prediction_data()

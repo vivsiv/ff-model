@@ -53,7 +53,7 @@ class SequenceDataset:
             Example:
                 lengths = torch.tensor([3, 1]) # Player A has 3 real steps, player B has 1
         identity: Dataframe mapping sequences and steps in X back to player_ids in the tabular data.
-            Only has rows for real steps (aligning with X[pad_mask])
+            Only has rows for real steps (aligning with X[real_step_mask])
             Example:
                 identity = pd.dataframe(
                     {player_id: "Player A", seq_idx: 0, step_idx: 0},
@@ -75,11 +75,11 @@ class SequenceDataset:
     sample_weight: Optional[torch.Tensor] = None
 
     @property
-    def pad_mask(self) -> torch.Tensor:
+    def real_step_mask(self) -> torch.Tensor:
         """
         [N, L] bool, True for real steps, False for padding.
         Example:
-            pad_mask = torch.tensor([
+            real_step_mask = torch.tensor([
                 [True, True, True], # Player A: 3 real steps
                 [True, False, False], # Player B: 1 real step.  
             ])
@@ -179,6 +179,7 @@ class SequenceModelDataPrep(TabularModelDataPrep):
             training_data = self._filter_positions(training_data, self.positions)
             prediction_data = self._filter_positions(prediction_data, self.positions)
 
+        # TODO: move data validations into gold
         if set(training_data.columns) != set(prediction_data.columns):
             raise ValueError("Training set and prediction set must have the same columns")
 
@@ -190,7 +191,7 @@ class SequenceModelDataPrep(TabularModelDataPrep):
         data = self._order_by_step(combined)
 
         # Gets the season for each player in the prediction set and compares it to the max season for each player in the combined set.
-        # TODO: mode data validations into gold.
+        # TODO: move data validations into gold.
         prediction_seasons = prediction_data.set_index(PLAYER_COL)[SEASON_COL]
         last_seasons = data.groupby(PLAYER_COL)[SEASON_COL].transform("max")
         if (last_seasons != data[PLAYER_COL].map(prediction_seasons)).any():
