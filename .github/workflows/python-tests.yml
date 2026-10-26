@@ -19,8 +19,10 @@ jobs:
       with:
         python-version: '3.12'
 
+    # CPU-only torch: the default (gpu) group would download several GB of CUDA libraries that CI doesn't use.
     - name: Install dependencies
-      run: uv sync
+      run: uv sync --no-group gpu --group cpu
 
+    # --no-sync: `uv run` would otherwise re-sync to the default groups and swap the CPU torch for the CUDA build.
     - name: Run tests
-      run: uv run pytest test
+      run: uv run --no-sync pytest test
