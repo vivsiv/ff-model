@@ -2,6 +2,7 @@ import os
 import shutil
 import tempfile
 
+import numpy as np
 import pandas as pd
 import pytest
 import yaml
@@ -301,3 +302,59 @@ class TestTabularModelDataPrep:
         assert prep._resolve_feature_columns(prep.training_data.columns) == ["f1"]
         data = prep.prep_training_data()
         assert list(data["X_train"].columns) == ["f1"]
+
+
+class TestSplitYears:
+    def test_from_config__applies_defaults_for_omitted_fields(self):
+        assert SplitYears.from_config({}) == SplitYears(eval_data_years=1, test_data_years=1, num_training_seasons=None)
+
+    def test_from_config__reads_every_field(self):
+        split_years = SplitYears.from_config({"eval_data_years": 2, "test_data_years": 3, "num_training_seasons": 10})
+
+        assert split_years == SplitYears(eval_data_years=2, test_data_years=3, num_training_seasons=10)
+
+
+class TestSplitYearsToMasks:
+    def test_to_masks__partitions_seasons_chronologically(self):
+        target_season = pd.Series([2019, 2020, 2021, 2022, 2023, 2024])
+
+        masks = SplitYears(eval_data_years=1, test_data_years=2).to_masks(target_season)
+
+        assert masks.is_test.tolist() == [False, False, False, False, True, True]
+        assert masks.is_eval.tolist() == [False, False, False, True, False, False]
+        assert masks.is_train.tolist() == [True, True, True, False, False, False]
+
+    def test_to_masks__num_training_seasons_keeps_only_the_most_recent_training_seasons(self):
+        target_season = pd.Series([2019, 2020, 2021, 2022, 2023, 2024])
+
+        masks = SplitYears(eval_data_years=1, test_data_years=2, num_training_seasons=2).to_masks(target_season)
+
+        assert masks.is_train.tolist() == [False, True, True, False, False, False]
+
+    def test_to_masks__missing_target_seasons_are_in_no_split(self):
+        target_season = pd.Series([2020, 2021, 2022, np.nan])
+
+        masks = SplitYears().to_masks(target_season)
+
+        assert [masks.is_train[3], masks.is_eval[3], masks.is_test[3]] == [False, False, False]
+        assert masks.is_test.tolist() == [False, False, True, False]
+
+    def test_to_masks__masks_are_disjoint(self):
+        target_season = pd.Series([2018, 2019, 2020, 2021, 2022, 2023, 2024, 2024])
+
+        masks = SplitYears(eval_data_years=2, test_data_years=1).to_masks(target_season)
+
+        assert (masks.is_train.astype(int) + masks.is_eval.astype(int) + masks.is_test.astype(int)).max() == 1
+
+    def test_to_masks__raises_when_requested_seasons_exceed_available_seasons(self):
+        target_season = pd.Series([2020, 2021, 2022, 2022])
+
+        with pytest.raises(ValueError, match="exceeds the 3 distinct"):
+            SplitYears(eval_data_years=1, test_data_years=1, num_training_seasons=2).to_masks(target_season)
+
+    def test_to_masks__accepts_requested_seasons_equal_to_available_seasons(self):
+        target_season = pd.Series([2020, 2021, 2022])
+
+        masks = SplitYears(eval_data_years=1, test_data_years=1, num_training_seasons=1).to_masks(target_season)
+
+        assert masks.is_train.tolist() == [True, False, False]

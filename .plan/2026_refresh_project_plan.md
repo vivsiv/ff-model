@@ -75,13 +75,16 @@ PHASE 3. Second Model (PPR POINTS PER GAME) [DONE]
 3. Sample Data so that higher scoring players are more represented [DONE]
 4. Make positional models [DONE]
 
-PHASE 4. Predictions & Rankings [TODO]
+PHASE 4. Predictions & Rankings [IN PROGRESS]
 1. Add functionality to eval on the test set. [DONE]
 2. Generate list of players and teams to predict for 2026. [DONE]
 3. Generate rankings process based on current code.
 4. Re-evaluate rankings process
 
-PHASE 5. Sequential Model [TODO]
-1. Create a new training set builder that builds a sequential version of the data that can be used to feed an lstm or transformer
-2. Build an lstm model and evaluate it
-3. Build a trasformer model or finetune an existing one and evaluate it
+PHASE 5. Sequential Model [IN PROGRESS]
+1. Build the sequence data prep: the analog of TabularModelDataPrep (src/modeling/) that assembles sequences from the existing tabular gold rows and masks them [IN PROGRESS]
+2. Refactor tabular and sequence into their own subdirs, extract common dataprep code
+3. Rename training set created by gold to something else (probably gold), combine prediction set into gold.
+4. Build an lstm model and evaluate it
+5. Implement per batch padding instead of global padding.
+6. Build a trasformer model or finetune an existing one and evaluate it

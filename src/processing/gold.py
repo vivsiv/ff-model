@@ -28,15 +28,48 @@ PER_GAME_SUFFIX = "_per_game"
 
 
 def training_set_filename(target_col: str) -> str:
-    """Filename (not path) that build_training_set saves/TabularModelDataPrep loads a
+    """Filename (not path) that build_training_set saves and load_training_set loads a
     target's gold training set under, relative to gold_dir."""
     return f"{target_col}__training_set.csv"
 
 
 def prediction_set_filename(target_col: str) -> str:
-    """Filename (not path) that build_prediction_set saves/TabularModelDataPrep.
-    prep_prediction_data loads a target's gold prediction set under, relative to gold_dir."""
+    """Filename (not path) that build_prediction_set saves and load_prediction_set loads a
+    target's gold prediction set under, relative to gold_dir."""
     return f"{target_col}__prediction_set.csv"
+
+
+def load_training_set(gold_dir: str, target_col: str) -> pd.DataFrame:
+    """
+    Loads a target's gold training set, as saved by TrainingSetBuilder.build_training_set.
+
+    Args:
+        gold_dir: The gold layer directory (the one build_training_set saved to).
+        target_col: The target the training set was built for, e.g. "ppr_points_per_game".
+
+    Returns:
+        The training set, one row per (player, season, target_season).
+    """
+    training_df = pd.read_csv(os.path.join(gold_dir, training_set_filename(target_col)))
+    logger.info(f"Loaded training set for {target_col}: {len(training_df)} rows")
+    return training_df
+
+
+def load_prediction_set(gold_dir: str, target_col: str) -> pd.DataFrame:
+    """
+    Loads a target's gold prediction set, as saved by TrainingSetBuilder.build_prediction_set.
+
+    Args:
+        gold_dir: The gold layer directory (the one build_prediction_set saved to).
+        target_col: The target the prediction set was built for, e.g. "ppr_points_per_game".
+
+    Returns:
+        The prediction set, one row per player being predicted, with a blank target.
+    """
+    prediction_df = pd.read_csv(os.path.join(gold_dir, prediction_set_filename(target_col)))
+    logger.info(f"Loaded prediction set for {target_col}: {len(prediction_df)} rows")
+    return prediction_df
+
 
 ROUNDING_EXCLUDED_COLUMNS = [
     "season", "target_season", "seasons_since_played", "years_played", "games", "age", "draft_pick",
@@ -478,6 +511,7 @@ class TrainingSetBuilder:
         feature_columns = list(features_df.columns)
         return merged[feature_columns + ["target_season", TARGET_COL, "seasons_since_played"]]
 
+    # TODO: should this be renamed it isnt the true training set for a model, its pool of data available for training.
     def build_training_set(
         self,
         features_df: pd.DataFrame,
@@ -505,6 +539,10 @@ class TrainingSetBuilder:
 
         team_stat_columns = get_stat_columns("nflverse", "team_stats")
 
+        # TODO: validate here that the training set has at most one row per (player_id, season) (e.g. raise if
+        # training_df.duplicated(["player_id", "season"]).any()), so modelling code can trust it. The sequence
+        # data prep currently re-checks this itself (SequenceModelDataPrep._order_by_step); drop that check once gold enforces it.
+        # Also validate that targets are non-null
         training_df = self._join_with_target(features_df, target_col)
         player_team_by_season_df = features_df[["player_id", "season", "recent_team"]]
         training_df = self._join_team_features(
@@ -576,6 +614,7 @@ class TrainingSetBuilder:
 
         return players_df.rename(columns={"team": "recent_team"})[["player_id", "season", "recent_team"]]
 
+    # TODO: should this just be part of the training set? we are already defining "prediction_season".
     def build_prediction_set(
         self,
         features_df: pd.DataFrame,
@@ -666,6 +705,10 @@ def main():
     team_features_df = builder.load_team_features()
     draft_features_df = builder.load_draft_features()
     players_df = builder.load_prediction_players(args.prediction_season)
+    # TODO: after both sets are built, validate them as a pair so modelling can trust them: they have the same columns,
+    # and each prediction row's "season" is later than every training row's "season" for that player. These hold by
+    # construction when both come from the same features_df (as here), but not if the two files are built in separate
+    # runs. SequenceModelDataPrep.prep_prediction_data currently re-checks both itself; revisit that check once this exists.
     builder.build_training_set(features_df, team_features_df, draft_features_df, target_col=args.target_col)
     builder.build_prediction_set(
         features_df, team_features_df, draft_features_df, players_df,

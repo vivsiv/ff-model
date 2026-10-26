@@ -1,0 +1,85 @@
+# Data prep config for the sequential (lstm/transformer) ppr_points_per_game model -- see SequenceModelDataPrep.
+#
+# Same split/sample_weights as configs/ppr_points_per_game.yaml (see its comments for the reasoning),
+# applied per step instead of per row.
+#
+# features.columns (mode: exclude):
+#   - Career aggregates (*_career_*, *_trend, *_shrunk_avg, *_positional_baseline): hand-built summaries of a
+#     player's history for a non-sequential model, the sequence model gets the history itself. Remove these
+#     patterns to ablate "does the sequence model do better with the hand-built aggregates too?".
+#   - fantasy_points*/ppr_points_per_game*: the targets or directly derived from them (as in the tabular config).
+#     NOTE: this also hides each step's own past ppr_points_per_game from the model. Revisit.
+#   - each counting stat's raw season total (conflates per game rate with games missed, same as tabular);
+#     the *_per_game versions and "games" are kept.
+target: ppr_points_per_game
+split:
+  eval_data_years: 1
+  test_data_years: 1
+  num_training_seasons: 10
+sample_weights:
+  buckets:
+    - min: 0.0
+      weight: 0.1
+    - min: 3.0
+      weight: 0.2
+    - min: 5.0
+      weight: 0.5
+    - min: 8.0
+      weight: .95
+    - min: 10.0
+      weight: 1.0
+features:
+  mode: exclude
+  columns:
+  - "*_career_*"
+  - "*_trend"
+  - "*_shrunk_avg"
+  - "*_positional_baseline"
+  - fantasy_points*
+  - ppr_points_per_game*
+  - completions
+  - attempts
+  - passing_yards
+  - passing_tds
+  - passing_interceptions
+  - passing_first_downs
+  - passing_2pt_conversions
+  - passing_air_yards
+  - passing_yards_after_catch
+  - sacks_suffered
+  - sack_yards_lost
+  - sack_fumbles
+  - sack_fumbles_lost
+  - passing_10
+  - passing_16
+  - passing_20
+  - passing_40
+  - passing_epa
+  - carries
+  - rushing_yards
+  - rushing_tds
+  - rushing_first_downs
+  - rushing_2pt_conversions
+  - rushing_fumbles
+  - rushing_fumbles_lost
+  - rushing_10
+  - rushing_12
+  - rushing_20
+  - rushing_40
+  - rushing_epa
+  - receptions
+  - targets
+  - receiving_yards
+  - receiving_tds
+  - receiving_first_downs
+  - receiving_2pt_conversions
+  - receiving_fumbles
+  - receiving_fumbles_lost
+  - receiving_air_yards
+  - receiving_yards_after_catch
+  - receiving_10
+  - receiving_16
+  - receiving_20
+  - receiving_40
+  - receiving_epa
+  - offense_snaps
