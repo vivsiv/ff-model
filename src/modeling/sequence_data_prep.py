@@ -96,9 +96,7 @@ class SequenceDataset:
         return torch.arange(max_step)[None, :] == (self.lengths[:, None] - 1)
 
     def last_step_identity(self) -> pd.DataFrame:
-        """Identity rows of each sequence's last real step, in sequence order (aligned with
-        model_output[last_step_mask])."""
-        # identity is sorted by sequence then step, so each sequence's last row is its last real step.
+        """Identity rows of each sequence's last real step, ordered by seq_idx."""
         return self.identity.groupby("seq_idx").tail(1)
 
 
