@@ -542,6 +542,7 @@ class TrainingSetBuilder:
         # TODO: validate here that the training set has at most one row per (player_id, season) (e.g. raise if
         # training_df.duplicated(["player_id", "season"]).any()), so modelling code can trust it. The sequence
         # data prep currently re-checks this itself (SequenceModelDataPrep._order_by_step); drop that check once gold enforces it.
+        # Also validate that targets are non-null
         training_df = self._join_with_target(features_df, target_col)
         player_team_by_season_df = features_df[["player_id", "season", "recent_team"]]
         training_df = self._join_team_features(

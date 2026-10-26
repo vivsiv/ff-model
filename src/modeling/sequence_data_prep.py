@@ -67,7 +67,7 @@ class SequenceDataset:
         sample_weight: [N, L] Tensor (rank2, float32, training only) tensor indicating how much weight a real step should be given in training, 0.0 wherever loss_mask is False.
     """
     X: torch.Tensor
-    lengths: torch.Tensor
+    lengths: torch.Tensor # TODO: rename to steps?
     identity: pd.DataFrame
     feature_columns: List[str]
     y: Optional[torch.Tensor] = None
