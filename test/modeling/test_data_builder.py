@@ -50,6 +50,18 @@ class TestModelDataBuilder:
             assert builder.get_data_splits() is refreshed
             assert build.call_count == 2
 
+    def test_get_data_splits__cache_is_per_instance(self):
+        first_builder = _ConcreteDataBuilder("data", {"target": "ppr_points_per_game"})
+        second_builder = _ConcreteDataBuilder("data", {"target": "ppr_points_per_game"})
+
+        first = first_builder.get_data_splits()
+        assert second_builder._data_splits is None
+        second = second_builder.get_data_splits()
+
+        assert first is not second
+        first_builder.get_data_splits(recompute=True)
+        assert second_builder.get_data_splits() is second
+
     def test_get_data_splits__failed_first_build_can_be_retried(self):
         builder = _ConcreteDataBuilder("data", {"target": "ppr_points_per_game"})
         with patch.object(builder, "_build_data_splits", side_effect=ValueError("failed build")):

@@ -173,15 +173,14 @@ class TestSequenceModelDataBuilder:
         for seq_ds in data_no_exclude.values():
             assert seq_ds.feature_columns == ["f1", "f2", "f1_career_avg"]
 
-    @pytest.mark.parametrize("recompute", [False, True])
-    def test_get_data_splits__builds_lazily_then_reuses_cache(self, recompute):
+    def test_get_data_splits__builds_lazily_then_reuses_cache(self):
         with patch("src.modeling.sequence.data_builder.load_training_set", wraps=load_training_set) as load:
             builder = self._prep()
             load.assert_not_called()
             assert not hasattr(builder, "source_data")
 
             with patch.object(builder, "_build_sequence_dataset", wraps=builder._build_sequence_dataset) as assemble:
-                first = builder.get_data_splits(recompute=recompute)
+                first = builder.get_data_splits()
 
                 assert builder.get_data_splits() is first
                 assert load.call_count == 1
@@ -207,49 +206,6 @@ class TestSequenceModelDataBuilder:
             _assert_tensors_equal(new.X, old.X)
             _assert_tensors_equal(new.loss_mask, old.loss_mask)
             _assert_tensors_equal(new.y, torch.where(old.loss_mask, old.y + 100, old.y))
-
-    def test_get_data_splits__cache_is_per_instance(self):
-        first = self._prep().get_data_splits()
-        second = self._prep().get_data_splits()
-
-        assert first is not second
-        for split in ["train", "eval", "test"]:
-            _assert_sequence_datasets_equal(first[split], second[split])
-
-    def test_get_data_splits__failed_first_build_can_be_retried(self):
-        builder = self._prep()
-        with patch.object(builder, "_build_sequence_dataset", side_effect=ValueError("failed build")):
-            with pytest.raises(ValueError, match="failed build"):
-                builder.get_data_splits()
-
-        assert builder._data_splits is None
-        data = builder.get_data_splits()
-        assert builder.get_data_splits() is data
-
-    def test_get_data_splits__failed_recompute_preserves_successful_cache(self):
-        builder = self._prep()
-        first = builder.get_data_splits()
-        with patch.object(builder, "_build_sequence_dataset", side_effect=ValueError("failed build")) as assemble:
-            with pytest.raises(ValueError, match="failed build"):
-                builder.get_data_splits(recompute=True)
-
-            assert builder.get_data_splits() is first
-            assert assemble.call_count == 1
-
-
-    def test_build_data_splits__always_builds_fresh_without_replacing_cache(self):
-        builder = self._prep()
-        cached = builder.get_data_splits()
-
-        with patch("src.modeling.sequence.data_builder.load_training_set", wraps=load_training_set) as load:
-            first = builder._build_data_splits()
-            second = builder._build_data_splits()
-
-        assert first is not second
-        assert first is not cached
-        assert second is not cached
-        assert load.call_count == 2
-        assert builder.get_data_splits() is cached
 
     def test_build_data_splits__generates_train_split_set_correctly(self):
         train = self._prep()._build_data_splits()["train"]
