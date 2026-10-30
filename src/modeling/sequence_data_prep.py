@@ -37,12 +37,12 @@ class SequenceDataset:
          Example:
             X = torch.tensor([
                 # Player A: 3 real steps
-                [ 
+                [
                     [1., 10.],
                     [2., 20.],
                     [3., 30.]
                 ],
-                # Player B: 1 real step + 2 padding     
+                # Player B: 1 real step + 2 padding
                 [
                     [4., 40.],
                     [nan, nan],
@@ -53,18 +53,19 @@ class SequenceDataset:
             Example:
                 lengths = torch.tensor([3, 1]) # Player A has 3 real steps, player B has 1
         identity: Dataframe mapping sequences and steps in X back to player_ids in the tabular data.
-            Only has rows for real steps (aligning with X[real_step_mask])
+            Only has rows for real steps (aligning with X[real_step_mask]). Besides the columns in the example it has
+            the other identity columns (e.g. season, target_season).
             Example:
-                identity = pd.dataframe(
-                    {player_id: "Player A", seq_idx: 0, step_idx: 0},
-                    {player_id: "Player A", seq_idx: 0, step_idx: 1},
-                    {player_id: "Player A", seq_idx: 0, step_idx: 2},
-                    {player_id: "Player B", seq_idx: 1, step_idx: 0},
-                )
+                identity = pd.DataFrame([
+                    {"player_id": "Player A", "seq_idx": 0, "step_idx": 0},
+                    {"player_id": "Player A", "seq_idx": 0, "step_idx": 1},
+                    {"player_id": "Player A", "seq_idx": 0, "step_idx": 2},
+                    {"player_id": "Player B", "seq_idx": 1, "step_idx": 0},
+                ])
         feature_columns: the names of the features in F (X's last dimension).
-        y: [N, L] The target tensor (rank 2, float32) contains target values for each real (player,step) combo, 0.0 wherever loss_mask is False.
+        y: [N, L] The target tensor (rank 2, float32). Holds the target value at steps where loss_mask is True and 0.0 everywhere else (padding and unscored steps).
         loss_mask: [N, L] Tensor (rank 2, bool) indicating which target values in y should count towards loss.
-        sample_weight: [N, L] Tensor (rank2, float32, training only) tensor indicating how much weight a real step should be given in training, 0.0 wherever loss_mask is False.
+        sample_weight: [N, L] Tensor (rank 2, float32, train split only) with how much weight each real step is given in training, 0.0 wherever loss_mask is False.
     """
     X: torch.Tensor
     lengths: torch.Tensor # TODO: rename to steps?
@@ -81,7 +82,7 @@ class SequenceDataset:
         Example:
             real_step_mask = torch.tensor([
                 [True, True, True], # Player A: 3 real steps
-                [True, False, False], # Player B: 1 real step.  
+                [True, False, False], # Player B: 1 real step
             ])
 
         """
@@ -217,25 +218,25 @@ class SequenceModelDataPrep(TabularModelDataPrep):
         if data.duplicated([PLAYER_COL, SEASON_COL]).any():
             raise ValueError(f"More than one row for some ({PLAYER_COL}, {SEASON_COL})")
 
-        steps = data.sort_values([PLAYER_COL, SEASON_COL]).reset_index(drop=True)
-        steps["step_idx"] = steps.groupby(PLAYER_COL).cumcount()
-        return steps
+        data = data.sort_values([PLAYER_COL, SEASON_COL]).reset_index(drop=True)
+        data["step_idx"] = data.groupby(PLAYER_COL).cumcount()
+        return data
 
     @staticmethod
-    def _get_input_rows_mask(steps: pd.DataFrame) -> pd.Series:
+    def _get_input_rows_mask(data: pd.DataFrame) -> pd.Series:
         """
         Finds the rows a split's dataset reads as input: each player's steps from their first season up to and
         including their last loss step in the split.
 
         Args:
-            steps: Output of _order_by_step with a LOSS_STEP_COL column.
+            data: Output of _order_by_step with a LOSS_STEP_COL column.
 
         Returns:
-            Boolean Series aligned with steps, True for input rows. False for every step of a player with no loss
+            Boolean Series aligned with data, True for input rows. False for every step of a player with no loss
             steps in the split, since such players are left out of the split entirely.
         """
-        last_loss_step = steps["step_idx"].where(steps[LOSS_STEP_COL]).groupby(steps[PLAYER_COL]).transform("max")
-        return steps["step_idx"] <= last_loss_step
+        last_loss_step = data["step_idx"].where(data[LOSS_STEP_COL]).groupby(data[PLAYER_COL]).transform("max")
+        return data["step_idx"] <= last_loss_step
 
     def _build_sequence_dataset(self, data: pd.DataFrame, feature_cols: List[str]) -> SequenceDataset:
         """
