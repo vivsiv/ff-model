@@ -237,8 +237,6 @@ class TestSequenceModelDataPrep:
         )
 
         _assert_sequence_datasets_equal(test_split, expected)
-    
-    
 
     def test_prep_training_data__training_window_limits_loss_steps_but_not_input_history(self):
         train = self._prep({"split": {"num_training_seasons": 1}}).prep_training_data()["train"]
