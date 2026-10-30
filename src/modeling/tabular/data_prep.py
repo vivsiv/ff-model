@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 DATA_PREP_CONFIG_ARTIFACT_PATH = "data_prep_config.json"
 
-# TODO: lets have generic data prep constants live in a utilities file while tabular and sequence get moved to their own subdirs.
+# TODO: extract generic data prep constants into a shared module.
 @dataclass
 class SplitMasks:
     """Boolean row masks assigning each row to the train, eval or test split, aligned with the

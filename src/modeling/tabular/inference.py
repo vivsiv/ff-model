@@ -10,7 +10,7 @@ import mlflow
 from sklearn.metrics import mean_squared_error
 from sklearn.pipeline import Pipeline
 
-from src.modeling.data_prep import DATA_PREP_CONFIG_ARTIFACT_PATH, TabularModelDataPrep
+from src.modeling.tabular.data_prep import DATA_PREP_CONFIG_ARTIFACT_PATH, TabularModelDataPrep
 from src.modeling.utils import load_data_prep_config, load_mlflow_model, set_mlflow_tracking_uri, setup_mlflow_run
 
 logging.basicConfig(
@@ -24,9 +24,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-class ModelInference:
+class TabularModelInference:
     """
-    Predicts and possibly scores a fit TabularModel against a dataset built from a TabularModelDataPrep,
+    Predicts and possibly scores a fitted tabular pipeline against a dataset built from a TabularModelDataPrep,
     logging results to mlflow. Two methods, split by whether ground truth target values are available to score against:
       - evaluate(run_id, csv_path, split): predicts then scores against the ground truth values in the provided split.
       - predict(run_id, csv_path): predicts against live data.
@@ -68,7 +68,7 @@ class ModelInference:
         self.config = data_prep.config
 
     @classmethod
-    def from_fit_pipeline(cls, pipeline: Pipeline, data_prep: TabularModelDataPrep) -> "ModelInference":
+    def from_fit_pipeline(cls, pipeline: Pipeline, data_prep: TabularModelDataPrep) -> "TabularModelInference":
         """
         Wraps an already-fit pipeline + in-memory data_prep.
 
@@ -77,7 +77,7 @@ class ModelInference:
             data_prep: The TabularModelDataPrep the pipeline was fit under.
 
         Returns:
-            A ModelInference that can evaluate()/predict().
+            A TabularModelInference that can evaluate()/predict().
         """
         return cls(pipeline=pipeline, data_prep=data_prep)
 
@@ -88,7 +88,7 @@ class ModelInference:
         tracking_dir: str,
         registered_model: str,
         model_version: Optional[int] = None,
-    ) -> "ModelInference":
+    ) -> "TabularModelInference":
         """
         Loads a registered model and reconstructs the TabularModelDataPrep it was trained
         with from its logged data_prep_config.json artifact.
@@ -100,7 +100,7 @@ class ModelInference:
             model_version: Specific model version to load. Defaults to the latest version.
 
         Returns:
-            A ModelInference ready for evaluate()/predict().
+            A TabularModelInference ready for evaluate()/predict().
         """
         pipeline, mv = load_mlflow_model(registered_model, model_version, tracking_dir)
         model_version, source_run_id = int(mv.version), mv.run_id
@@ -145,7 +145,7 @@ class ModelInference:
         back at the training run) in the same mlflow experiment as self.source_run_id, and
         logs self.config onto it as a data_prep_config.json artifact.
 
-        Only valid on a ModelInference built via from_registry (needs self.source_run_id/
+        Only valid on a TabularModelInference built via from_registry (needs self.source_run_id/
         registered_model/model_version/tracking_dir).
 
         Args:
@@ -332,7 +332,7 @@ class ModelInference:
 
         Args:
             run_id: mlflow run_id to log metrics/artifacts into (must already exist -- e.g.
-                from setup_mlflow(), or TabularModel.eval_model's own already-open run_id).
+                from setup_mlflow(), or TabularModelTrainer.eval_model's own already-open run_id).
             csv_path: Where to write the predictions CSV (e.g. from build_predictions_csv_path()).
             split: Name of the dataset split to evaluate against ("eval" or "test", default: "test").
             top_n_rows: For each n, also logs top_{n}_r2/top_{n}_rmse. None (default) skips
@@ -434,7 +434,7 @@ def main():
 
     args = parser.parse_args()
 
-    inference = ModelInference.from_registry(
+    inference = TabularModelInference.from_registry(
         data_dir=args.data_dir,
         tracking_dir=args.tracking_dir,
         registered_model=args.registered_model,
@@ -444,13 +444,13 @@ def main():
 
     if args.mode in ("eval", "test"):
         run_id = inference.setup_mlflow(phase=args.mode, run_name_suffix=args.mode)
-        csv_path = ModelInference.build_predictions_csv_path(
+        csv_path = TabularModelInference.build_predictions_csv_path(
             predictions_dir, inference.registered_model, inference.model_version, run_id, split=args.mode
         )
         preds_df = inference.evaluate(run_id=run_id, csv_path=csv_path, split=args.mode, top_n_rows=args.top_n_rows)
     else:
         run_id = inference.setup_mlflow(phase="predict", run_name_suffix="predictions")
-        csv_path = ModelInference.build_predictions_csv_path(
+        csv_path = TabularModelInference.build_predictions_csv_path(
             predictions_dir, inference.registered_model, inference.model_version, run_id
         )
         preds_df = inference.predict(run_id=run_id, csv_path=csv_path)

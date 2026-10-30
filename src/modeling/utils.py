@@ -7,7 +7,7 @@ from mlflow.entities.model_registry import ModelVersion
 from mlflow.tracking import MlflowClient
 from sklearn.pipeline import Pipeline
 
-from src.modeling.data_prep import DATA_PREP_CONFIG_ARTIFACT_PATH
+from src.modeling.tabular.data_prep import DATA_PREP_CONFIG_ARTIFACT_PATH
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +87,7 @@ def load_mlflow_model(
     Returns:
         (pipeline, model_version) - the loaded pipeline, and the registry's ModelVersion entry
         for it (.version, .run_id -- the mlflow run that trained/logged it, e.g. to look up the
-        hyperparams or, for models registered via tabular_models.py's CLI, the train/eval/test
+        hyperparams or, for models registered via tabular/trainer.py's CLI, the train/eval/test
         split params logged on that run -- plus whatever else the caller needs off it).
     """
     set_mlflow_tracking_uri(tracking_dir)
@@ -117,7 +117,7 @@ def load_data_prep_config(source_run_id: str) -> dict[str, Any]:
     Raises:
         RuntimeError: If the run has no data_prep_config.json artifact -- e.g. it was
             created by fit_model()/param_search() directly, or by a version of
-            tabular_models.py predating this config-driven data prep.
+            tabular/trainer.py predating this config-driven data prep.
     """
     try:
         return mlflow.artifacts.load_dict(f"runs:/{source_run_id}/{DATA_PREP_CONFIG_ARTIFACT_PATH}")

@@ -154,7 +154,7 @@ def get_feature_importance(pipeline: Pipeline) -> pd.DataFrame:
         pipeline: A fitted sklearn Pipeline whose final step is a tree-based model exposing
             feature_importances_ (e.g. RandomForestRegressor, GradientBoostingRegressor),
             with every preceding step implementing get_feature_names_out (e.g.
-            TabularModel.create_pipeline's imputer/scaler steps).
+            TabularModelTrainer.create_pipeline's imputer/scaler steps).
 
     Returns:
         DataFrame with "feature"/"importance" columns, sorted descending by importance.

@@ -7,7 +7,7 @@ import pandas as pd
 import pytest
 import yaml
 
-from src.modeling.data_prep import SplitYears, TabularModelDataPrep
+from src.modeling.tabular.data_prep import SplitYears, TabularModelDataPrep
 from src.processing.column_registry import get_identity_columns
 
 
@@ -74,7 +74,7 @@ class TestTabularModelDataPrep:
 
     def test_prep_training_data__returns_the_train_eval_test_split(self):
         # prep_training_data() calls split() itself and returns the result, so consumers
-        # (TabularModel, ModelInference) don't need to call .split() themselves.
+        # (TabularModelTrainer, TabularModelInference) don't need to call .split() themselves.
         prep = TabularModelDataPrep(data_dir=self.test_dir, config={"target": "target_1"})
         data = prep.prep_training_data()
         assert set(data.keys()) == {

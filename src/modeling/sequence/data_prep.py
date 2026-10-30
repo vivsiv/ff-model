@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import torch
 
-from src.modeling.data_prep import SplitYears, TabularModelDataPrep
+from src.modeling.tabular.data_prep import SplitYears, TabularModelDataPrep
 from src.processing.gold import TARGET_COL, load_prediction_set, load_training_set
 
 logger = logging.getLogger(__name__)

@@ -16,8 +16,8 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.svm import SVR
 from sklearn.ensemble import GradientBoostingRegressor
 
-from src.modeling.data_prep import DATA_PREP_CONFIG_ARTIFACT_PATH, TabularModelDataPrep
-from src.modeling.model_inference import ModelInference
+from src.modeling.tabular.data_prep import DATA_PREP_CONFIG_ARTIFACT_PATH, TabularModelDataPrep
+from src.modeling.tabular.inference import TabularModelInference
 from src.modeling.utils import setup_mlflow_run
 
 logging.basicConfig(
@@ -31,7 +31,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-class TabularModel:
+class TabularModelTrainer:
     """Fits a Tabular model to data, gathers performance on the eval set, and logs it to mlflow."""
 
     def __init__(
@@ -171,8 +171,8 @@ class TabularModel:
         top_n_rows: Optional[List[int]] = None,
     ) -> pd.DataFrame:
         """
-        Scores a fitted pipeline against a held-out evaluation data set via a ModelInference
-        built from the fit pipeline + self.data_prep (see ModelInference.evaluate's
+        Scores a fitted pipeline against a held-out evaluation data set via a TabularModelInference
+        built from the fit pipeline + self.data_prep (see TabularModelInference.evaluate's
         docstring for what gets logged/returned).
 
         Args:
@@ -187,7 +187,7 @@ class TabularModel:
             self.predictions_dir, f"{self.base_model_name}_{self.model_type}_{split}_predictions_{run_id}.csv"
         )
 
-        inference = ModelInference.from_fit_pipeline(pipeline, self.data_prep)
+        inference = TabularModelInference.from_fit_pipeline(pipeline, self.data_prep)
         return inference.evaluate(
             split=split,
             run_id=run_id,
@@ -304,14 +304,14 @@ def main():
     args = parser.parse_args()
 
     data_prep = TabularModelDataPrep.from_config_file(data_dir=args.data_dir, config_path=args.config)
-    model = TabularModel(data_dir=args.data_dir, tracking_dir=args.tracking_dir, data_prep=data_prep, model_type=args.model_type)
+    trainer = TabularModelTrainer(data_dir=args.data_dir, tracking_dir=args.tracking_dir, data_prep=data_prep, model_type=args.model_type)
 
     if args.param_grid:
-        model.param_search(json.loads(args.param_grid))
+        trainer.param_search(json.loads(args.param_grid))
     else:
-        run_id = model.setup_mlflow(extra_params={"config_path": args.config})
-        pipeline = model.fit_model(run_id=run_id)
-        model.eval_model(pipeline=pipeline, run_id=run_id, top_n_rows=args.top_n_rows)
+        run_id = trainer.setup_mlflow(extra_params={"config_path": args.config})
+        pipeline = trainer.fit_model(run_id=run_id)
+        trainer.eval_model(pipeline=pipeline, run_id=run_id, top_n_rows=args.top_n_rows)
 
 
 if __name__ == "__main__":

@@ -7,7 +7,7 @@ import pandas as pd
 import pytest
 import torch
 
-from src.modeling.sequence_data_prep import SequenceDataset, SequenceModelDataPrep
+from src.modeling.sequence.data_prep import SequenceDataset, SequenceModelDataPrep
 
 
 def _assert_tensors_equal(actual: torch.Tensor, expected: torch.Tensor):
