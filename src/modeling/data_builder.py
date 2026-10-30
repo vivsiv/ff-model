@@ -77,6 +77,8 @@ class SplitYears:
         return {TRAIN_SPLIT: is_train, EVAL_SPLIT: is_eval, TEST_SPLIT: is_test}
 
 
+# TODO: introduce a typed model-data config with centralized defaults, validation,
+# and YAML/JSON round-trip serialization; preserve existing configs and MLflow artifacts.
 class ModelDataBuilder(ABC):
     """Shared configuration and row-level helpers for tabular and sequence data builders.
 
@@ -104,11 +106,12 @@ class ModelDataBuilder(ABC):
 
     def __init__(self, data_dir: str, config: dict[str, Any]):
         """Configure the data builder without loading data from data_dir/gold."""
-        self.data_dir = data_dir
         self.gold_data_dir = os.path.join(data_dir, "gold")
         self.config = config
         self.target = config["target"]
         self.positions = config.get("positions") or None
+        self.split_years = SplitYears.from_config(config.get("split", {}))
+        # TODO: why does target_season need to be added here? Why cant it be in the registry?
         self.identity_cols = get_identity_columns("nflverse", "player_stats") + ["target_season"]
         self._data_splits: Optional[dict[str, Any]] = None
 

@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import torch
 
-from src.modeling.data_builder import TRAIN_SPLIT, ModelDataBuilder, SplitYears
+from src.modeling.data_builder import TRAIN_SPLIT, ModelDataBuilder
 from src.processing.gold import TARGET_COL, load_prediction_set, load_training_set
 
 logger = logging.getLogger(__name__)
@@ -141,7 +141,7 @@ class SequenceModelDataBuilder(ModelDataBuilder):
         self._check_numeric(data, feature_cols)
 
         data = self._order_by_step(data)
-        split_masks = SplitYears.from_config(self.config.get("split", {})).to_masks(data[TARGET_SEASON_COL])
+        split_masks = self.split_years.to_masks(data[TARGET_SEASON_COL])
         is_labeled = data[TARGET_COL].notna() & data[TARGET_SEASON_COL].notna()
         sample_weights = self._compute_sample_weights(data[TARGET_COL])
 

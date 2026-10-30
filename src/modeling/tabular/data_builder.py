@@ -32,7 +32,7 @@ class TabularModelDataBuilder(ModelDataBuilder):
         target_season = data["target_season"]
 
         return self.split(
-            split_years=SplitYears.from_config(self.config.get("split", {})),
+            split_years=self.split_years,
             target_season=target_season,
             features_df=data[feature_cols],
             target_df=target_df,
