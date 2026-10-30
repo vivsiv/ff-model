@@ -9,7 +9,7 @@ from typing import Tuple
 import mlflow
 from sklearn.pipeline import Pipeline
 
-from src.modeling.tabular.data_prep import TabularModelDataPrep
+from src.modeling.tabular.data_builder import TabularModelDataBuilder
 from src.modeling.tabular.trainer import TabularModelTrainer
 from src.modeling.tabular.inference import TabularModelInference
 from src.modeling.utils import setup_mlflow_run
@@ -26,8 +26,8 @@ class _FakePipeline:
         return self._predictions
 
 
-class _FakeDataPrep:
-    """Minimal stand-in for a TabularModelDataPrep -- just enough for TabularModelInference's
+class _FakeDataBuilder:
+    """Minimal stand-in for a TabularModelDataBuilder -- just enough for TabularModelInference's
     _predict/_score (which only need .target and .config off it)."""
 
     def __init__(self, target: str = "ppr"):
@@ -62,14 +62,14 @@ def _train_and_register_ridge_model(
     gold_dir: str, tracking_dir: str, target: str, training_data: pd.DataFrame
 ) -> Tuple[Pipeline, str]:
     """Trains+registers a ridge model on training_data (eval/test years=1, no exclusions),
-    logging its data prep config the same way tabular/trainer.py's CLI (main()) does.
+    logging its data builder config the same way tabular/trainer.py's CLI (main()) does.
 
     Returns (pipeline, source_run_id)."""
     training_data.to_csv(os.path.join(gold_dir, f"{target}__training_set.csv"), index=False)
 
-    data_prep = TabularModelDataPrep(data_dir=os.path.dirname(gold_dir), config={"target": target})
+    data_builder = TabularModelDataBuilder(data_dir=os.path.dirname(gold_dir), config={"target": target})
     model = TabularModelTrainer(
-        data_dir=os.path.dirname(gold_dir), tracking_dir=tracking_dir, data_prep=data_prep, model_type="ridge"
+        data_dir=os.path.dirname(gold_dir), tracking_dir=tracking_dir, data_builder=data_builder, model_type="ridge"
     )
     run_id = model.setup_mlflow()
     pipeline = model.fit_model(run_id=run_id)
@@ -120,9 +120,9 @@ class TestTabularModelInference:
             "features": {"mode": "exclude", "columns": ["f3"]},
             "split": {"eval_data_years": 1, "test_data_years": 1, "num_training_seasons": 2},
         }
-        cls.data_prep = TabularModelDataPrep(data_dir=cls.test_dir, config=cls.config)
+        cls.data_builder = TabularModelDataBuilder(data_dir=cls.test_dir, config=cls.config)
         model = TabularModelTrainer(
-            data_dir=cls.test_dir, tracking_dir=cls.tracking_dir, data_prep=cls.data_prep, model_type="ridge"
+            data_dir=cls.test_dir, tracking_dir=cls.tracking_dir, data_builder=cls.data_builder, model_type="ridge"
         )
         cls.data = model.data
         cls.train_run_id = model.setup_mlflow()
@@ -138,17 +138,17 @@ class TestTabularModelInference:
         shutil.rmtree(cls.test_dir)
 
     def test_init__does_not_build_a_tabular_model(self):
-        # TabularModelInference has everything it needs (pipeline, reconstructed data_prep) to run
+        # TabularModelInference has everything it needs (pipeline, reconstructed data_builder) to run
         # predict()/score() directly -- it shouldn't need to build a TabularModelTrainer at all.
         assert not hasattr(self.inference, "model")
 
     # -- from_fit_pipeline / evaluate (used directly by TabularModelTrainer.eval_model) ----------
 
-    def test_from_fit_pipeline__wraps_pipeline_and_data_prep_without_loading_anything(self):
-        inference = TabularModelInference.from_fit_pipeline(self.pipeline, self.data_prep)
+    def test_from_fit_pipeline__wraps_pipeline_and_data_builder_without_loading_anything(self):
+        inference = TabularModelInference.from_fit_pipeline(self.pipeline, self.data_builder)
 
         assert inference.pipeline is self.pipeline
-        assert inference.data_prep is self.data_prep
+        assert inference.data_builder is self.data_builder
         assert inference.registered_model is None
         assert inference.model_version is None
         assert inference.source_run_id is None
@@ -157,7 +157,7 @@ class TestTabularModelInference:
         # from_fit_pipeline has no registry metadata to build run_id/csv_path defaults from,
         # so both must be passed explicitly -- this is exactly what TabularModelTrainer.eval_model
         # does, logging into the same run fit_model already opened.
-        inference = TabularModelInference.from_fit_pipeline(self.pipeline, self.data_prep)
+        inference = TabularModelInference.from_fit_pipeline(self.pipeline, self.data_builder)
         run_id = setup_mlflow_run(
             experiment_name="target_1_tabular", run_name="direct_evaluate", tracking_dir=self.tracking_dir
         )
@@ -172,9 +172,9 @@ class TestTabularModelInference:
 
     def test_predict__also_works_from_a_fit_pipeline_given_explicit_run_id_and_csv_path(self):
         # predict() only needs registry metadata to build run_id/csv_path defaults --
-        # prep_prediction_data() itself has no dependency on the registry, so a
+        # build_prediction_data() itself has no dependency on the registry, so a
         # from_fit_pipeline instance can predict() too as long as both are passed explicitly.
-        inference = TabularModelInference.from_fit_pipeline(self.pipeline, self.data_prep)
+        inference = TabularModelInference.from_fit_pipeline(self.pipeline, self.data_builder)
         run_id = setup_mlflow_run(
             experiment_name="target_1_tabular", run_name="direct_predict", tracking_dir=self.tracking_dir
         )
@@ -210,7 +210,7 @@ class TestTabularModelInference:
         experiment = mlflow.get_experiment(run.info.experiment_id)
         assert experiment.name == "target_1_tabular"
 
-    def test_setup_mlflow__also_logs_the_reconstructed_data_prep_config(self):
+    def test_setup_mlflow__also_logs_the_reconstructed_data_builder_config(self):
         run_id = self.inference.setup_mlflow(phase="test", run_name_suffix="test")
 
         logged_config = mlflow.artifacts.load_dict(f"runs:/{run_id}/data_prep_config.json")
@@ -231,11 +231,11 @@ class TestTabularModelInference:
             training_data["position"] = ["RB", "WR"] * 5
             training_data.to_csv(os.path.join(gold_dir, "target_3__training_set.csv"), index=False)
 
-            data_prep = TabularModelDataPrep(
+            data_builder = TabularModelDataBuilder(
                 data_dir=test_dir, config={"target": "target_3", "positions": ["RB"]}
             )
             model = TabularModelTrainer(
-                data_dir=test_dir, tracking_dir=tracking_dir, data_prep=data_prep, model_type="ridge"
+                data_dir=test_dir, tracking_dir=tracking_dir, data_builder=data_builder, model_type="ridge"
             )
             train_run_id = model.setup_mlflow()
             model.fit_model(run_id=train_run_id)
@@ -395,11 +395,11 @@ class TestTabularModelInference:
             training_data["position"] = ["RB", "WR"] * 5
             training_data.to_csv(os.path.join(gold_dir, "target_3__training_set.csv"), index=False)
 
-            data_prep = TabularModelDataPrep(
+            data_builder = TabularModelDataBuilder(
                 data_dir=test_dir, config={"target": "target_3", "positions": ["RB"]}
             )
             model = TabularModelTrainer(
-                data_dir=test_dir, tracking_dir=tracking_dir, data_prep=data_prep, model_type="ridge"
+                data_dir=test_dir, tracking_dir=tracking_dir, data_builder=data_builder, model_type="ridge"
             )
             train_run_id = model.setup_mlflow()
             model.fit_model(run_id=train_run_id)
@@ -430,7 +430,7 @@ class TestTabularModelInference:
         csv_path = self.inference.build_predictions_csv_path(os.path.join(self.test_dir, "predictions"), self.inference.registered_model, self.inference.model_version, run_id)
         preds_df = self.inference.predict(run_id=run_id, csv_path=csv_path)
 
-        prediction_set = self.data_prep.prep_prediction_data()
+        prediction_set = self.data_builder.build_prediction_data()
         expected = pd.Series(
             self.pipeline.predict(prediction_set["features"][["f1", "f2"]]),
             index=prediction_set["features"].index,
@@ -477,11 +477,11 @@ class TestTabularModelInference:
             prediction_data["position"] = ["RB", "WR", "RB", "WR"]
             prediction_data.to_csv(os.path.join(gold_dir, "target_3__prediction_set.csv"), index=False)
 
-            data_prep = TabularModelDataPrep(
+            data_builder = TabularModelDataBuilder(
                 data_dir=test_dir, config={"target": "target_3", "positions": ["RB"]}
             )
             model = TabularModelTrainer(
-                data_dir=test_dir, tracking_dir=tracking_dir, data_prep=data_prep, model_type="ridge"
+                data_dir=test_dir, tracking_dir=tracking_dir, data_builder=data_builder, model_type="ridge"
             )
             train_run_id = model.setup_mlflow()
             model.fit_model(run_id=train_run_id)
@@ -499,8 +499,8 @@ class TestTabularModelInference:
             shutil.rmtree(test_dir)
 
     def test_predict__never_needs_the_training_set_on_disk(self):
-        # The whole point of TabularModelInference.predict() calling data_prep.prep_prediction_data()
-        # directly (never data_prep.prep_training_data()): a TabularModelInference built purely to
+        # The whole point of TabularModelInference.predict() calling data_builder.build_prediction_data()
+        # directly (never data_builder.build_data_splits()): a TabularModelInference built purely to
         # make live predictions from an already-trained model should never need to load (or
         # even have) a training set on disk.
         training_set_path = os.path.join(self.gold_dir, "target_1__training_set.csv")
@@ -515,14 +515,14 @@ class TestTabularModelInference:
             preds_df = inference.predict(run_id=run_id, csv_path=csv_path)
 
             assert len(preds_df) == 2
-            assert not hasattr(inference.data_prep, "training_data")
+            assert not hasattr(inference.data_builder, "source_data")
         finally:
             os.rename(moved_path, training_set_path)
 
 
 class TestTabularModelInferencePredictAndScore:
     """Tests _predict/_score directly (via a TabularModelInference.from_fit_pipeline built on a
-    _FakePipeline/_FakeDataPrep) -- these are the low-level methods evaluate()/predict()
+    _FakePipeline/_FakeDataBuilder) -- these are the low-level methods evaluate()/predict()
     call, exercised in isolation rather than through a real TabularModelTrainer."""
 
     @classmethod
@@ -543,7 +543,7 @@ class TestTabularModelInferencePredictAndScore:
 
     def _inference(self, pipeline=None, target: str = "ppr") -> TabularModelInference:
         return TabularModelInference.from_fit_pipeline(
-            pipeline or _FakePipeline([1.0]), _FakeDataPrep(target=target)
+            pipeline or _FakePipeline([1.0]), _FakeDataBuilder(target=target)
         )
 
     # -- _score ----------------------------------------------------------------------------

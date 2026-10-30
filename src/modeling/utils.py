@@ -7,7 +7,7 @@ from mlflow.entities.model_registry import ModelVersion
 from mlflow.tracking import MlflowClient
 from sklearn.pipeline import Pipeline
 
-from src.modeling.tabular.data_prep import DATA_PREP_CONFIG_ARTIFACT_PATH
+from src.modeling.data_builder import DATA_BUILDER_CONFIG_ARTIFACT_PATH
 
 logger = logging.getLogger(__name__)
 
@@ -103,25 +103,25 @@ def load_mlflow_model(
     return pipeline, model_version
 
 
-def load_data_prep_config(source_run_id: str) -> dict[str, Any]:
+def load_data_builder_config(source_run_id: str) -> dict[str, Any]:
     """
-    Downloads and parses the TabularModelDataPrep config (see
-    data_prep.DATA_PREP_CONFIG_ARTIFACT_PATH) logged as an mlflow artifact on source_run_id.
+    Downloads and parses the ModelDataBuilder config (see
+    data_builder.DATA_BUILDER_CONFIG_ARTIFACT_PATH) logged as an mlflow artifact on source_run_id.
 
     Args:
         source_run_id: The training run to pull the config from.
 
     Returns:
-        The logged TabularModelDataPrep config dict.
+        The logged ModelDataBuilder config dict.
 
     Raises:
         RuntimeError: If the run has no data_prep_config.json artifact -- e.g. it was
             created by fit_model()/param_search() directly, or by a version of
-            tabular/trainer.py predating this config-driven data prep.
+            tabular/trainer.py predating config-driven data building.
     """
     try:
-        return mlflow.artifacts.load_dict(f"runs:/{source_run_id}/{DATA_PREP_CONFIG_ARTIFACT_PATH}")
+        return mlflow.artifacts.load_dict(f"runs:/{source_run_id}/{DATA_BUILDER_CONFIG_ARTIFACT_PATH}")
     except mlflow.exceptions.MlflowException as e:
         raise RuntimeError(
-            f"Run {source_run_id} has no {DATA_PREP_CONFIG_ARTIFACT_PATH} artifact."
+            f"Run {source_run_id} has no {DATA_BUILDER_CONFIG_ARTIFACT_PATH} artifact."
         ) from e

@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import torch
 
-from src.modeling.tabular.data_prep import SplitYears, TabularModelDataPrep
+from src.modeling.data_builder import TRAIN_SPLIT, ModelDataBuilder, SplitYears
 from src.processing.gold import TARGET_COL, load_prediction_set, load_training_set
 
 logger = logging.getLogger(__name__)
@@ -101,16 +101,16 @@ class SequenceDataset:
         return self.identity.groupby("seq_idx").tail(1)
 
 
-class SequenceModelDataPrep(TabularModelDataPrep):
+class SequenceModelDataBuilder(ModelDataBuilder):
     """
-    Loads a target's tabular training/prediction sets and assembles them into SequenceDatasets.
-    Uses the same config schema as TabularModelDataPrep's to define:
-    the target, years per each data split, sample weighting for training, and feature inclusion/exlusion.
+    Builds SequenceDatasets from a target's gold training and prediction tables.
+    Uses ModelDataBuilder's shared config schema to define:
+    the target, seasons per data split, sample weighting for training, and feature inclusion/exclusion.
     """
 
-    def prep_training_data(self) -> dict[str, SequenceDataset]:
+    def build_data_splits(self) -> dict[str, SequenceDataset]:
         """
-        Loads the gold data set, splits it by the DataPreps split config, and assembles each split into a SequenceDataset.
+        Loads the gold data set, splits it by the builder's split config, and assembles each split into a SequenceDataset.
 
         Splitting is done on a step's target_season.
 
@@ -130,9 +130,9 @@ class SequenceModelDataPrep(TabularModelDataPrep):
                 the total number of distinct seasons available, if a player has two rows for one season, or if a
                 selected feature is not numeric.
         """
-        self.training_data = load_training_set(self.gold_data_dir, self.target)
+        self.source_data = load_training_set(self.gold_data_dir, self.target)
 
-        data = self.training_data
+        data = self.source_data
         if self.positions:
             data = self._filter_positions(data, self.positions)
 
@@ -145,10 +145,10 @@ class SequenceModelDataPrep(TabularModelDataPrep):
         sample_weights = self._compute_sample_weights(data[TARGET_COL])
 
         datasets = {}
-        for split, in_split in [("train", split_masks.is_train), ("eval", split_masks.is_eval), ("test", split_masks.is_test)]:
-            split_data = data.assign(**{LOSS_STEP_COL: in_split & is_labeled})
+        for split, split_mask in split_masks.items():
+            split_data = data.assign(**{LOSS_STEP_COL: split_mask & is_labeled})
             split_data = split_data[self._get_input_rows_mask(split_data)]
-            if split == "train":
+            if split == TRAIN_SPLIT:
                 split_data[SAMPLE_WEIGHT_COL] = sample_weights
 
             datasets[split] = self._build_sequence_dataset(split_data, feature_cols)
@@ -159,11 +159,10 @@ class SequenceModelDataPrep(TabularModelDataPrep):
 
         return datasets
 
-    def prep_prediction_data(self) -> SequenceDataset:
+    def build_prediction_data(self) -> SequenceDataset:
         """
-        Assembles the sequences to predict from.
-        Takes each player in the prediction set and concats their rows from the training set (their history).
-        Their row from the prediction set becomes their last step, which is the one used to generate the prediction.
+        Builds prediction sequences by appending each player's prediction row to their historical rows.
+        The prediction row becomes the last step, which is used to generate the prediction.
 
         Returns:
             SequenceDataset (no y/loss_mask/sample_weight) with one sequence per player in the prediction set.

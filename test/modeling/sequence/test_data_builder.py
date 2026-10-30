@@ -7,7 +7,8 @@ import pandas as pd
 import pytest
 import torch
 
-from src.modeling.sequence.data_prep import SequenceDataset, SequenceModelDataPrep
+from src.modeling.data_builder import ModelDataBuilder
+from src.modeling.sequence.data_builder import SequenceDataset, SequenceModelDataBuilder
 
 
 def _assert_tensors_equal(actual: torch.Tensor, expected: torch.Tensor):
@@ -76,7 +77,26 @@ class TestSequenceDataset:
         )
 
 
-class TestSequenceModelDataPrep:
+class TestSequenceModelDataBuilder:
+    def test_inheritance__uses_shared_base_and_helpers(self):
+        assert SequenceModelDataBuilder.__bases__ == (ModelDataBuilder,)
+        assert SequenceModelDataBuilder.from_config_file.__func__ is ModelDataBuilder.from_config_file.__func__
+        for method in ["_filter_positions", "_matches_any", "_resolve_feature_columns", "_compute_sample_weights"]:
+            assert getattr(SequenceModelDataBuilder, method) is getattr(ModelDataBuilder, method)
+
+    def test_from_config_file__constructs_builder_without_loading_gold(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text("target: ppr_points_per_game\npositions: [RB]\n")
+
+        builder = SequenceModelDataBuilder.from_config_file(str(tmp_path), str(config_path))
+
+        assert type(builder) is SequenceModelDataBuilder
+        assert builder.target == "ppr_points_per_game"
+        assert builder.positions == ["RB"]
+        assert builder.gold_data_dir == str(tmp_path / "gold")
+        assert not hasattr(builder, "source_data")
+        assert not (tmp_path / "gold").exists()
+
     POSITIONS = {"A": "WR", "B": "QB", "D": "RB", "E": "WR", "F": "TE"}
     PLAYER_NUMBER = {"A": 1, "B": 2, "D": 4, "E": 5, "F": 6}
 
@@ -137,23 +157,23 @@ class TestSequenceModelDataPrep:
     def teardown_class(cls):
         shutil.rmtree(cls.test_dir)
 
-    def _prep(self, config=None) -> SequenceModelDataPrep:
+    def _prep(self, config=None) -> SequenceModelDataBuilder:
         base = {"target": "target_1", "features": {"mode": "exclude", "columns": ["*_career_*"]}}
-        return SequenceModelDataPrep(data_dir=self.test_dir, config={**base, **(config or {})})
+        return SequenceModelDataBuilder(data_dir=self.test_dir, config={**base, **(config or {})})
 
-    def test_prep_training_data__resolves_feature_columns_correctly(self):
-        data = self._prep().prep_training_data()
+    def test_build_data_splits__resolves_feature_columns_correctly(self):
+        data = self._prep().build_data_splits()
         for seq_ds in data.values():
             assert seq_ds.feature_columns == ["f1", "f2"]
         assert data["train"].feature_columns == ["f1", "f2"]
 
-        data_no_exclude = self._prep({"features": {}}).prep_training_data()
+        data_no_exclude = self._prep({"features": {}}).build_data_splits()
         for seq_ds in data_no_exclude.values():
             assert seq_ds.feature_columns == ["f1", "f2", "f1_career_avg"]
 
 
-    def test_prep_training_data__generates_train_split_set_correctly(self):
-        train = self._prep().prep_training_data()["train"]
+    def test_build_data_splits__generates_train_split_set_correctly(self):
+        train = self._prep().build_data_splits()["train"]
 
         # - A & D's steps with T <= 2022 are in the training set sequences, (2 and 1 step respectively)
         # - B & E have no steps with T <= 2022, they are eliminated entirely.
@@ -177,8 +197,8 @@ class TestSequenceModelDataPrep:
 
         _assert_sequence_datasets_equal(train, expected)
 
-    def test_prep_training_data__generates_eval_split_set_correctly(self):
-        eval_split = self._prep().prep_training_data()["eval"]
+    def test_build_data_splits__generates_eval_split_set_correctly(self):
+        eval_split = self._prep().build_data_splits()["eval"]
 
         nan = float("nan")
         expected = SequenceDataset(
@@ -206,8 +226,8 @@ class TestSequenceModelDataPrep:
 
         _assert_sequence_datasets_equal(eval_split, expected)
 
-    def test_prep_training_data__generates_test_split_set_correctly(self):
-        test_split = self._prep().prep_training_data()["test"]
+    def test_build_data_splits__generates_test_split_set_correctly(self):
+        test_split = self._prep().build_data_splits()["test"]
 
         nan = float("nan")
         expected = SequenceDataset(
@@ -238,8 +258,8 @@ class TestSequenceModelDataPrep:
 
         _assert_sequence_datasets_equal(test_split, expected)
 
-    def test_prep_training_data__training_window_limits_loss_steps_but_not_input_history(self):
-        train = self._prep({"split": {"num_training_seasons": 1}}).prep_training_data()["train"]
+    def test_build_data_splits__training_window_limits_loss_steps_but_not_input_history(self):
+        train = self._prep({"split": {"num_training_seasons": 1}}).build_data_splits()["train"]
 
         # Only T == 2022 (A's second step) is in the training window. A's earlier step is kept as unscored input,
         # D's only label (T == 2021) is outside the window so D is left out.
@@ -260,8 +280,8 @@ class TestSequenceModelDataPrep:
 
         _assert_sequence_datasets_equal(train, expected)
 
-    def test_prep_training_data__splits_use_configured_years(self):
-        data = self._prep({"split": {"eval_data_years": 2, "test_data_years": 1}}).prep_training_data()
+    def test_build_data_splits__splits_use_configured_years(self):
+        data = self._prep({"split": {"eval_data_years": 2, "test_data_years": 1}}).build_data_splits()
 
         def scored_steps(dataset: SequenceDataset) -> pd.DataFrame:
             """(player, season, target_season) of the steps in dataset that count toward the loss."""
@@ -283,9 +303,9 @@ class TestSequenceModelDataPrep:
             pd.DataFrame([("A", 2023, 2024), ("B", 2023, 2024), ("E", 2023, 2024)], columns=columns),
         )
 
-    def test_prep_training_data__sample_weight_buckets_are_applied_per_step(self):
+    def test_build_data_splits__sample_weight_buckets_are_applied_per_step(self):
         config = {"sample_weights": {"buckets": [{"min": 0.0, "weight": 0.5}, {"min": 10.5, "weight": 1.0}]}}
-        train = self._prep(config).prep_training_data()["train"]
+        train = self._prep(config).build_data_splits()["train"]
 
         # Weights follow each step's target: A's targets are 10.0 and 11.0, D's is 5.0.
         _assert_tensors_equal(
@@ -296,29 +316,29 @@ class TestSequenceModelDataPrep:
             ]),
         )
 
-    def test_prep_training_data__positions_filter_drops_whole_players(self):
-        data = self._prep({"positions": ["WR"]}).prep_training_data()
+    def test_build_data_splits__positions_filter_drops_whole_players(self):
+        data = self._prep({"positions": ["WR"]}).build_data_splits()
 
         assert set(data["test"].identity["player_id"]) == {"A", "E"}
         assert set(data["train"].identity["player_id"]) == {"A"}
 
-    def test_prep_training_data__raises_when_split_needs_more_seasons_than_available(self):
+    def test_build_data_splits__raises_when_split_needs_more_seasons_than_available(self):
         with pytest.raises(ValueError, match="exceeds"):
-            self._prep({"split": {"num_training_seasons": 10}}).prep_training_data()
+            self._prep({"split": {"num_training_seasons": 10}}).build_data_splits()
 
-    def test_prep_training_data__raises_on_duplicate_player_season(self):
+    def test_build_data_splits__raises_on_duplicate_player_season(self):
         test_dir = tempfile.mkdtemp()
         try:
             training_df = self._gold_frame(self.TRAINING_ROWS + [self.TRAINING_ROWS[0]])
             self._write_gold_tables(test_dir, training_df, self._gold_frame(self.PREDICTION_ROWS))
-            prep = SequenceModelDataPrep(data_dir=test_dir, config={"target": "target_1"})
+            prep = SequenceModelDataBuilder(data_dir=test_dir, config={"target": "target_1"})
 
             with pytest.raises(ValueError, match="More than one row"):
-                prep.prep_training_data()
+                prep.build_data_splits()
         finally:
             shutil.rmtree(test_dir)
 
-    def test_prep_training_data__raises_on_non_numeric_feature(self):
+    def test_build_data_splits__raises_on_non_numeric_feature(self):
         test_dir = tempfile.mkdtemp()
         try:
             training_df = self._gold_frame(self.TRAINING_ROWS)
@@ -326,29 +346,29 @@ class TestSequenceModelDataPrep:
             prediction_df = self._gold_frame(self.PREDICTION_ROWS)
             prediction_df["team_name"] = "KC"
             self._write_gold_tables(test_dir, training_df, prediction_df)
-            prep = SequenceModelDataPrep(data_dir=test_dir, config={"target": "target_1"})
+            prep = SequenceModelDataBuilder(data_dir=test_dir, config={"target": "target_1"})
 
             with pytest.raises(ValueError, match="team_name"):
-                prep.prep_training_data()
+                prep.build_data_splits()
         finally:
             shutil.rmtree(test_dir)
 
-    def test_prep_training_data__keeps_missing_feature_values_as_nan(self):
+    def test_build_data_splits__keeps_missing_feature_values_as_nan(self):
         test_dir = tempfile.mkdtemp()
         try:
             training_df = self._gold_frame(self.TRAINING_ROWS)
             training_df.loc[(training_df["player_id"] == "D"), "f2"] = np.nan
             self._write_gold_tables(test_dir, training_df, self._gold_frame(self.PREDICTION_ROWS))
-            prep = SequenceModelDataPrep(data_dir=test_dir, config={"target": "target_1"})
+            prep = SequenceModelDataBuilder(data_dir=test_dir, config={"target": "target_1"})
 
-            train = prep.prep_training_data()["train"]
+            train = prep.build_data_splits()["train"]
             d_row = train.identity.index[train.identity["player_id"] == "D"][0]
             assert torch.isnan(train.X[train.real_step_mask][d_row, 1])
         finally:
             shutil.rmtree(test_dir)
 
-    def test_prep_prediction_data__generates_prediction_set_correctly(self):
-        prediction = self._prep().prep_prediction_data()
+    def test_build_prediction_data__generates_prediction_set_correctly(self):
+        prediction = self._prep().build_prediction_data()
 
         # - Each listed player's training steps are followed by their prediction row (2024, predicting 2025).
         # - D & E aren't in the prediction set, F has only the prediction row.
@@ -376,44 +396,44 @@ class TestSequenceModelDataPrep:
 
         _assert_sequence_datasets_equal(prediction, expected)
 
-    def test_prep_prediction_data__respects_position_filter(self):
-        prediction = self._prep({"positions": ["WR", "TE"]}).prep_prediction_data()
+    def test_build_prediction_data__respects_position_filter(self):
+        prediction = self._prep({"positions": ["WR", "TE"]}).build_prediction_data()
 
         assert set(prediction.identity["player_id"]) == {"A", "F"}
 
-    def test_prep_prediction_data__raises_when_prediction_row_is_not_the_latest_season(self):
+    def test_build_prediction_data__raises_when_prediction_row_is_not_the_latest_season(self):
         test_dir = tempfile.mkdtemp()
         try:
             stale_prediction_rows = [("A", 2019, 2025, np.nan)]
             self._write_gold_tables(test_dir, self._gold_frame(self.TRAINING_ROWS), self._gold_frame(stale_prediction_rows))
-            prep = SequenceModelDataPrep(data_dir=test_dir, config={"target": "target_1"})
+            prep = SequenceModelDataBuilder(data_dir=test_dir, config={"target": "target_1"})
 
             with pytest.raises(ValueError, match="latest season"):
-                prep.prep_prediction_data()
+                prep.build_prediction_data()
         finally:
             shutil.rmtree(test_dir)
 
-    def test_prep_prediction_data__raises_when_prediction_row_repeats_a_training_season(self):
+    def test_build_prediction_data__raises_when_prediction_row_repeats_a_training_season(self):
         test_dir = tempfile.mkdtemp()
         try:
             repeated_prediction_rows = [("A", 2023, 2025, np.nan)]
             self._write_gold_tables(test_dir, self._gold_frame(self.TRAINING_ROWS), self._gold_frame(repeated_prediction_rows))
-            prep = SequenceModelDataPrep(data_dir=test_dir, config={"target": "target_1"})
+            prep = SequenceModelDataBuilder(data_dir=test_dir, config={"target": "target_1"})
 
             with pytest.raises(ValueError, match="More than one row"):
-                prep.prep_prediction_data()
+                prep.build_prediction_data()
         finally:
             shutil.rmtree(test_dir)
 
-    def test_prep_prediction_data__raises_when_columns_differ(self):
+    def test_build_prediction_data__raises_when_columns_differ(self):
         test_dir = tempfile.mkdtemp()
         try:
             prediction_df = self._gold_frame(self.PREDICTION_ROWS).drop(columns=["f2"])
             self._write_gold_tables(test_dir, self._gold_frame(self.TRAINING_ROWS), prediction_df)
-            prep = SequenceModelDataPrep(data_dir=test_dir, config={"target": "target_1"})
+            prep = SequenceModelDataBuilder(data_dir=test_dir, config={"target": "target_1"})
 
             with pytest.raises(ValueError, match="same columns"):
-                prep.prep_prediction_data()
+                prep.build_prediction_data()
         finally:
             shutil.rmtree(test_dir)
 
@@ -422,7 +442,7 @@ class TestSequenceModelDataPrep:
         with open(config_path, "w") as f:
             f.write("target: target_1\nfeatures:\n  mode: exclude\n  columns:\n    - '*_career_*'\n")
 
-        prep = SequenceModelDataPrep.from_config_file(self.test_dir, config_path)
+        prep = SequenceModelDataBuilder.from_config_file(self.test_dir, config_path)
 
-        assert isinstance(prep, SequenceModelDataPrep)
-        assert prep.prep_training_data()["train"].feature_columns == ["f1", "f2"]
+        assert isinstance(prep, SequenceModelDataBuilder)
+        assert prep.build_data_splits()["train"].feature_columns == ["f1", "f2"]

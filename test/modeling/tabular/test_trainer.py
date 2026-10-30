@@ -10,7 +10,7 @@ from mlflow.tracking import MlflowClient
 from sklearn.base import BaseEstimator, RegressorMixin
 from sklearn.linear_model import Ridge
 
-from src.modeling.tabular.data_prep import TabularModelDataPrep
+from src.modeling.tabular.data_builder import TabularModelDataBuilder
 from src.modeling.tabular.trainer import TabularModelTrainer
 from src.modeling.utils import set_mlflow_tracking_uri
 from src.processing.column_registry import get_identity_columns
@@ -53,9 +53,9 @@ class TestTabularModelTrainer:
         })
         training_data.to_csv(os.path.join(cls.gold_dir, "target_1__training_set.csv"), index=False)
 
-        cls.data_prep = TabularModelDataPrep(data_dir=cls.test_dir, config={"target": "target_1"})
+        cls.data_builder = TabularModelDataBuilder(data_dir=cls.test_dir, config={"target": "target_1"})
         cls.model = TabularModelTrainer(
-            data_dir=cls.test_dir, tracking_dir=cls.tracking_dir, data_prep=cls.data_prep, model_type="ridge"
+            data_dir=cls.test_dir, tracking_dir=cls.tracking_dir, data_builder=cls.data_builder, model_type="ridge"
         )
 
     @classmethod
@@ -72,16 +72,16 @@ class TestTabularModelTrainer:
 
     def test_init__wires_up_target_model_type_and_predictions_dir(self):
         model = TabularModelTrainer(
-            data_dir=self.test_dir, tracking_dir=self.tracking_dir, data_prep=self.data_prep, model_type="ridge"
+            data_dir=self.test_dir, tracking_dir=self.tracking_dir, data_builder=self.data_builder, model_type="ridge"
         )
 
         assert model.target == "target_1"
         assert model.model_type == "ridge"
-        assert model.data_prep is self.data_prep
+        assert model.data_builder is self.data_builder
         assert os.path.isdir(os.path.join(self.test_dir, "predictions"))
 
-    def test_init__gets_the_train_eval_test_split_from_data_prep(self):
-        # TabularModelTrainer.__init__ calls data_prep.prep_training_data() itself to get the
+    def test_init__gets_the_train_eval_test_split_from_data_builder(self):
+        # TabularModelTrainer.__init__ calls data_builder.build_data_splits() itself to get the
         # train/eval/test split, rather than requiring the caller to do it beforehand.
         assert set(self.model.data.keys()) == {
             "X_train", "X_eval", "X_test",
@@ -94,29 +94,29 @@ class TestTabularModelTrainer:
     def test_base_model_name__defaults_to_target_when_positions_not_set(self):
         assert self.model.base_model_name == "target_1"
 
-    def test_base_model_name__includes_single_lowercased_position_when_data_prep_has_one(self):
-        data_prep = TabularModelDataPrep(data_dir=self.test_dir, config={"target": "target_1", "positions": ["RB"]})
+    def test_base_model_name__includes_single_lowercased_position_when_data_builder_has_one(self):
+        data_builder = TabularModelDataBuilder(data_dir=self.test_dir, config={"target": "target_1", "positions": ["RB"]})
         model = TabularModelTrainer(
-            data_dir=self.test_dir, tracking_dir=self.tracking_dir, data_prep=data_prep, model_type="ridge"
+            data_dir=self.test_dir, tracking_dir=self.tracking_dir, data_builder=data_builder, model_type="ridge"
         )
 
         assert model.base_model_name == "target_1_rb"
 
     def test_base_model_name__sorts_multiple_lowercased_positions_regardless_of_config_order(self):
-        data_prep = TabularModelDataPrep(
+        data_builder = TabularModelDataBuilder(
             data_dir=self.test_dir, config={"target": "target_1", "positions": ["WR", "RB"]}
         )
         model = TabularModelTrainer(
-            data_dir=self.test_dir, tracking_dir=self.tracking_dir, data_prep=data_prep, model_type="ridge"
+            data_dir=self.test_dir, tracking_dir=self.tracking_dir, data_builder=data_builder, model_type="ridge"
         )
 
         assert model.base_model_name == "target_1_rb_wr"
 
-    def test_setup_mlflow__logs_data_prep_config_as_an_artifact(self):
+    def test_setup_mlflow__logs_data_builder_config_as_an_artifact(self):
         run_id = self.model.setup_mlflow()
 
         logged_config = mlflow.artifacts.load_dict(f"runs:/{run_id}/data_prep_config.json")
-        assert logged_config == self.data_prep.config
+        assert logged_config == self.data_builder.config
         assert self._experiment_name_for_run(run_id) == "target_1_tabular"
 
     def test_setup_mlflow__tags_the_run_with_model_type_and_phase_train(self):
@@ -126,10 +126,10 @@ class TestTabularModelTrainer:
         assert tags["model_type"] == "ridge"
         assert tags["phase"] == "train"
 
-    def test_setup_mlflow__uses_position_specific_experiment_name_when_data_prep_has_one(self):
-        data_prep = TabularModelDataPrep(data_dir=self.test_dir, config={"target": "target_1", "positions": ["RB"]})
+    def test_setup_mlflow__uses_position_specific_experiment_name_when_data_builder_has_one(self):
+        data_builder = TabularModelDataBuilder(data_dir=self.test_dir, config={"target": "target_1", "positions": ["RB"]})
         model = TabularModelTrainer(
-            data_dir=self.test_dir, tracking_dir=self.tracking_dir, data_prep=data_prep, model_type="ridge"
+            data_dir=self.test_dir, tracking_dir=self.tracking_dir, data_builder=data_builder, model_type="ridge"
         )
 
         run_id = model.setup_mlflow()
@@ -137,11 +137,11 @@ class TestTabularModelTrainer:
         assert self._experiment_name_for_run(run_id) == "target_1_rb_tabular"
 
     def test_setup_mlflow__sorts_multiple_positions_regardless_of_config_order(self):
-        data_prep = TabularModelDataPrep(
+        data_builder = TabularModelDataBuilder(
             data_dir=self.test_dir, config={"target": "target_1", "positions": ["WR", "RB"]}
         )
         model = TabularModelTrainer(
-            data_dir=self.test_dir, tracking_dir=self.tracking_dir, data_prep=data_prep, model_type="ridge"
+            data_dir=self.test_dir, tracking_dir=self.tracking_dir, data_builder=data_builder, model_type="ridge"
         )
 
         run_id = model.setup_mlflow()
@@ -168,9 +168,9 @@ class TestTabularModelTrainer:
         })
         training_data.to_csv(os.path.join(self.gold_dir, "target_4__training_set.csv"), index=False)
 
-        data_prep = TabularModelDataPrep(data_dir=self.test_dir, config={"target": "target_4", "positions": ["RB"]})
+        data_builder = TabularModelDataBuilder(data_dir=self.test_dir, config={"target": "target_4", "positions": ["RB"]})
         model = TabularModelTrainer(
-            data_dir=self.test_dir, tracking_dir=self.tracking_dir, data_prep=data_prep, model_type="ridge"
+            data_dir=self.test_dir, tracking_dir=self.tracking_dir, data_builder=data_builder, model_type="ridge"
         )
         run_id = model.setup_mlflow()
         model.fit_model(run_id=run_id)

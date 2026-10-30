@@ -82,7 +82,7 @@ PHASE 4. Predictions & Rankings [PAUSED]
 4. Re-evaluate rankings process [PAUSED]
 
 PHASE 5. Sequential Model [IN PROGRESS]
-1. Build the sequence data prep: the analog of TabularModelDataPrep (src/modeling/) that assembles sequences from gold data and masks them [DONE]
+1. Build the sequence data prep: the analog of TabularModelDataBuilder (src/modeling/) that assembles sequences from gold data and masks them [DONE]
 2. Refactor tabular and sequence into their own subdirs, extract common dataprep code [IN PROGRESS]
 3. Rename training set created by gold to something else (probably gold), combine prediction set into gold.
 4. Build an lstm model and evaluate it

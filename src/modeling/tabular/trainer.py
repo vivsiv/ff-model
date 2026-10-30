@@ -16,7 +16,8 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.svm import SVR
 from sklearn.ensemble import GradientBoostingRegressor
 
-from src.modeling.tabular.data_prep import DATA_PREP_CONFIG_ARTIFACT_PATH, TabularModelDataPrep
+from src.modeling.data_builder import DATA_BUILDER_CONFIG_ARTIFACT_PATH, EVAL_SPLIT
+from src.modeling.tabular.data_builder import TabularModelDataBuilder
 from src.modeling.tabular.inference import TabularModelInference
 from src.modeling.utils import setup_mlflow_run
 
@@ -38,15 +39,15 @@ class TabularModelTrainer:
             self,
             data_dir: str,
             tracking_dir: str,
-            data_prep: TabularModelDataPrep,
+            data_builder: TabularModelDataBuilder,
             model_type: str,
     ):
         """
         Args:
             data_dir: Parent directory in which to log model artifacts
             tracking_dir: mlflow tracking/registry store directory
-            data_prep: Data source to fit/evaluate against -- see TabularModelDataPrep.
-                prep_training_data() is called on it here to get the train/eval/test split.
+            data_builder: Data source to fit/evaluate against -- see TabularModelDataBuilder.
+                build_data_splits() is called on it here to get the train/eval/test split.
             model_type: Type of model being fit (i.e.) random forest
         """
         self.data_dir = data_dir
@@ -54,15 +55,15 @@ class TabularModelTrainer:
         self.predictions_dir = os.path.join(data_dir, "predictions")
         os.makedirs(self.predictions_dir, exist_ok=True)
 
-        self.data_prep = data_prep
-        self.data = data_prep.prep_training_data()
-        self.target = data_prep.target
+        self.data_builder = data_builder
+        self.data = data_builder.build_data_splits()
+        self.target = data_builder.target
 
         self.model_type = model_type
 
     @property
     def base_model_name(self) -> str:
-        positions = [pos.lower() for pos in self.data_prep.positions] if self.data_prep.positions else None
+        positions = [pos.lower() for pos in self.data_builder.positions] if self.data_builder.positions else None
         suffix = f"_{'_'.join(sorted(positions))}" if positions else ""
 
         return f"{self.target}{suffix}"
@@ -96,7 +97,7 @@ class TabularModelTrainer:
     ) -> str:
         """
         Sets the active mlflow experiment and creates a new run for it, tagged with model_type and phase=train.
-        Logs self.data_prep.config as a "data_prep_config.json" artifact.
+        Logs self.data_builder.config as a "data_prep_config.json" artifact.
 
         Args:
             run_name: Overrides the default "{model_type}_{timestamp}" run name.
@@ -118,7 +119,7 @@ class TabularModelTrainer:
             params=extra_params,
             parent_run_id=parent_run_id,
         )
-        mlflow.log_dict(self.data_prep.config, DATA_PREP_CONFIG_ARTIFACT_PATH, run_id=run_id)
+        mlflow.log_dict(self.data_builder.config, DATA_BUILDER_CONFIG_ARTIFACT_PATH, run_id=run_id)
 
         return run_id
 
@@ -167,12 +168,12 @@ class TabularModelTrainer:
         self,
         pipeline: Pipeline,
         run_id: str,
-        split: str = "eval",
+        split: str = EVAL_SPLIT,
         top_n_rows: Optional[List[int]] = None,
     ) -> pd.DataFrame:
         """
         Scores a fitted pipeline against a held-out evaluation data set via a TabularModelInference
-        built from the fit pipeline + self.data_prep (see TabularModelInference.evaluate's
+        built from the fit pipeline + self.data_builder (see TabularModelInference.evaluate's
         docstring for what gets logged/returned).
 
         Args:
@@ -187,7 +188,7 @@ class TabularModelTrainer:
             self.predictions_dir, f"{self.base_model_name}_{self.model_type}_{split}_predictions_{run_id}.csv"
         )
 
-        inference = TabularModelInference.from_fit_pipeline(pipeline, self.data_prep)
+        inference = TabularModelInference.from_fit_pipeline(pipeline, self.data_builder)
         return inference.evaluate(
             split=split,
             run_id=run_id,
@@ -273,7 +274,7 @@ def main():
         "--config",
         type=str,
         required=True,
-        help="Path to a TabularModelDataPrep YAML config file (see configs/*.yaml), which "
+        help="Path to a TabularModelDataBuilder YAML config file (see configs/*.yaml), which "
              "determines the target being modeled plus how its training set is "
              "split/feature-filtered/sample-weighted."
     )
@@ -303,8 +304,8 @@ def main():
 
     args = parser.parse_args()
 
-    data_prep = TabularModelDataPrep.from_config_file(data_dir=args.data_dir, config_path=args.config)
-    trainer = TabularModelTrainer(data_dir=args.data_dir, tracking_dir=args.tracking_dir, data_prep=data_prep, model_type=args.model_type)
+    data_builder = TabularModelDataBuilder.from_config_file(data_dir=args.data_dir, config_path=args.config)
+    trainer = TabularModelTrainer(data_dir=args.data_dir, tracking_dir=args.tracking_dir, data_builder=data_builder, model_type=args.model_type)
 
     if args.param_grid:
         trainer.param_search(json.loads(args.param_grid))

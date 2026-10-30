@@ -1,4 +1,4 @@
-# Data prep config for the ppr_points_per_game target -- see TabularModelDataPrep.
+# Data builder config for the ppr_points_per_game target -- see TabularModelDataBuilder.
 #
 # features.columns (mode: exclude) excludes each counting stat's own raw current-season
 # value and _trend (both of which conflate per-game rate with games missed for a player

@@ -20,4 +20,4 @@ Run the requested tests in the current project checkout and report the actual re
 2. Capture the exact command, exit status, pytest summary, and relevant failure details. Report passed, failed, errors, skipped, xfailed, xpassed, and deselected counts when available. Zero collected tests, an interruption, timeout, missing prerequisites, or collection errors are not a passing suite. If an integration test is skipped or cannot run, identify it and why.
 3. Report the executed scope and outcome. For failures give the failing test IDs and concise error information; distinguish test failures from setup or environment errors. Do not claim broader validation than was actually executed.
 
-Examples: `@run-tests`, `@run-tests src/processing/gold.py`, or `@run-tests test/modeling/test_data_prep.py::TestSplitYears`.
+Examples: `@run-tests`, `@run-tests src/processing/gold.py`, or `@run-tests test/modeling/test_split_years.py::TestSplitYears`.
