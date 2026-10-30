@@ -10,13 +10,13 @@ class TabularModelDataBuilder(ModelDataBuilder):
     See ModelDataBuilder for the shared config schema.
     """
 
-    # TODO: cache the splits after the first build instead of recomputing on each call.
-    def build_data_splits(self) -> dict[str, pd.DataFrame]:
+    def _build_data_splits(self) -> dict[str, pd.DataFrame]:
         """Build train/eval/test datasets from the gold source table.
 
         Returns:
             X_train/X_eval/X_test, y_train/y_eval/y_test,
             identity_train/identity_eval/identity_test, and sample_weight_train.
+            Always builds fresh data; use get_data_splits() for cached access.
 
         Raises:
             ValueError: If requested split seasons exceed the distinct seasons available.

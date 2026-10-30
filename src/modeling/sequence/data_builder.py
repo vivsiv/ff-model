@@ -108,7 +108,7 @@ class SequenceModelDataBuilder(ModelDataBuilder):
     the target, seasons per data split, sample weighting for training, and feature inclusion/exclusion.
     """
 
-    def build_data_splits(self) -> dict[str, SequenceDataset]:
+    def _build_data_splits(self) -> dict[str, SequenceDataset]:
         """
         Loads the gold data set, splits it by the builder's split config, and assembles each split into a SequenceDataset.
 
@@ -124,6 +124,7 @@ class SequenceModelDataBuilder(ModelDataBuilder):
 
         Returns:
             dict with "train", "eval", "test" SequenceDatasets (y/loss_mask set, sample_weight on "train" only).
+            Always builds fresh data; use get_data_splits() for cached access.
 
         Raises:
             ValueError: If split config's num_training_seasons + eval_data_years + test_data_years exceeds

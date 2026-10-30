@@ -1,5 +1,6 @@
 import pandas as pd
 import pytest
+from unittest.mock import patch
 
 from src.modeling.data_builder import ModelDataBuilder
 
@@ -7,7 +8,7 @@ from src.modeling.data_builder import ModelDataBuilder
 class _ConcreteDataBuilder(ModelDataBuilder):
     """Implement the abstract interface to test shared helpers without gold I/O."""
 
-    def build_data_splits(self):
+    def _build_data_splits(self):
         return {}
 
     def build_prediction_data(self):
@@ -15,7 +16,7 @@ class _ConcreteDataBuilder(ModelDataBuilder):
 
 
 class _SplitsOnlyDataBuilder(ModelDataBuilder):
-    def build_data_splits(self):
+    def _build_data_splits(self):
         return {}
 
 
@@ -25,10 +26,51 @@ class _PredictionOnlyDataBuilder(ModelDataBuilder):
 
 
 class TestModelDataBuilder:
+    @pytest.mark.parametrize("recompute", [False, True])
+    def test_get_data_splits__builds_lazily_and_caches_empty_results(self, recompute):
+        builder = _ConcreteDataBuilder("data", {"target": "ppr_points_per_game"})
+        with patch.object(builder, "_build_data_splits", wraps=builder._build_data_splits) as build:
+            build.assert_not_called()
+            first = builder.get_data_splits(recompute=recompute)
+
+            assert first == {}
+            assert builder.get_data_splits() is first
+            build.assert_called_once_with()
+
+    def test_get_data_splits__recompute_replaces_cache(self):
+        builder = _ConcreteDataBuilder("data", {"target": "ppr_points_per_game"})
+        with patch.object(builder, "_build_data_splits", wraps=builder._build_data_splits) as build:
+            first = builder.get_data_splits()
+            refreshed = builder.get_data_splits(recompute=True)
+
+            assert refreshed is not first
+            assert builder.get_data_splits() is refreshed
+            assert build.call_count == 2
+
+    def test_get_data_splits__failed_first_build_can_be_retried(self):
+        builder = _ConcreteDataBuilder("data", {"target": "ppr_points_per_game"})
+        with patch.object(builder, "_build_data_splits", side_effect=ValueError("failed build")):
+            with pytest.raises(ValueError, match="failed build"):
+                builder.get_data_splits()
+
+        assert builder._data_splits is None
+        first = builder.get_data_splits()
+        assert builder.get_data_splits() is first
+
+    def test_get_data_splits__failed_recompute_preserves_cache(self):
+        builder = _ConcreteDataBuilder("data", {"target": "ppr_points_per_game"})
+        first = builder.get_data_splits()
+        with patch.object(builder, "_build_data_splits", side_effect=ValueError("failed build")) as build:
+            with pytest.raises(ValueError, match="failed build"):
+                builder.get_data_splits(recompute=True)
+
+            assert builder.get_data_splits() is first
+            build.assert_called_once_with()
+
     @pytest.mark.parametrize("builder_cls, missing_methods", [
-        (ModelDataBuilder, {"build_data_splits", "build_prediction_data"}),
+        (ModelDataBuilder, {"_build_data_splits", "build_prediction_data"}),
         (_SplitsOnlyDataBuilder, {"build_prediction_data"}),
-        (_PredictionOnlyDataBuilder, {"build_data_splits"}),
+        (_PredictionOnlyDataBuilder, {"_build_data_splits"}),
     ])
     def test_abstract_methods__requires_both_build_methods(self, builder_cls, missing_methods):
         assert builder_cls.__abstractmethods__ == missing_methods
@@ -43,6 +85,7 @@ class TestModelDataBuilder:
         assert builder.data_dir == str(tmp_path)
         assert builder.gold_data_dir == str(tmp_path / "gold")
         assert not hasattr(builder, "source_data")
+        assert builder._data_splits is None
         assert not (tmp_path / "gold").exists()
 
     def test_from_config_file__constructs_calling_subclass(self, tmp_path):

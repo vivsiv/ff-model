@@ -342,7 +342,7 @@ class TabularModelInference:
         Returns:
             DataFrame of predictions vs actuals (see _predict()).
         """
-        data = self.data_builder.build_data_splits()
+        data = self.data_builder.get_data_splits()
         X = self._select_pipeline_features(data[f"X_{split}"])
 
         preds_df = self._predict(

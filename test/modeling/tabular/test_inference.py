@@ -500,7 +500,7 @@ class TestTabularModelInference:
 
     def test_predict__never_needs_the_training_set_on_disk(self):
         # The whole point of TabularModelInference.predict() calling data_builder.build_prediction_data()
-        # directly (never data_builder.build_data_splits()): a TabularModelInference built purely to
+        # directly (never data_builder.get_data_splits()): a TabularModelInference built purely to
         # make live predictions from an already-trained model should never need to load (or
         # even have) a training set on disk.
         training_set_path = os.path.join(self.gold_dir, "target_1__training_set.csv")

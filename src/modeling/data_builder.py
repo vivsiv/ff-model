@@ -110,6 +110,7 @@ class ModelDataBuilder(ABC):
         self.target = config["target"]
         self.positions = config.get("positions") or None
         self.identity_cols = get_identity_columns("nflverse", "player_stats") + ["target_season"]
+        self._data_splits: Optional[dict[str, Any]] = None
 
     @classmethod
     def from_config_file(cls, data_dir: str, config_path: str) -> Self:
@@ -119,9 +120,19 @@ class ModelDataBuilder(ABC):
 
         return cls(data_dir=data_dir, config=config)
 
+    def get_data_splits(self, *, recompute: bool = False) -> dict[str, Any]:
+        """Lazily build splits and return the same cached objects on subsequent calls.
+
+        Use recompute=True to reload source data and replace the cache after a
+        successful build.
+        """
+        if self._data_splits is None or recompute:
+            self._data_splits = self._build_data_splits()
+        return self._data_splits
+
     @abstractmethod
-    def build_data_splits(self) -> dict[str, Any]:
-        """Build train/eval/test datasets in the subclass's model-specific format."""
+    def _build_data_splits(self) -> dict[str, Any]:
+        """Build fresh train/eval/test datasets in the subclass's model-specific format."""
         raise NotImplementedError
 
     @abstractmethod

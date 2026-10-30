@@ -47,7 +47,7 @@ class TabularModelTrainer:
             data_dir: Parent directory in which to log model artifacts
             tracking_dir: mlflow tracking/registry store directory
             data_builder: Data source to fit/evaluate against -- see TabularModelDataBuilder.
-                build_data_splits() is called on it here to get the train/eval/test split.
+                get_data_splits() is called on it here to get the cached train/eval/test split.
             model_type: Type of model being fit (i.e.) random forest
         """
         self.data_dir = data_dir
@@ -56,7 +56,7 @@ class TabularModelTrainer:
         os.makedirs(self.predictions_dir, exist_ok=True)
 
         self.data_builder = data_builder
-        self.data = data_builder.build_data_splits()
+        self.data = data_builder.get_data_splits()
         self.target = data_builder.target
 
         self.model_type = model_type

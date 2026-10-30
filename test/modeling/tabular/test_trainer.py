@@ -81,7 +81,7 @@ class TestTabularModelTrainer:
         assert os.path.isdir(os.path.join(self.test_dir, "predictions"))
 
     def test_init__gets_the_train_eval_test_split_from_data_builder(self):
-        # TabularModelTrainer.__init__ calls data_builder.build_data_splits() itself to get the
+        # TabularModelTrainer.__init__ calls data_builder.get_data_splits() itself to get the
         # train/eval/test split, rather than requiring the caller to do it beforehand.
         assert set(self.model.data.keys()) == {
             "X_train", "X_eval", "X_test",

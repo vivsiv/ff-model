@@ -1,6 +1,7 @@
 import os
 import shutil
 import tempfile
+from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
@@ -9,6 +10,7 @@ import torch
 
 from src.modeling.data_builder import ModelDataBuilder
 from src.modeling.sequence.data_builder import SequenceDataset, SequenceModelDataBuilder
+from src.processing.gold import load_training_set
 
 
 def _assert_tensors_equal(actual: torch.Tensor, expected: torch.Tensor):
@@ -81,7 +83,7 @@ class TestSequenceModelDataBuilder:
     def test_inheritance__uses_shared_base_and_helpers(self):
         assert SequenceModelDataBuilder.__bases__ == (ModelDataBuilder,)
         assert SequenceModelDataBuilder.from_config_file.__func__ is ModelDataBuilder.from_config_file.__func__
-        for method in ["_filter_positions", "_matches_any", "_resolve_feature_columns", "_compute_sample_weights"]:
+        for method in ["get_data_splits", "_filter_positions", "_matches_any", "_resolve_feature_columns", "_compute_sample_weights"]:
             assert getattr(SequenceModelDataBuilder, method) is getattr(ModelDataBuilder, method)
 
     def test_from_config_file__constructs_builder_without_loading_gold(self, tmp_path):
@@ -162,18 +164,95 @@ class TestSequenceModelDataBuilder:
         return SequenceModelDataBuilder(data_dir=self.test_dir, config={**base, **(config or {})})
 
     def test_build_data_splits__resolves_feature_columns_correctly(self):
-        data = self._prep().build_data_splits()
+        data = self._prep()._build_data_splits()
         for seq_ds in data.values():
             assert seq_ds.feature_columns == ["f1", "f2"]
         assert data["train"].feature_columns == ["f1", "f2"]
 
-        data_no_exclude = self._prep({"features": {}}).build_data_splits()
+        data_no_exclude = self._prep({"features": {}})._build_data_splits()
         for seq_ds in data_no_exclude.values():
             assert seq_ds.feature_columns == ["f1", "f2", "f1_career_avg"]
 
+    @pytest.mark.parametrize("recompute", [False, True])
+    def test_get_data_splits__builds_lazily_then_reuses_cache(self, recompute):
+        with patch("src.modeling.sequence.data_builder.load_training_set", wraps=load_training_set) as load:
+            builder = self._prep()
+            load.assert_not_called()
+            assert not hasattr(builder, "source_data")
+
+            with patch.object(builder, "_build_sequence_dataset", wraps=builder._build_sequence_dataset) as assemble:
+                first = builder.get_data_splits(recompute=recompute)
+
+                assert builder.get_data_splits() is first
+                assert load.call_count == 1
+                assert assemble.call_count == 3
+
+    def test_get_data_splits__recompute_reloads_source_and_replaces_cache(self, tmp_path):
+        source = self._gold_frame(self.TRAINING_ROWS)
+        self._write_gold_tables(str(tmp_path), source, self._gold_frame(self.PREDICTION_ROWS))
+        builder = SequenceModelDataBuilder(str(tmp_path), {"target": "target_1"})
+        first = builder.get_data_splits()
+
+        source["target"] += 100
+        source.to_csv(tmp_path / "gold" / "target_1__training_set.csv", index=False)
+
+        assert builder.get_data_splits() is first
+        refreshed = builder.get_data_splits(recompute=True)
+
+        assert refreshed is not first
+        assert builder.get_data_splits() is refreshed
+        pd.testing.assert_frame_equal(builder.source_data, source)
+        for split in ["train", "eval", "test"]:
+            old, new = first[split], refreshed[split]
+            _assert_tensors_equal(new.X, old.X)
+            _assert_tensors_equal(new.loss_mask, old.loss_mask)
+            _assert_tensors_equal(new.y, torch.where(old.loss_mask, old.y + 100, old.y))
+
+    def test_get_data_splits__cache_is_per_instance(self):
+        first = self._prep().get_data_splits()
+        second = self._prep().get_data_splits()
+
+        assert first is not second
+        for split in ["train", "eval", "test"]:
+            _assert_sequence_datasets_equal(first[split], second[split])
+
+    def test_get_data_splits__failed_first_build_can_be_retried(self):
+        builder = self._prep()
+        with patch.object(builder, "_build_sequence_dataset", side_effect=ValueError("failed build")):
+            with pytest.raises(ValueError, match="failed build"):
+                builder.get_data_splits()
+
+        assert builder._data_splits is None
+        data = builder.get_data_splits()
+        assert builder.get_data_splits() is data
+
+    def test_get_data_splits__failed_recompute_preserves_successful_cache(self):
+        builder = self._prep()
+        first = builder.get_data_splits()
+        with patch.object(builder, "_build_sequence_dataset", side_effect=ValueError("failed build")) as assemble:
+            with pytest.raises(ValueError, match="failed build"):
+                builder.get_data_splits(recompute=True)
+
+            assert builder.get_data_splits() is first
+            assert assemble.call_count == 1
+
+
+    def test_build_data_splits__always_builds_fresh_without_replacing_cache(self):
+        builder = self._prep()
+        cached = builder.get_data_splits()
+
+        with patch("src.modeling.sequence.data_builder.load_training_set", wraps=load_training_set) as load:
+            first = builder._build_data_splits()
+            second = builder._build_data_splits()
+
+        assert first is not second
+        assert first is not cached
+        assert second is not cached
+        assert load.call_count == 2
+        assert builder.get_data_splits() is cached
 
     def test_build_data_splits__generates_train_split_set_correctly(self):
-        train = self._prep().build_data_splits()["train"]
+        train = self._prep()._build_data_splits()["train"]
 
         # - A & D's steps with T <= 2022 are in the training set sequences, (2 and 1 step respectively)
         # - B & E have no steps with T <= 2022, they are eliminated entirely.
@@ -198,7 +277,7 @@ class TestSequenceModelDataBuilder:
         _assert_sequence_datasets_equal(train, expected)
 
     def test_build_data_splits__generates_eval_split_set_correctly(self):
-        eval_split = self._prep().build_data_splits()["eval"]
+        eval_split = self._prep()._build_data_splits()["eval"]
 
         nan = float("nan")
         expected = SequenceDataset(
@@ -227,7 +306,7 @@ class TestSequenceModelDataBuilder:
         _assert_sequence_datasets_equal(eval_split, expected)
 
     def test_build_data_splits__generates_test_split_set_correctly(self):
-        test_split = self._prep().build_data_splits()["test"]
+        test_split = self._prep()._build_data_splits()["test"]
 
         nan = float("nan")
         expected = SequenceDataset(
@@ -259,7 +338,7 @@ class TestSequenceModelDataBuilder:
         _assert_sequence_datasets_equal(test_split, expected)
 
     def test_build_data_splits__training_window_limits_loss_steps_but_not_input_history(self):
-        train = self._prep({"split": {"num_training_seasons": 1}}).build_data_splits()["train"]
+        train = self._prep({"split": {"num_training_seasons": 1}})._build_data_splits()["train"]
 
         # Only T == 2022 (A's second step) is in the training window. A's earlier step is kept as unscored input,
         # D's only label (T == 2021) is outside the window so D is left out.
@@ -281,7 +360,7 @@ class TestSequenceModelDataBuilder:
         _assert_sequence_datasets_equal(train, expected)
 
     def test_build_data_splits__splits_use_configured_years(self):
-        data = self._prep({"split": {"eval_data_years": 2, "test_data_years": 1}}).build_data_splits()
+        data = self._prep({"split": {"eval_data_years": 2, "test_data_years": 1}})._build_data_splits()
 
         def scored_steps(dataset: SequenceDataset) -> pd.DataFrame:
             """(player, season, target_season) of the steps in dataset that count toward the loss."""
@@ -305,7 +384,7 @@ class TestSequenceModelDataBuilder:
 
     def test_build_data_splits__sample_weight_buckets_are_applied_per_step(self):
         config = {"sample_weights": {"buckets": [{"min": 0.0, "weight": 0.5}, {"min": 10.5, "weight": 1.0}]}}
-        train = self._prep(config).build_data_splits()["train"]
+        train = self._prep(config)._build_data_splits()["train"]
 
         # Weights follow each step's target: A's targets are 10.0 and 11.0, D's is 5.0.
         _assert_tensors_equal(
@@ -317,14 +396,14 @@ class TestSequenceModelDataBuilder:
         )
 
     def test_build_data_splits__positions_filter_drops_whole_players(self):
-        data = self._prep({"positions": ["WR"]}).build_data_splits()
+        data = self._prep({"positions": ["WR"]})._build_data_splits()
 
         assert set(data["test"].identity["player_id"]) == {"A", "E"}
         assert set(data["train"].identity["player_id"]) == {"A"}
 
     def test_build_data_splits__raises_when_split_needs_more_seasons_than_available(self):
         with pytest.raises(ValueError, match="exceeds"):
-            self._prep({"split": {"num_training_seasons": 10}}).build_data_splits()
+            self._prep({"split": {"num_training_seasons": 10}})._build_data_splits()
 
     def test_build_data_splits__raises_on_duplicate_player_season(self):
         test_dir = tempfile.mkdtemp()
@@ -334,7 +413,7 @@ class TestSequenceModelDataBuilder:
             prep = SequenceModelDataBuilder(data_dir=test_dir, config={"target": "target_1"})
 
             with pytest.raises(ValueError, match="More than one row"):
-                prep.build_data_splits()
+                prep._build_data_splits()
         finally:
             shutil.rmtree(test_dir)
 
@@ -349,7 +428,7 @@ class TestSequenceModelDataBuilder:
             prep = SequenceModelDataBuilder(data_dir=test_dir, config={"target": "target_1"})
 
             with pytest.raises(ValueError, match="team_name"):
-                prep.build_data_splits()
+                prep._build_data_splits()
         finally:
             shutil.rmtree(test_dir)
 
@@ -361,7 +440,7 @@ class TestSequenceModelDataBuilder:
             self._write_gold_tables(test_dir, training_df, self._gold_frame(self.PREDICTION_ROWS))
             prep = SequenceModelDataBuilder(data_dir=test_dir, config={"target": "target_1"})
 
-            train = prep.build_data_splits()["train"]
+            train = prep._build_data_splits()["train"]
             d_row = train.identity.index[train.identity["player_id"] == "D"][0]
             assert torch.isnan(train.X[train.real_step_mask][d_row, 1])
         finally:
@@ -445,4 +524,4 @@ class TestSequenceModelDataBuilder:
         prep = SequenceModelDataBuilder.from_config_file(self.test_dir, config_path)
 
         assert isinstance(prep, SequenceModelDataBuilder)
-        assert prep.build_data_splits()["train"].feature_columns == ["f1", "f2"]
+        assert prep._build_data_splits()["train"].feature_columns == ["f1", "f2"]
