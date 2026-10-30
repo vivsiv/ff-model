@@ -2,6 +2,21 @@
 description: Reviews one, several, or all open GitHub pull requests using the review skill, with optional posting
 mode: all
 permissions:
+  - action: shell
+    resource: "uv *"
+    effect: ask
+  - action: shell
+    resource: "python3 *"
+    effect: ask
+  - action: shell
+    resource: "python *"
+    effect: ask
+  - action: shell
+    resource: ".venv/bin/python *"
+    effect: ask
+  - action: shell
+    resource: "*/.venv/bin/python *"
+    effect: ask
   - action: edit
     resource: "*"
     effect: deny
@@ -73,18 +88,6 @@ permissions:
     effect: allow
   - action: shell
     resource: "uv run --no-sync python -m pytest *"
-    effect: allow
-  - action: shell
-    resource: "uv run --no-sync python -c *"
-    effect: allow
-  - action: shell
-    resource: "uv run --no-sync python - *"
-    effect: allow
-  - action: shell
-    resource: "python3 -c *"
-    effect: allow
-  - action: shell
-    resource: "python3 - *"
     effect: allow
 ---
 

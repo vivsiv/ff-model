@@ -2,6 +2,21 @@
 description: Creates or uses model configs and trains supported model types with the appropriate training skill
 mode: all
 permissions:
+  - action: shell
+    resource: "uv *"
+    effect: ask
+  - action: shell
+    resource: "python3 *"
+    effect: ask
+  - action: shell
+    resource: "python *"
+    effect: ask
+  - action: shell
+    resource: ".venv/bin/python *"
+    effect: ask
+  - action: shell
+    resource: "*/.venv/bin/python *"
+    effect: ask
   - action: skill
     resource: create-config
     effect: allow
@@ -13,18 +28,6 @@ permissions:
     effect: allow
   - action: shell
     resource: "uv run --no-sync python -m src.modeling.tabular_models *"
-    effect: allow
-  - action: shell
-    resource: "uv run --no-sync python -c *"
-    effect: allow
-  - action: shell
-    resource: "uv run --no-sync python - *"
-    effect: allow
-  - action: shell
-    resource: "python3 -c *"
-    effect: allow
-  - action: shell
-    resource: "python3 - *"
     effect: allow
 ---
 

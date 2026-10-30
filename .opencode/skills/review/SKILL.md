@@ -36,6 +36,8 @@ The 2026 project plan in `.plan/` documents known leakage risks and the intended
 
 Report findings first, sorted by severity (P0 critical, P1 high, P2 medium, P3 low). For each, provide a concise title, severity, `path:line` or line range at the reviewed revision, the concrete scenario, impact, and a specific fix or test where useful. Prefer small, precise ranges and changed lines. Separate verified behavior from hypotheses; do not invent measurements, test outcomes, or defects. Avoid duplicating an existing unresolved review comment unless the PR materially changes the issue.
 
+Keep review comments concise while retaining the context needed to understand and fix the issue. When a comment needs more detail, use short paragraphs separated by blank lines or bullets instead of a dense block of text. Apply this to both inline comments and the general review body.
+
 Then summarize the reviewed PR and commit, tests run and results, and important limitations or residual risks. If no actionable findings are found, say so explicitly rather than implying the PR is guaranteed correct.
 
 ## Post to GitHub only when enabled

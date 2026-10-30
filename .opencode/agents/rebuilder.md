@@ -2,6 +2,21 @@
 description: Rebuilds a requested data layer and its upstream dependencies using the rebuild-data skill
 mode: all
 permissions:
+  - action: shell
+    resource: "uv *"
+    effect: ask
+  - action: shell
+    resource: "python3 *"
+    effect: ask
+  - action: shell
+    resource: "python *"
+    effect: ask
+  - action: shell
+    resource: ".venv/bin/python *"
+    effect: ask
+  - action: shell
+    resource: "*/.venv/bin/python *"
+    effect: ask
   - action: skill
     resource: rebuild-data
     effect: allow
@@ -19,18 +34,6 @@ permissions:
     effect: allow
   - action: shell
     resource: "uv run --no-sync python -m src.processing.gold *"
-    effect: allow
-  - action: shell
-    resource: "uv run --no-sync python -c *"
-    effect: allow
-  - action: shell
-    resource: "uv run --no-sync python - *"
-    effect: allow
-  - action: shell
-    resource: "python3 -c *"
-    effect: allow
-  - action: shell
-    resource: "python3 - *"
     effect: allow
 ---
 

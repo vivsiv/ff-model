@@ -2,6 +2,21 @@
 description: Runs requested tests and audits their coverage of the relevant code and edge cases
 mode: all
 permissions:
+  - action: shell
+    resource: "uv *"
+    effect: ask
+  - action: shell
+    resource: "python3 *"
+    effect: ask
+  - action: shell
+    resource: "python *"
+    effect: ask
+  - action: shell
+    resource: ".venv/bin/python *"
+    effect: ask
+  - action: shell
+    resource: "*/.venv/bin/python *"
+    effect: ask
   - action: edit
     resource: "*"
     effect: deny
@@ -13,18 +28,6 @@ permissions:
     effect: allow
   - action: shell
     resource: "uv run --no-sync python -m pytest *"
-    effect: allow
-  - action: shell
-    resource: "uv run --no-sync python -c *"
-    effect: allow
-  - action: shell
-    resource: "uv run --no-sync python - *"
-    effect: allow
-  - action: shell
-    resource: "python3 -c *"
-    effect: allow
-  - action: shell
-    resource: "python3 - *"
     effect: allow
 ---
 
