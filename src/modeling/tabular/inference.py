@@ -10,8 +10,9 @@ import mlflow
 from sklearn.metrics import mean_squared_error
 from sklearn.pipeline import Pipeline
 
-from src.modeling.data_prep import DATA_PREP_CONFIG_ARTIFACT_PATH, TabularModelDataPrep
-from src.modeling.utils import load_data_prep_config, load_mlflow_model, set_mlflow_tracking_uri, setup_mlflow_run
+from src.modeling.data_builder import DATA_BUILDER_CONFIG_ARTIFACT_PATH, EVAL_SPLIT, TEST_SPLIT
+from src.modeling.tabular.data_builder import TabularModelDataBuilder
+from src.modeling.utils import load_data_builder_config, load_mlflow_model, set_mlflow_tracking_uri, setup_mlflow_run
 
 logging.basicConfig(
     level=logging.INFO,
@@ -24,23 +25,23 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-class ModelInference:
+class TabularModelInference:
     """
-    Predicts and possibly scores a fit TabularModel against a dataset built from a TabularModelDataPrep,
+    Predicts and possibly scores a fitted tabular pipeline against a dataset built from a TabularModelDataBuilder,
     logging results to mlflow. Two methods, split by whether ground truth target values are available to score against:
       - evaluate(run_id, csv_path, split): predicts then scores against the ground truth values in the provided split.
       - predict(run_id, csv_path): predicts against live data.
 
     Two ways to build:
-      - from_fit_pipeline: wraps an already-fit pipeline + in-memory TabularModelDataPrep.
-      - from_registry: loads a registered model from mlflow plus the TabularModelDataPrep config it was trained with.
+      - from_fit_pipeline: wraps an already-fit pipeline + in-memory TabularModelDataBuilder.
+      - from_registry: loads a registered model from mlflow plus the TabularModelDataBuilder config it was trained with.
         - caveat: assumes the training set hasn't fundamentally changed since the model was trained.
     """
 
     def __init__(
             self,
             pipeline: Pipeline,
-            data_prep: TabularModelDataPrep,
+            data_builder: TabularModelDataBuilder,
             tracking_dir: Optional[str] = None,
             registered_model: Optional[str] = None,
             model_version: Optional[int] = None,
@@ -51,7 +52,7 @@ class ModelInference:
 
         Args:
             pipeline: A fit pipeline to predict with.
-            data_prep: The TabularModelDataPrep the pipeline was (or will be) fit under.
+            data_builder: The TabularModelDataBuilder the pipeline was (or will be) fit under.
             tracking_dir: mlflow tracking/registry store directory.
             registered_model: The pipeline's registered model name in mlflow.
             model_version: The pipeline's registered version in mlflow
@@ -60,26 +61,26 @@ class ModelInference:
                 and to look up its data_prep_config.json.
         """
         self.pipeline = pipeline
-        self.data_prep = data_prep
+        self.data_builder = data_builder
         self.tracking_dir = tracking_dir
         self.registered_model = registered_model
         self.model_version = model_version
         self.source_run_id = source_run_id
-        self.config = data_prep.config
+        self.config = data_builder.config
 
     @classmethod
-    def from_fit_pipeline(cls, pipeline: Pipeline, data_prep: TabularModelDataPrep) -> "ModelInference":
+    def from_fit_pipeline(cls, pipeline: Pipeline, data_builder: TabularModelDataBuilder) -> "TabularModelInference":
         """
-        Wraps an already-fit pipeline + in-memory data_prep.
+        Wraps an already-fit pipeline + in-memory data_builder.
 
         Args:
             pipeline: A fit pipeline to predict with.
-            data_prep: The TabularModelDataPrep the pipeline was fit under.
+            data_builder: The TabularModelDataBuilder the pipeline was fit under.
 
         Returns:
-            A ModelInference that can evaluate()/predict().
+            A TabularModelInference that can evaluate()/predict().
         """
-        return cls(pipeline=pipeline, data_prep=data_prep)
+        return cls(pipeline=pipeline, data_builder=data_builder)
 
     @classmethod
     def from_registry(
@@ -88,9 +89,9 @@ class ModelInference:
         tracking_dir: str,
         registered_model: str,
         model_version: Optional[int] = None,
-    ) -> "ModelInference":
+    ) -> "TabularModelInference":
         """
-        Loads a registered model and reconstructs the TabularModelDataPrep it was trained
+        Loads a registered model and reconstructs the TabularModelDataBuilder it was trained
         with from its logged data_prep_config.json artifact.
 
         Args:
@@ -100,16 +101,16 @@ class ModelInference:
             model_version: Specific model version to load. Defaults to the latest version.
 
         Returns:
-            A ModelInference ready for evaluate()/predict().
+            A TabularModelInference ready for evaluate()/predict().
         """
         pipeline, mv = load_mlflow_model(registered_model, model_version, tracking_dir)
         model_version, source_run_id = int(mv.version), mv.run_id
-        config = load_data_prep_config(source_run_id)
-        data_prep = TabularModelDataPrep(data_dir=data_dir, config=config)
+        config = load_data_builder_config(source_run_id)
+        data_builder = TabularModelDataBuilder(data_dir=data_dir, config=config)
 
         return cls(
             pipeline=pipeline,
-            data_prep=data_prep,
+            data_builder=data_builder,
             tracking_dir=tracking_dir,
             registered_model=registered_model,
             model_version=model_version,
@@ -145,7 +146,7 @@ class ModelInference:
         back at the training run) in the same mlflow experiment as self.source_run_id, and
         logs self.config onto it as a data_prep_config.json artifact.
 
-        Only valid on a ModelInference built via from_registry (needs self.source_run_id/
+        Only valid on a TabularModelInference built via from_registry (needs self.source_run_id/
         registered_model/model_version/tracking_dir).
 
         Args:
@@ -167,7 +168,7 @@ class ModelInference:
             tags={"phase": phase},
             params={"source_run_id": self.source_run_id, "model_version": self.model_version},
         )
-        mlflow.log_dict(self.config, DATA_PREP_CONFIG_ARTIFACT_PATH, run_id=run_id)
+        mlflow.log_dict(self.config, DATA_BUILDER_CONFIG_ARTIFACT_PATH, run_id=run_id)
 
         return run_id
 
@@ -230,7 +231,7 @@ class ModelInference:
             DataFrame of identity + predictions (+ actual, if y was given), sorted as
             described above.
         """
-        target = self.data_prep.target
+        target = self.data_builder.target
         y_pred = self.pipeline.predict(X)
 
         preds_df = identity.copy()
@@ -324,7 +325,7 @@ class ModelInference:
         self,
         run_id: str,
         csv_path: str,
-        split: str = "test",
+        split: str = TEST_SPLIT,
         top_n_rows: Optional[List[int]] = None,
     ) -> pd.DataFrame:
         """
@@ -332,7 +333,7 @@ class ModelInference:
 
         Args:
             run_id: mlflow run_id to log metrics/artifacts into (must already exist -- e.g.
-                from setup_mlflow(), or TabularModel.eval_model's own already-open run_id).
+                from setup_mlflow(), or TabularModelTrainer.eval_model's own already-open run_id).
             csv_path: Where to write the predictions CSV (e.g. from build_predictions_csv_path()).
             split: Name of the dataset split to evaluate against ("eval" or "test", default: "test").
             top_n_rows: For each n, also logs top_{n}_r2/top_{n}_rmse. None (default) skips
@@ -341,7 +342,7 @@ class ModelInference:
         Returns:
             DataFrame of predictions vs actuals (see _predict()).
         """
-        data = self.data_prep.prep_training_data()
+        data = self.data_builder.get_data_splits()
         X = self._select_pipeline_features(data[f"X_{split}"])
 
         preds_df = self._predict(
@@ -369,7 +370,7 @@ class ModelInference:
         Returns:
             DataFrame of live predictions (see _predict()).
         """
-        prediction_set = self.data_prep.prep_prediction_data()
+        prediction_set = self.data_builder.build_prediction_data()
         X = self._select_pipeline_features(prediction_set["features"])
 
         return self._predict(
@@ -384,8 +385,8 @@ def main():
     parser = argparse.ArgumentParser(
         description="Scores a registered model against its own eval or test split, or "
                      "produces live predictions for the upcoming season, depending on --mode. "
-                     "All reconstruct the model's TabularModelDataPrep from its logged "
-                     "data prep config."
+                     "All reconstruct the model's TabularModelDataBuilder from its logged "
+                     "data builder config."
     )
     parser.add_argument(
         "--data-dir",
@@ -415,10 +416,10 @@ def main():
     parser.add_argument(
         "--mode",
         type=str,
-        choices=["eval", "test", "predict"],
+        choices=[EVAL_SPLIT, TEST_SPLIT, "predict"],
         required=True,
         help="'eval'/'test' score the registered model against its own reconstructed "
-             "eval/test split (reconstructed from its logged data prep config). 'predict' "
+             "eval/test split (reconstructed from its logged data builder config). 'predict' "
              "produces live predictions for the upcoming season from the gold prediction "
              "set (no scoring -- no ground truth available yet)."
     )
@@ -434,7 +435,7 @@ def main():
 
     args = parser.parse_args()
 
-    inference = ModelInference.from_registry(
+    inference = TabularModelInference.from_registry(
         data_dir=args.data_dir,
         tracking_dir=args.tracking_dir,
         registered_model=args.registered_model,
@@ -442,15 +443,15 @@ def main():
     )
     predictions_dir = os.path.join(args.data_dir, "predictions")
 
-    if args.mode in ("eval", "test"):
+    if args.mode in (EVAL_SPLIT, TEST_SPLIT):
         run_id = inference.setup_mlflow(phase=args.mode, run_name_suffix=args.mode)
-        csv_path = ModelInference.build_predictions_csv_path(
+        csv_path = TabularModelInference.build_predictions_csv_path(
             predictions_dir, inference.registered_model, inference.model_version, run_id, split=args.mode
         )
         preds_df = inference.evaluate(run_id=run_id, csv_path=csv_path, split=args.mode, top_n_rows=args.top_n_rows)
     else:
         run_id = inference.setup_mlflow(phase="predict", run_name_suffix="predictions")
-        csv_path = ModelInference.build_predictions_csv_path(
+        csv_path = TabularModelInference.build_predictions_csv_path(
             predictions_dir, inference.registered_model, inference.model_version, run_id
         )
         preds_df = inference.predict(run_id=run_id, csv_path=csv_path)

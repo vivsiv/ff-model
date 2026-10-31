@@ -1,4 +1,4 @@
-# Data prep config for the sequential (lstm/transformer) ppr_points_per_game model -- see SequenceModelDataPrep.
+# Data builder config for the sequential (lstm/transformer) ppr_points_per_game model -- see SequenceModelDataBuilder.
 #
 # Same split/sample_weights as configs/ppr_points_per_game.yaml (see its comments for the reasoning),
 # applied per step instead of per row.

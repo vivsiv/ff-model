@@ -541,7 +541,7 @@ class TrainingSetBuilder:
 
         # TODO: validate here that the training set has at most one row per (player_id, season) (e.g. raise if
         # training_df.duplicated(["player_id", "season"]).any()), so modelling code can trust it. The sequence
-        # data prep currently re-checks this itself (SequenceModelDataPrep._order_by_step); drop that check once gold enforces it.
+        # data builder currently re-checks this itself (SequenceModelDataBuilder._order_by_step); drop that check once gold enforces it.
         # Also validate that targets are non-null
         training_df = self._join_with_target(features_df, target_col)
         player_team_by_season_df = features_df[["player_id", "season", "recent_team"]]
@@ -708,7 +708,7 @@ def main():
     # TODO: after both sets are built, validate them as a pair so modelling can trust them: they have the same columns,
     # and each prediction row's "season" is later than every training row's "season" for that player. These hold by
     # construction when both come from the same features_df (as here), but not if the two files are built in separate
-    # runs. SequenceModelDataPrep.prep_prediction_data currently re-checks both itself; revisit that check once this exists.
+    # runs. SequenceModelDataBuilder.build_prediction_data currently re-checks both itself; revisit that check once this exists.
     builder.build_training_set(features_df, team_features_df, draft_features_df, target_col=args.target_col)
     builder.build_prediction_set(
         features_df, team_features_df, draft_features_df, players_df,

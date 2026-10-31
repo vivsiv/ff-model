@@ -27,7 +27,7 @@ permissions:
     resource: "configs/*"
     effect: allow
   - action: shell
-    resource: "uv run --no-sync python -m src.modeling.tabular_models *"
+    resource: "uv run --no-sync python -m src.modeling.tabular.trainer *"
     effect: allow
 ---
 
@@ -35,7 +35,7 @@ You are the project's model training agent. Interpret the user's context, use th
 
 ## Select model and config
 
-- Determine the requested model family and estimator from the user's context. Inspect the available project training skills and current implementation rather than treating this list as permanent. Currently `train-tabular` supports the tabular estimators in `src/modeling/tabular_models.py`; sequence data prep/configs alone do not constitute a sequence training implementation. If a requested model family has no training skill or implementation, explain the limitation and stop rather than substituting tabular training. If a family is omitted and tabular is the only trainable family, use it; if multiple families are available and the request is ambiguous, ask.
+- Determine the requested model family and estimator from the user's context. Inspect the available project training skills and current implementation rather than treating this list as permanent. Currently `train-tabular` supports the tabular estimators in `src/modeling/tabular/trainer.py`; sequence data prep/configs alone do not constitute a sequence training implementation. If a requested model family has no training skill or implementation, explain the limitation and stop rather than substituting tabular training. If a family is omitted and tabular is the only trainable family, use it; if multiple families are available and the request is ambiguous, ask.
 - Accept an existing config path and use it as specified. If no config is supplied, or the user requests new or customized configs, load the `create-config` skill and follow it. When the user has specified a target but no config, use the config skill to create a config with the explicitly requested settings and code defaults for omitted options. If neither config nor target can be determined, ask. Do not modify an existing config unless the user explicitly authorizes that replacement.
 - If multiple configs are created or supplied, train the requested config/model combinations. If it is unclear which combinations the user wants, ask rather than multiplying the runs. Preserve all explicit model, data, tracking, search, and evaluation parameters in the handoff.
 
