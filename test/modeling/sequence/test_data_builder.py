@@ -79,6 +79,8 @@ class TestSequenceDataset:
         )
 
 
+# TODO: revisit prediction-column reorder coverage after gold-table consolidation;
+# add it if separate training/prediction tables still need column-order reconciliation.
 class TestSequenceModelDataBuilder:
     def test_inheritance__uses_shared_base_and_helpers(self):
         assert SequenceModelDataBuilder.__bases__ == (ModelDataBuilder,)
@@ -99,14 +101,16 @@ class TestSequenceModelDataBuilder:
         assert not hasattr(builder, "source_data")
         assert not (tmp_path / "gold").exists()
 
-    POSITIONS = {"A": "WR", "B": "QB", "D": "RB", "E": "WR", "F": "TE"}
-    PLAYER_NUMBER = {"A": 1, "B": 2, "D": 4, "E": 5, "F": 6}
+    POSITIONS = {"A": "WR", "B": "QB", "C": "WR", "D": "RB", "E": "WR", "F": "TE"}
+    PLAYER_NUMBER = {"A": 1, "B": 2, "C": 3, "D": 4, "E": 5, "F": 6}
 
     # (player, season S, target_season T, target). Max T is 2024, so with the default split
     # (1 eval year, 1 test year): test = T 2024, eval = T 2023, train = T <= 2022.
     TRAINING_ROWS = [
         ("A", 2020, 2021, 10.0), ("A", 2021, 2022, 11.0), ("A", 2022, 2023, 12.0), ("A", 2023, 2024, 13.0),
         ("B", 2022, 2023, 20.0), ("B", 2023, 2024, 21.0),
+        # C has history but no labeled steps, so it belongs to no scored split.
+        ("C", 2020, 2021, np.nan), ("C", 2021, 2022, np.nan), ("C", 2022, 2023, np.nan), ("C", 2023, 2024, np.nan),
         ("D", 2020, 2021, 5.0),
         ("E", 2021, 2023, 7.0), ("E", 2023, 2024, 8.0),  # E misses 2022
     ]
@@ -173,6 +177,30 @@ class TestSequenceModelDataBuilder:
         for seq_ds in data_no_exclude.values():
             assert seq_ds.feature_columns == ["f1", "f2", "f1_career_avg"]
 
+    def test_build_data_splits__orders_shuffled_rows_without_changing_step_alignment(self, tmp_path):
+        config = {
+            "target": "target_1",
+            "features": {"mode": "include", "columns": ["f1", "f2"]},
+            "sample_weights": {"buckets": [
+                {"min": 0, "weight": 0.5},
+                {"min": 10.5, "weight": 1.0},
+                {"min": 12, "weight": 2.0},
+            ]},
+        }
+        expected = SequenceModelDataBuilder(self.test_dir, config)._build_data_splits()
+        shuffled = self._gold_frame(self.TRAINING_ROWS).sample(frac=1, random_state=42)
+        self._write_gold_tables(str(tmp_path), shuffled, self._gold_frame(self.PREDICTION_ROWS))
+
+        actual = SequenceModelDataBuilder(str(tmp_path), config)._build_data_splits()
+
+        for split in ["train", "eval", "test"]:
+            identity = actual[split].identity
+            pd.testing.assert_frame_equal(
+                identity,
+                identity.sort_values(["player_id", "season"]).reset_index(drop=True),
+            )
+            _assert_sequence_datasets_equal(actual[split], expected[split])
+
     def test_get_data_splits__builds_lazily_then_reuses_cache(self):
         with patch("src.modeling.sequence.data_builder.load_training_set", wraps=load_training_set) as load:
             builder = self._prep()
@@ -231,6 +259,45 @@ class TestSequenceModelDataBuilder:
         )
 
         _assert_sequence_datasets_equal(train, expected)
+
+    def test_build_data_splits__retains_unlabeled_history_and_trims_after_last_loss_step(self, tmp_path):
+        rows = [
+            ("A", 2018, 2019, 8.0),
+            ("A", 2019, 2020, np.nan),  # Retained between two training loss steps.
+            ("A", 2020, 2021, 10.0),
+            ("A", 2021, 2022, np.nan),  # Trimmed from training, retained as eval history.
+            ("A", 2022, 2023, 12.0),
+            ("A", 2023, 2024, 13.0),
+        ]
+        self._write_gold_tables(str(tmp_path), self._gold_frame(rows), self._gold_frame(self.PREDICTION_ROWS))
+        builder = SequenceModelDataBuilder(str(tmp_path), {
+            "target": "target_1",
+            "features": {"mode": "include", "columns": ["f1", "f2"]},
+            "sample_weights": {"buckets": [{"min": 0, "weight": 0.5}, {"min": 10, "weight": 2.0}]},
+        })
+
+        splits = builder._build_data_splits()
+
+        expected_train = SequenceDataset(
+            X=torch.tensor([[[2018., 100.], [2019., 100.], [2020., 100.]]]),
+            lengths=torch.tensor([3]),
+            identity=self._identity_frame([
+                (0, 0, "A", 2018, 2019),
+                (0, 1, "A", 2019, 2020),
+                (0, 2, "A", 2020, 2021),
+            ]),
+            feature_columns=["f1", "f2"],
+            y=torch.tensor([[8., 0., 10.]]),
+            loss_mask=torch.tensor([[True, False, True]]),
+            sample_weight=torch.tensor([[0.5, 0., 2.]]),
+        )
+        _assert_sequence_datasets_equal(splits["train"], expected_train)
+
+        eval_split = splits["eval"]
+        _assert_tensors_equal(eval_split.lengths, torch.tensor([5]))
+        _assert_tensors_equal(eval_split.X[0, :, 0], torch.tensor([2018., 2019., 2020., 2021., 2022.]))
+        _assert_tensors_equal(eval_split.y, torch.tensor([[0., 0., 0., 0., 12.]]))
+        _assert_tensors_equal(eval_split.loss_mask, torch.tensor([[False, False, False, False, True]]))
 
     def test_build_data_splits__generates_eval_split_set_correctly(self):
         eval_split = self._prep()._build_data_splits()["eval"]
