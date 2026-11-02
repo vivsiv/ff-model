@@ -458,6 +458,8 @@ discussion) — a good overall score could still mask poor performance there.
 
 ## Phase 5.3 — Combined, season-specific gold tables (2026-11-02)
 
+- Renamed `TrainingSetBuilder` to `GoldSetBuilder` to reflect its shared gold-layer
+  responsibility rather than model-specific training-set construction.
 - Initially renamed `build_training_set` to `build_historical_set`, then unified the
   historical/prediction enrichment paths as `build_gold_set`. `main` prepares rows
   via `_join_with_target` and `_build_current_rows`, concatenates them, and adds
@@ -483,6 +485,19 @@ discussion) — a good overall score could still mask poor performance there.
   and recording the resolved value in the existing MLflow config artifact. Registered
   model names are unchanged. Registry configs without a pinned year fail clearly;
   legacy pipelines can be wrapped with an explicitly season-pinned data builder.
-- Existing real gold CSVs and saved model artifacts were not migrated or rebuilt.
-  Default suite: 311 passed, 4 integration tests deselected. CLI help and
-  `git diff --check` verified.
+- Generated real `fantasy_points_ppr__2026.csv` and `ppr_points_per_game__2026.csv`
+  from the existing silver snapshot without refreshing upstream sources. Each has
+  11,372 rows x 943 columns: 11,152 historical rows (targets 2000–2025) and 220
+  blank-target current rows. The rankings contain 249 players; 29 lack prior stats.
+- Historical values match both legacy training CSVs exactly. Current values match
+  the legacy per-game prediction CSV exactly. The older total-PPR prediction CSV
+  contains 3,400 additional players absent from current rankings and assumes no team
+  changes. All non-team values match for the 220 overlapping players; team features
+  differ for 41 players and were independently reconstructed from the current teams.
+- Real-data integration checks: 4 passed. Tabular and sequence data preparation
+  smoke checks passed: training scores 2014–2023 (4,509 rows/steps), eval scores 2024
+  (471), test scores 2025 (486), and current preparation produces 220 players/sequences
+  targeting 2026. No model training was performed.
+- SHA-256 hashes confirm all five silver inputs and four legacy gold CSVs were
+  preserved. Saved model artifacts were not migrated. Default suite: 311 passed,
+  4 integration tests deselected. CLI help and `git diff --check` verified.

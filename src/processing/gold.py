@@ -35,7 +35,7 @@ def gold_set_filename(target_col: str, current_season: int) -> str:
 
 def load_gold_set(gold_dir: str, target_col: str, current_season: int) -> pd.DataFrame:
     """
-    Loads a target's gold table, as saved by TrainingSetBuilder.save_to_gold.
+    Loads a target's gold table, as saved by GoldSetBuilder.save_to_gold.
 
     Args:
         gold_dir: The gold layer directory (the one save_to_gold saved to).
@@ -55,8 +55,8 @@ ROUNDING_EXCLUDED_COLUMNS = [
 ]
 
 
-class TrainingSetBuilder:
-    """Builds gold layer training/live data from nflverse silver layer data."""
+class GoldSetBuilder:
+    """Builds gold layer historical/current data from nflverse silver layer data."""
 
     def __init__(self, data_dir: str):
         """
@@ -668,7 +668,7 @@ def main():
 
     args = parser.parse_args()
 
-    builder = TrainingSetBuilder(data_dir=args.data_dir)
+    builder = GoldSetBuilder(data_dir=args.data_dir)
 
     players_df = builder.load_current_players()
     current_season = int(players_df["season"].iloc[0])

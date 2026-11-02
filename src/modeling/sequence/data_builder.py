@@ -168,7 +168,7 @@ class SequenceModelDataBuilder(ModelDataBuilder):
             SequenceDataset (no y/loss_mask/sample_weight) with one sequence per player in the prediction set.
             Use last_step_mask / last_step_identity() to pick out the predictions.
 
-        Gold tables are structurally validated before saving by TrainingSetBuilder.validate_data.
+        Gold tables are structurally validated before saving by GoldSetBuilder.validate_data.
         """
         data = load_gold_set(self.gold_data_dir, self.target, self.prediction_season)
         if self.positions:

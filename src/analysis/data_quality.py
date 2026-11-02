@@ -1,6 +1,6 @@
 """
 Sanity checks for the gold-layer training/prediction sets built by
-src/processing/gold.py's TrainingSetBuilder.
+src/processing/gold.py's GoldSetBuilder.
 """
 from typing import List
 

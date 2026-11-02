@@ -8,19 +8,19 @@ import pandas as pd
 import pytest
 
 from src.processing.gold import (
-    TrainingSetBuilder,
+    GoldSetBuilder,
     load_gold_set,
     gold_set_filename,
     main,
 )
 
 
-class TestTrainingSetBuilder():
+class TestGoldSetBuilder():
     @classmethod
     def setup_class(cls):
         cls.test_dir = tempfile.mkdtemp()
         os.makedirs(os.path.join(cls.test_dir, "silver", "nflv"))
-        cls.builder = TrainingSetBuilder(data_dir=cls.test_dir)
+        cls.builder = GoldSetBuilder(data_dir=cls.test_dir)
 
     @classmethod
     def teardown_class(cls):
@@ -69,7 +69,7 @@ class TestTrainingSetBuilder():
                 ("nflverse", "snap_counts"): [],
             }
 
-            builder = TrainingSetBuilder(data_dir=test_dir)
+            builder = GoldSetBuilder(data_dir=test_dir)
             with patch("src.processing.gold.get_identity_columns", side_effect=lambda s, t: identity_columns[(s, t)]), \
                  patch("src.processing.gold.get_stat_columns", side_effect=lambda s, t: stat_columns[(s, t)]), \
                  patch("src.processing.gold.get_counting_stat_columns", side_effect=lambda s, t: counting_stat_columns[(s, t)]):
@@ -121,7 +121,7 @@ class TestTrainingSetBuilder():
                 ("nflverse", "snap_counts"): [],
             }
 
-            builder = TrainingSetBuilder(data_dir=test_dir)
+            builder = GoldSetBuilder(data_dir=test_dir)
             with patch("src.processing.gold.get_identity_columns", side_effect=lambda s, t: identity_columns[(s, t)]), \
                  patch("src.processing.gold.get_stat_columns", side_effect=lambda s, t: stat_columns[(s, t)]), \
                  patch("src.processing.gold.get_counting_stat_columns", side_effect=lambda s, t: counting_stat_columns[(s, t)]):
@@ -392,7 +392,7 @@ class TestTrainingSetBuilder():
 
     def test_build_gold_set__enriches_unrounded_historical_rows_without_saving(self, tmp_path):
         (tmp_path / "silver" / "nflv").mkdir(parents=True)
-        builder = TrainingSetBuilder(data_dir=str(tmp_path))
+        builder = GoldSetBuilder(data_dir=str(tmp_path))
         features_df = pd.DataFrame({
             "player_id": ["p1", "p1"],
             "season": [2020, 2021],
@@ -421,7 +421,7 @@ class TestTrainingSetBuilder():
 
     def test_save_to_gold__rounds_without_mutating_input_and_preserves_excluded_columns(self, tmp_path):
         (tmp_path / "silver" / "nflv").mkdir(parents=True)
-        builder = TrainingSetBuilder(data_dir=str(tmp_path))
+        builder = GoldSetBuilder(data_dir=str(tmp_path))
         data = pd.DataFrame({
             "player_id": ["p1", "p2"],
             "season": [2020, 2021],
@@ -539,7 +539,7 @@ class TestTrainingSetBuilder():
                 "ecr": [1.0, 5.0],
             }).to_csv(os.path.join(silver_dir, "ff_rankings.csv"), index=False)
 
-            builder = TrainingSetBuilder(data_dir=test_dir)
+            builder = GoldSetBuilder(data_dir=test_dir)
             with patch("src.processing.gold.get_current_season", return_value=current_season) as current_season_mock:
                 result = builder.load_current_players()
             current_season_mock.assert_called_once_with(roster=True)
@@ -553,7 +553,7 @@ class TestTrainingSetBuilder():
 
     def test_build_gold_set__enriches_unrounded_current_rows_without_saving(self, tmp_path):
         (tmp_path / "silver" / "nflv").mkdir(parents=True)
-        builder = TrainingSetBuilder(data_dir=str(tmp_path))
+        builder = GoldSetBuilder(data_dir=str(tmp_path))
         features_df = pd.DataFrame({
             "player_id": ["p1"], "season": [2025], "recent_team": ["KC"],
             "fantasy_points_ppr": [10.12345],
@@ -797,7 +797,7 @@ class TestValidateGoldData:
     def test_validates_combined_table_without_mutation(self):
         data = pd.concat([self._historical_data(), self._current_data()], ignore_index=True)
         original = data.copy(deep=True)
-        TrainingSetBuilder.validate_data(data, 2024)
+        GoldSetBuilder.validate_data(data, 2024)
         pd.testing.assert_frame_equal(data, original)
 
     def test_accepts_current_only_players_and_reordered_columns(self):
@@ -805,51 +805,51 @@ class TestValidateGoldData:
         current_df = self._current_data()
         current_df.loc[1, "player_id"] = "new_player"
         current_df = current_df[current_df.columns[::-1]]
-        TrainingSetBuilder.validate_data(pd.concat([historical_df, current_df], ignore_index=True), 2024)
+        GoldSetBuilder.validate_data(pd.concat([historical_df, current_df], ignore_index=True), 2024)
 
     @pytest.mark.parametrize("is_current", [False, True])
     def test_rejects_non_numeric_features(self, is_current):
         data = self._current_data() if is_current else self._historical_data()
         data["team_name"] = "KC"
         with pytest.raises(ValueError, match="team_name"):
-            TrainingSetBuilder.validate_data(data, 2024)
+            GoldSetBuilder.validate_data(data, 2024)
 
     def test_rejects_missing_historical_targets(self):
         data = self._historical_data()
         data.loc[0, "target"] = np.nan
         with pytest.raises(ValueError, match="null target"):
-            TrainingSetBuilder.validate_data(data, 2024)
+            GoldSetBuilder.validate_data(data, 2024)
 
     @pytest.mark.parametrize("is_current", [False, True])
     def test_rejects_repeated_player_feature_season(self, is_current):
         data = self._current_data() if is_current else self._historical_data()
         data = pd.concat([data, data.iloc[[0]]], ignore_index=True)
         with pytest.raises(ValueError, match="More than one row"):
-            TrainingSetBuilder.validate_data(data, 2024)
+            GoldSetBuilder.validate_data(data, 2024)
 
     def test_rejects_duplicate_player_feature_season(self):
         data = self._historical_data()
         data.loc[1, "season"] = data.loc[0, "season"]
         with pytest.raises(ValueError, match="More than one row"):
-            TrainingSetBuilder.validate_data(data, 2024)
+            GoldSetBuilder.validate_data(data, 2024)
 
     def test_rejects_labeled_current_rows(self):
         data = self._current_data()
         data.loc[0, "target"] = 10.0
         with pytest.raises(ValueError, match="Current targets must be blank"):
-            TrainingSetBuilder.validate_data(data, 2024)
+            GoldSetBuilder.validate_data(data, 2024)
 
     def test_rejects_target_seasons_after_the_current_season(self):
         data = self._current_data()
         data.loc[0, "target_season"] = 2025
         with pytest.raises(ValueError, match="no later than current_season"):
-            TrainingSetBuilder.validate_data(data, 2024)
+            GoldSetBuilder.validate_data(data, 2024)
 
     def test_rejects_features_from_the_current_season(self):
         data = self._current_data()
         data.loc[0, "season"] = 2024
         with pytest.raises(ValueError, match="feature seasons must be before"):
-            TrainingSetBuilder.validate_data(data, 2024)
+            GoldSetBuilder.validate_data(data, 2024)
 
     @pytest.mark.parametrize("season", [2019, 2021])
     def test_rejects_stale_or_repeated_current_feature_season(self, season):
@@ -857,7 +857,7 @@ class TestValidateGoldData:
         current_df.loc[0, "season"] = season
         message = "More than one row" if season == 2021 else "later than all historical"
         with pytest.raises(ValueError, match=message):
-            TrainingSetBuilder.validate_data(pd.concat([self._historical_data(), current_df], ignore_index=True), 2024)
+            GoldSetBuilder.validate_data(pd.concat([self._historical_data(), current_df], ignore_index=True), 2024)
 
 
 class TestGoldMain:
@@ -885,9 +885,9 @@ class TestGoldMain:
         with (
             patch("sys.argv", ["gold", "--data-dir", str(tmp_path)]),
             patch("src.processing.gold.get_current_season", return_value=2026),
-            patch.object(TrainingSetBuilder, "load_player_features", return_value=features_df),
-            patch.object(TrainingSetBuilder, "load_team_features", return_value=team_df),
-            patch.object(TrainingSetBuilder, "load_draft_features", return_value=draft_df),
+            patch.object(GoldSetBuilder, "load_player_features", return_value=features_df),
+            patch.object(GoldSetBuilder, "load_team_features", return_value=team_df),
+            patch.object(GoldSetBuilder, "load_draft_features", return_value=draft_df),
             patch("src.processing.gold.get_stat_columns", return_value=["passing_yards"]),
         ):
             main()
@@ -911,7 +911,7 @@ class TestGoldMain:
             "player_id": ["p1"] * 4, "season": [2024, 2025, 2026, 2027], "recent_team": ["KC"] * 4,
         })
         with (
-            patch("src.processing.gold.TrainingSetBuilder") as builder_class,
+            patch("src.processing.gold.GoldSetBuilder") as builder_class,
             patch("sys.argv", ["gold", "--target-col", "ppr_points_per_game", "--data-dir", "test-data"]),
         ):
             builder = builder_class.return_value
@@ -948,7 +948,7 @@ class TestGoldMain:
 
     def test_main__does_not_save_either_table_when_validation_fails(self):
         with (
-            patch("src.processing.gold.TrainingSetBuilder") as builder_class,
+            patch("src.processing.gold.GoldSetBuilder") as builder_class,
             patch("sys.argv", ["gold"]),
         ):
             builder = builder_class.return_value
