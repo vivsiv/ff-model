@@ -455,3 +455,34 @@ low-experience players (`years_played <= 1`) as a diagnostic once the model
 is being evaluated, since that's specifically the population the career-length
 redesign was about (the Brian Thomas Jr. case that started this whole
 discussion) — a good overall score could still mask poor performance there.
+
+## Phase 5.3 — Combined, season-specific gold tables (2026-11-02)
+
+- Initially renamed `build_training_set` to `build_historical_set`, then unified the
+  historical/prediction enrichment paths as `build_gold_set`. `main` prepares rows
+  via `_join_with_target` and `_build_current_rows`, concatenates them, and adds
+  team/draft features once using a combined historical/current player-team lookup.
+  It then validates the combined table and calls `save_to_gold` for rounding and
+  persistence. Row preparation and enrichment return unrounded rows without saving.
+- Gold output is now `{target_col}__{current_season}.csv`. Gold uses current-season
+  terminology (`load_current_players`, `_build_current_rows`); modeling retains
+  `prediction_season` as the saved snapshot-selection config key. Builds use the latest
+  rankings and nflreadpy's current roster season (rollover on March 15); there is no
+  historical player-pool reconstruction or prediction-season CLI override. Player
+  feature seasons at or after the prediction season are excluded.
+- Structural checks formerly in sequence preparation now live in gold's
+  `validate_data`. Analysis quality checks remain separate and unchanged; their
+  integration tests select historical/prediction rows from the combined 2026 file.
+- Tabular and sequence builders read one gold table. Only historical target seasons
+  determine scored split boundaries. `SplitYears` owns `prediction_season` (defaulting
+  to the current roster year), excludes that year and later years in its masks, and
+  counts only historical seasons when validating requested windows. The builders
+  no longer pre-filter historical rows independently. Prediction sequences retain the selected
+  players' historical rows and end at their prediction row.
+- Model configs support `prediction_season`, defaulting to the current roster year
+  and recording the resolved value in the existing MLflow config artifact. Registered
+  model names are unchanged. Registry configs without a pinned year fail clearly;
+  legacy pipelines can be wrapped with an explicitly season-pinned data builder.
+- Existing real gold CSVs and saved model artifacts were not migrated or rebuilt.
+  Default suite: 311 passed, 4 integration tests deselected. CLI help and
+  `git diff --check` verified.

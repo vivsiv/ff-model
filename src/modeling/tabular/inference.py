@@ -106,6 +106,12 @@ class TabularModelInference:
         pipeline, mv = load_mlflow_model(registered_model, model_version, tracking_dir)
         model_version, source_run_id = int(mv.version), mv.run_id
         config = load_data_builder_config(source_run_id)
+        if config.get("prediction_season") is None:
+            raise ValueError(
+                "The saved data-preparation config has no prediction_season. "
+                "This legacy model needs an explicitly season-pinned data builder; "
+                "use from_fit_pipeline with that builder rather than selecting the latest gold table."
+            )
         data_builder = TabularModelDataBuilder(data_dir=data_dir, config=config)
 
         return cls(

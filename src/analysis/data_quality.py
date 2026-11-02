@@ -16,7 +16,7 @@ EARLIEST_SEASON = 1999
 
 def run_training_data_quality_checks(training_data: pd.DataFrame, feature_cols: List[str]) -> None:
     """
-    Runs sanity checks against a gold-layer training set (gold_dir/{target}__training_set.csv):
+    Runs sanity checks against the historical rows of a season-specific gold table:
     shape, identity-column completeness, duplicates, degenerate (all/mostly-zero) rows,
     per-target_season row counts, the earliest-season-can't-be-a-target invariant, rookie
     exclusion, and a handful of known-value spot checks on specific player-seasons.
@@ -109,8 +109,8 @@ def run_training_data_quality_checks(training_data: pd.DataFrame, feature_cols: 
 
 def run_prediction_data_quality_checks(prediction_data: pd.DataFrame, feature_cols: List[str]) -> None:
     """
-    Runs sanity checks against a gold-layer prediction set
-    (gold_dir/{target}__prediction_set.csv): shape, identity-column completeness, duplicates,
+    Runs sanity checks against the prediction rows of a season-specific gold table:
+    shape, identity-column completeness, duplicates,
     degenerate (all/mostly-zero) rows, and a handful of known-value spot checks on specific
     players' most recent season.
 

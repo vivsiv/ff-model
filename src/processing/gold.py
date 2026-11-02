@@ -5,6 +5,7 @@ from typing import List, Optional
 
 import numpy as np
 import pandas as pd
+from nflreadpy import get_current_season
 
 from src.processing.column_registry import (
     get_identity_columns,
@@ -27,48 +28,26 @@ TARGET_COL = "target"
 PER_GAME_SUFFIX = "_per_game"
 
 
-def training_set_filename(target_col: str) -> str:
-    """Filename (not path) that build_training_set saves and load_training_set loads a
-    target's gold training set under, relative to gold_dir."""
-    return f"{target_col}__training_set.csv"
+def gold_set_filename(target_col: str, current_season: int) -> str:
+    """Filename of a target's combined gold table for a specific current season."""
+    return f"{target_col}__{current_season}.csv"
 
 
-def prediction_set_filename(target_col: str) -> str:
-    """Filename (not path) that build_prediction_set saves and load_prediction_set loads a
-    target's gold prediction set under, relative to gold_dir."""
-    return f"{target_col}__prediction_set.csv"
-
-
-def load_training_set(gold_dir: str, target_col: str) -> pd.DataFrame:
+def load_gold_set(gold_dir: str, target_col: str, current_season: int) -> pd.DataFrame:
     """
-    Loads a target's gold training set, as saved by TrainingSetBuilder.build_training_set.
+    Loads a target's gold table, as saved by TrainingSetBuilder.save_to_gold.
 
     Args:
-        gold_dir: The gold layer directory (the one build_training_set saved to).
-        target_col: The target the training set was built for, e.g. "ppr_points_per_game".
+        gold_dir: The gold layer directory (the one save_to_gold saved to).
+        target_col: The target the gold table was built for, e.g. "ppr_points_per_game".
+        current_season: The current season identifying the gold snapshot.
 
     Returns:
-        The training set, one row per (player, season, target_season).
+        Historical and current rows, with blank targets for current_season.
     """
-    training_df = pd.read_csv(os.path.join(gold_dir, training_set_filename(target_col)))
-    logger.info(f"Loaded training set for {target_col}: {len(training_df)} rows")
-    return training_df
-
-
-def load_prediction_set(gold_dir: str, target_col: str) -> pd.DataFrame:
-    """
-    Loads a target's gold prediction set, as saved by TrainingSetBuilder.build_prediction_set.
-
-    Args:
-        gold_dir: The gold layer directory (the one build_prediction_set saved to).
-        target_col: The target the prediction set was built for, e.g. "ppr_points_per_game".
-
-    Returns:
-        The prediction set, one row per player being predicted, with a blank target.
-    """
-    prediction_df = pd.read_csv(os.path.join(gold_dir, prediction_set_filename(target_col)))
-    logger.info(f"Loaded prediction set for {target_col}: {len(prediction_df)} rows")
-    return prediction_df
+    gold_df = pd.read_csv(os.path.join(gold_dir, gold_set_filename(target_col, current_season)))
+    logger.info(f"Loaded gold set for {target_col}, current season {current_season}: {len(gold_df)} rows")
+    return gold_df
 
 
 ROUNDING_EXCLUDED_COLUMNS = [
@@ -264,8 +243,8 @@ class TrainingSetBuilder:
         """
         Loads the `player_stats` silver table, merges in the `snap_counts` silver table (joined on player_id + season),
         and adds computed feature values to the combined set of stat columns -- both season-total career features and
-        (for counting stats) a second, per-game-basis set of the same features. Both the construction of the training
-        and prediction sets use the output.
+        (for counting stats) a second, per-game-basis set of the same features. Both historical
+        and current row preparation use the output.
 
         Args:
             shrinkage_k: Shrinkage strength constant passed through to _add_career_features (default: 1.5)
@@ -482,7 +461,7 @@ class TrainingSetBuilder:
         Args:
             features_df: Output of _add_career_features (one row per player-season, with that
                 season's raw stats and career-to-date-through-that-season features)
-            target_col: Column in features_df to use as the prediction target, e.g.
+            target_col: Column in features_df to use as the target, e.g.
                 "fantasy_points_ppr". 
             player_grouping_col: Column identifying a unique player (default: "player_id")
 
@@ -490,6 +469,9 @@ class TrainingSetBuilder:
             DataFrame of feature rows (most recent season before target_season) with
             "target_season", "target", and "seasons_since_played" columns added
         """
+        targets = get_targets("nflverse", "player_stats")
+        assert target_col in targets, f"{target_col} is not a registered target for player_stats: {targets}"
+
         season_dtype = features_df["season"].dtype
 
         target_df = features_df[[player_grouping_col, "season", target_col]].copy()
@@ -511,63 +493,103 @@ class TrainingSetBuilder:
         feature_columns = list(features_df.columns)
         return merged[feature_columns + ["target_season", TARGET_COL, "seasons_since_played"]]
 
-    # TODO: should this be renamed it isnt the true training set for a model, its pool of data available for training.
-    def build_training_set(
+    def build_gold_set(
         self,
-        features_df: pd.DataFrame,
+        rows_df: pd.DataFrame,
         team_features_df: pd.DataFrame,
         draft_features_df: pd.DataFrame,
-        target_col: str = "fantasy_points_ppr",
+        player_team_by_season: pd.DataFrame,
     ) -> pd.DataFrame:
         """
-        Builds the training set from the features dataframe and specified target
-        and saves it to the gold layer.
+        Adds team-context and draft features to prepared historical/current rows.
 
         Args:
-            features_df: Output of load_player_features
+            rows_df: Output of _join_with_target and/or _build_current_rows.
             team_features_df: Output of load_team_features
             draft_features_df: Output of load_draft_features
-            target_col: Column to predict; must be a registered target for player_stats
-                (default: "fantasy_points_ppr")
+            player_team_by_season: Player/team lookup for each target season. Combine
+                historical player teams with load_current_players' current teams
+                when building a combined gold table.
 
         Returns:
-            DataFrame of the training set, rounded to four sig figs and saved to
-            gold_dir/{target_col}__training_set.csv.
+            DataFrame of gold rows, without rounding or saving.
         """
-        targets = get_targets("nflverse", "player_stats")
-        assert target_col in targets, f"{target_col} is not a registered target for player_stats: {targets}"
-
         team_stat_columns = get_stat_columns("nflverse", "team_stats")
-
-        # TODO: validate here that the training set has at most one row per (player_id, season) (e.g. raise if
-        # training_df.duplicated(["player_id", "season"]).any()), so modelling code can trust it. The sequence
-        # data builder currently re-checks this itself (SequenceModelDataBuilder._order_by_step); drop that check once gold enforces it.
-        # Also validate that targets are non-null
-        training_df = self._join_with_target(features_df, target_col)
-        player_team_by_season_df = features_df[["player_id", "season", "recent_team"]]
-        training_df = self._join_team_features(
-            training_df, player_team_by_season_df, team_features_df, team_stat_columns
+        gold_df = self._join_team_features(
+            rows_df, player_team_by_season, team_features_df, team_stat_columns
         )
-        training_df = self._join_draft_features(training_df, draft_features_df)
+        return self._join_draft_features(gold_df, draft_features_df)
 
-        output_path = os.path.join(self.gold_dir, training_set_filename(target_col))
-        self._round_significant_figures(training_df, exclude_columns=ROUNDING_EXCLUDED_COLUMNS).to_csv(
+    #TODO: should this move to common code in the data quality checks?
+    @staticmethod
+    def validate_data(
+        gold_df: pd.DataFrame,
+        current_season: int,
+    ) -> None:
+        """Validate the combined gold table before saving.
+
+        Historical targets must be present and current targets must be blank.
+        Features must be numeric and player/feature-season keys unique. Each
+        current row must be later than that player's historical feature rows.
+        Feature NaNs are allowed for downstream imputation.
+
+        Raises:
+            ValueError: If a structural invariant fails.
+
+        This does not mutate the tables or run the separate analysis quality checks.
+        """
+        identity_columns = get_identity_columns("nflverse", "player_stats") + ["target_season"]
+        non_feature_columns = identity_columns + [TARGET_COL]
+        feature_cols = [col for col in gold_df.columns if col not in non_feature_columns]
+        non_numeric = [col for col in feature_cols if not pd.api.types.is_numeric_dtype(gold_df[col])]
+        if non_numeric:
+            raise ValueError(f"Gold features must be numeric, got non-numeric: {non_numeric}")
+        if gold_df.duplicated(["player_id", "season"]).any():
+            raise ValueError("More than one row for some (player_id, season) in gold data")
+        if gold_df["target_season"].isna().any() or (gold_df["target_season"] > current_season).any():
+            raise ValueError("Gold target seasons must be present and no later than current_season")
+        if (gold_df["season"] >= current_season).any():
+            raise ValueError("Gold feature seasons must be before current_season")
+
+        historical_df = gold_df[gold_df["target_season"] < current_season]
+        current_df = gold_df[gold_df["target_season"] == current_season]
+        if historical_df[TARGET_COL].isna().any():
+            raise ValueError("Historical data must not have null target values")
+        if current_df[TARGET_COL].notna().any():
+            raise ValueError("Current targets must be blank")
+        if current_df["player_id"].duplicated().any():
+            raise ValueError("Current data must have one row per player")
+        last_historical_seasons = historical_df.groupby("player_id")["season"].max()
+        prior_seasons = current_df["player_id"].map(last_historical_seasons)
+        if (current_df["season"] <= prior_seasons).any():
+            raise ValueError("A player's current row must be later than all historical feature seasons")
+
+    def save_to_gold(self, df: pd.DataFrame, filename: str) -> None:
+        """Save a table under gold_dir, rounding numeric values to four significant figures.
+
+        Columns in ROUNDING_EXCLUDED_COLUMNS are left untouched, as is the input
+        DataFrame. The CSV is written without a pandas index.
+
+        Args:
+            df: The table to save.
+            filename: Output filename relative to gold_dir.
+        """
+        output_path = os.path.join(self.gold_dir, filename)
+        self._round_significant_figures(df, exclude_columns=ROUNDING_EXCLUDED_COLUMNS).to_csv(
             output_path, index=False
         )
-        logger.info(f"Saved training set to {output_path}")
+        logger.info(f"Saved gold table to {output_path}")
 
-        return training_df
-
-    def _build_prediction_rows(
+    def _build_current_rows(
         self,
         features_df: pd.DataFrame,
         players_df: pd.DataFrame,
-        prediction_season: int,
+        current_season: int,
         player_grouping_col: str = "player_id",
     ) -> pd.DataFrame:
         """
         Takes each player's most recent season from the features dataframe and reframes it as
-        a row for predicting prediction_season's target values.
+        a current-season row with a blank target.
 
         Only players present in players_df get a row, so retired players are excluded. A player who
         missed some seasons still gets a row built from their last active season, and players with no prior
@@ -575,113 +597,60 @@ class TrainingSetBuilder:
 
         Args:
             features_df: Output of load_player_features (one row per player-season)
-            players_df: Output of load_prediction_players, the players to build prediction rows for
-            prediction_season: The season to build a prediction row for, e.g. 2026
+            players_df: Output of load_current_players, the players to build current rows for
+            current_season: The season to build a current row for, e.g. 2026
             player_grouping_col: Column identifying a unique player (default: "player_id")
 
         Returns:
             DataFrame with one row per player in players_df with prior stats, "target_season" set to
-            prediction_season, "target" as NaN, and "seasons_since_played" computed the same way as
+            current_season, "target" as NaN, and "seasons_since_played" computed the same way as
             _join_with_target
         """
         latest_df = (
-            features_df[features_df[player_grouping_col].isin(players_df[player_grouping_col])]
+            features_df[
+                features_df[player_grouping_col].isin(players_df[player_grouping_col])
+                & (features_df["season"] < current_season)
+            ]
             .sort_values("season")
             .groupby(player_grouping_col, as_index=False)
             .tail(1)
             .copy()
         )
-        latest_df["target_season"] = prediction_season
-        latest_df["seasons_since_played"] = prediction_season - latest_df["season"] - 1
+        latest_df["target_season"] = current_season
+        latest_df["seasons_since_played"] = current_season - latest_df["season"] - 1
         latest_df[TARGET_COL] = np.nan
 
         return latest_df.reset_index(drop=True)
 
-    def load_prediction_players(self, prediction_season: int) -> pd.DataFrame:
+    def load_current_players(self) -> pd.DataFrame:
         """
-        Loads the `ff_rankings` silver table: the fantasy viable players we want predictions for, and the
-        team each is currently listed on.
+        Loads the `ff_rankings` silver table: the fantasy viable players for the current
+        season and the team each is currently listed on.
 
-        Args:
-            prediction_season: The season the rankings are for, e.g. 2026
+        The latest rankings are assumed to describe nflreadpy's current roster season
+        (which rolls over on March 15). Historical player pools are not supported.
 
         Returns:
-            One row per player with "player_id", "season" (== prediction_season), and "recent_team"
-            (the team they're on in prediction_season, NaN for free agents)
+            One row per player with "player_id", "season" (== current_season), and "recent_team"
+            (the team they're on in current_season, NaN for free agents)
         """
         players_df = pd.read_csv(os.path.join(self.silver_dir, "ff_rankings.csv"), low_memory=False)
-        players_df["season"] = prediction_season
+        if players_df.empty:
+            raise ValueError("No current players found in ff_rankings")
+        players_df["season"] = get_current_season(roster=True)
 
         return players_df.rename(columns={"team": "recent_team"})[["player_id", "season", "recent_team"]]
-
-    # TODO: should this just be part of the training set? we are already defining "prediction_season".
-    def build_prediction_set(
-        self,
-        features_df: pd.DataFrame,
-        team_features_df: pd.DataFrame,
-        draft_features_df: pd.DataFrame,
-        players_df: pd.DataFrame,
-        target_col: str,
-        prediction_season: int,
-    ) -> pd.DataFrame:
-        """
-        Builds the gold prediction set from career-feature rows: each listed player's most recent
-        season reframed as a row for predicting prediction_season, with target left blank
-        (NaN). The team each player is on in prediction_season comes from players_df, so
-        team change features reflect any offseason moves (free agents are assumed to stay on their last team).
-
-        Args:
-            features_df: Output of load_player_features
-            team_features_df: Output of load_team_features
-            draft_features_df: Output of load_draft_features
-            players_df: Output of load_prediction_players, the players to predict and their prediction_season teams
-            target_col: Column that will eventually be predicted; must be a registered target
-                for player_stats (only used for naming the output file consistently with
-                build_training_set -- the actual target values are blank)
-            prediction_season: The season to build a prediction row for, e.g. 2026
-
-        Returns:
-            DataFrame of the prediction set, rounded to 4 sigfigs, and saved to
-            gold_dir/{target_col}__prediction_set.csv.
-        """
-        targets = get_targets("nflverse", "player_stats")
-        assert target_col in targets, f"{target_col} is not a registered target for player_stats: {targets}"
-
-        team_stat_columns = get_stat_columns("nflverse", "team_stats")
-
-        prediction_df = self._build_prediction_rows(features_df, players_df, prediction_season)
-
-        # players_df's "season" is prediction_season, which is what _join_team_features matches on
-        # "target_season" to look up each player's destination team.
-        prediction_df = self._join_team_features(
-            prediction_df, players_df, team_features_df, team_stat_columns
-        )
-        prediction_df = self._join_draft_features(prediction_df, draft_features_df)
-
-        output_path = os.path.join(self.gold_dir, prediction_set_filename(target_col))
-        self._round_significant_figures(prediction_df, exclude_columns=ROUNDING_EXCLUDED_COLUMNS).to_csv(
-            output_path, index=False
-        )
-        logger.info(f"Saved prediction set to {output_path}")
-
-        return prediction_df
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Builds gold training/prediction sets from nflverse silver layer data"
+        description="Builds a combined gold table for the current season"
     )
     parser.add_argument(
         "--target-col",
         type=str,
         default="fantasy_points_ppr",
         help="Column to predict; must be a registered target for player_stats (default: fantasy_points_ppr)"
-    )
-    parser.add_argument(
-        "--prediction-season",
-        type=int,
-        default=2026,
-        help="If provided, also builds a prediction set for this season (e.g. 2026)"
     )
     parser.add_argument(
         "--data-dir",
@@ -701,19 +670,24 @@ def main():
 
     builder = TrainingSetBuilder(data_dir=args.data_dir)
 
+    players_df = builder.load_current_players()
+    current_season = int(players_df["season"].iloc[0])
+
     features_df = builder.load_player_features(shrinkage_k=args.shrinkage_k)
+    features_df = features_df[features_df["season"] < current_season]
     team_features_df = builder.load_team_features()
     draft_features_df = builder.load_draft_features()
-    players_df = builder.load_prediction_players(args.prediction_season)
-    # TODO: after both sets are built, validate them as a pair so modelling can trust them: they have the same columns,
-    # and each prediction row's "season" is later than every training row's "season" for that player. These hold by
-    # construction when both come from the same features_df (as here), but not if the two files are built in separate
-    # runs. SequenceModelDataBuilder.build_prediction_data currently re-checks both itself; revisit that check once this exists.
-    builder.build_training_set(features_df, team_features_df, draft_features_df, target_col=args.target_col)
-    builder.build_prediction_set(
-        features_df, team_features_df, draft_features_df, players_df,
-        target_col=args.target_col, prediction_season=args.prediction_season
+
+    historical_rows = builder._join_with_target(features_df, target_col=args.target_col)
+    current_rows = builder._build_current_rows(features_df, players_df, current_season)
+    rows_df = pd.concat([historical_rows, current_rows], ignore_index=True)
+    player_team_by_season = pd.concat(
+        [features_df[["player_id", "season", "recent_team"]], players_df], ignore_index=True
     )
+
+    gold_df = builder.build_gold_set(rows_df, team_features_df, draft_features_df, player_team_by_season)
+    builder.validate_data(gold_df, current_season)
+    builder.save_to_gold(gold_df, gold_set_filename(args.target_col, current_season))
 
 
 if __name__ == "__main__":

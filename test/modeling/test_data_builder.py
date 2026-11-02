@@ -26,6 +26,27 @@ class _PredictionOnlyDataBuilder(ModelDataBuilder):
 
 
 class TestModelDataBuilder:
+    def test_init__resolves_current_season_into_config_without_mutating_input(self):
+        config = {"target": "ppr_points_per_game"}
+        with patch("src.modeling.data_builder.get_current_season", return_value=2026) as current_season:
+            builder = _ConcreteDataBuilder("data", config)
+        current_season.assert_called_once_with(roster=True)
+        assert builder.prediction_season == 2026
+        assert builder.split_years.prediction_season == 2026
+        assert "prediction_season" not in builder.__dict__
+        assert builder.config["prediction_season"] == 2026
+        assert config == {"target": "ppr_points_per_game"}
+
+        with patch("src.modeling.data_builder.get_current_season", return_value=2027) as current_season:
+            restored = _ConcreteDataBuilder("data", builder.config)
+        current_season.assert_not_called()
+        assert restored.prediction_season == 2026
+
+    @pytest.mark.parametrize("year", [True, "2026", 2026.5])
+    def test_init__rejects_non_integer_prediction_seasons(self, year):
+        with pytest.raises(ValueError, match="integer year"):
+            _ConcreteDataBuilder("data", {"target": "ppr_points_per_game", "prediction_season": year})
+
     @pytest.mark.parametrize("recompute", [
         pytest.param(False, id="default-first-build"),
         pytest.param(True, id="forced-first-build"),
@@ -125,7 +146,9 @@ class TestModelDataBuilder:
         builder = _ConcreteDataBuilder.from_config_file(str(tmp_path), str(config_path))
 
         assert type(builder) is _ConcreteDataBuilder
-        assert builder.config == {"target": "ppr_points_per_game", "positions": ["RB"]}
+        assert builder.config == {
+            "target": "ppr_points_per_game", "positions": ["RB"], "prediction_season": builder.prediction_season,
+        }
         assert not hasattr(builder, "source_data")
 
     @pytest.mark.parametrize("positions", [

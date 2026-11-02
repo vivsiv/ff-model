@@ -5,6 +5,7 @@ import pytest
 import shutil
 import tempfile
 from typing import Tuple
+from unittest.mock import patch
 
 import mlflow
 from sklearn.pipeline import Pipeline
@@ -32,7 +33,7 @@ class _FakeDataBuilder:
 
     def __init__(self, target: str = "ppr"):
         self.target = target
-        self.config = {"target": target}
+        self.config = {"target": target, "prediction_season": 2025}
 
 
 def _build_training_data(feature_cols: dict[str, list]) -> pd.DataFrame:
@@ -54,7 +55,7 @@ def _build_prediction_data(feature_cols: dict[str, list], n: int = 2) -> pd.Data
     return pd.DataFrame({
         **identity_data,
         **{col: values[:n] for col, values in feature_cols.items()},
-        'target': [None] * n,
+        'target': [float("nan")] * n,
     })
 
 
@@ -65,9 +66,9 @@ def _train_and_register_ridge_model(
     logging its data builder config the same way tabular/trainer.py's CLI (main()) does.
 
     Returns (pipeline, source_run_id)."""
-    training_data.to_csv(os.path.join(gold_dir, f"{target}__training_set.csv"), index=False)
+    training_data.to_csv(os.path.join(gold_dir, f"{target}__2025.csv"), index=False)
 
-    data_builder = TabularModelDataBuilder(data_dir=os.path.dirname(gold_dir), config={"target": target})
+    data_builder = TabularModelDataBuilder(data_dir=os.path.dirname(gold_dir), config={"target": target, "prediction_season": 2025})
     model = TabularModelTrainer(
         data_dir=os.path.dirname(gold_dir), tracking_dir=tracking_dir, data_builder=data_builder, model_type="ridge"
     )
@@ -98,8 +99,6 @@ class TestTabularModelInference:
             'f3': [12, 0, 8, 12, 0, 8, 12, 0, 8, 12],
             'target': [10, 11, 12, 13, 14, 15, 16, 17, 18, 19],
         })
-        training_data.to_csv(os.path.join(cls.gold_dir, "target_1__training_set.csv"), index=False)
-
         prediction_identity = {
             col: [f"{col}_pred_{i}" for i in range(2)] for col in get_identity_columns("nflverse", "player_stats")
         }
@@ -109,14 +108,16 @@ class TestTabularModelInference:
             'f1': [21, 22],
             'f2': [200, 150],
             'f3': [1, 2],
-            'target': [None, None],
+            'target': [float("nan"), float("nan")],
         })
-        prediction_data.to_csv(os.path.join(cls.gold_dir, "target_1__prediction_set.csv"), index=False)
+        pd.concat([training_data, prediction_data], ignore_index=True).to_csv(
+            os.path.join(cls.gold_dir, "target_1__2025.csv"), index=False
+        )
 
         # Simulate what tabular/trainer.py's CLI (main()) does when training+registering a
         # model: split (per a data prep config), fit, log the config + eval, all under one run.
         cls.config = {
-            "target": "target_1",
+            "target": "target_1", "prediction_season": 2025,
             "features": {"mode": "exclude", "columns": ["f3"]},
             "split": {"eval_data_years": 1, "test_data_years": 1, "num_training_seasons": 2},
         }
@@ -229,10 +230,10 @@ class TestTabularModelInference:
 
             training_data = _build_training_data({"f1": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]})
             training_data["position"] = ["RB", "WR"] * 5
-            training_data.to_csv(os.path.join(gold_dir, "target_3__training_set.csv"), index=False)
+            training_data.to_csv(os.path.join(gold_dir, "target_3__2025.csv"), index=False)
 
             data_builder = TabularModelDataBuilder(
-                data_dir=test_dir, config={"target": "target_3", "positions": ["RB"]}
+                data_dir=test_dir, config={"target": "target_3", "prediction_season": 2025, "positions": ["RB"]}
             )
             model = TabularModelTrainer(
                 data_dir=test_dir, tracking_dir=tracking_dir, data_builder=data_builder, model_type="ridge"
@@ -337,7 +338,7 @@ class TestTabularModelInference:
             # a new feature column shows up in the gold layer after training
             training_data_with_new_col = training_data.copy()
             training_data_with_new_col["f3_new"] = 1
-            training_data_with_new_col.to_csv(os.path.join(gold_dir, "target_2__training_set.csv"), index=False)
+            training_data_with_new_col.to_csv(os.path.join(gold_dir, "target_2__2025.csv"), index=False)
 
             inference = TabularModelInference.from_registry(
                 data_dir=test_dir, tracking_dir=tracking_dir, registered_model="target_2_ridge", model_version=1
@@ -372,7 +373,7 @@ class TestTabularModelInference:
             _train_and_register_ridge_model(gold_dir, tracking_dir, "target_2", training_data)
 
             training_data_missing_col = training_data.drop(columns=["f1"])
-            training_data_missing_col.to_csv(os.path.join(gold_dir, "target_2__training_set.csv"), index=False)
+            training_data_missing_col.to_csv(os.path.join(gold_dir, "target_2__2025.csv"), index=False)
 
             inference = TabularModelInference.from_registry(
                 data_dir=test_dir, tracking_dir=tracking_dir, registered_model="target_2_ridge", model_version=1
@@ -393,10 +394,10 @@ class TestTabularModelInference:
 
             training_data = _build_training_data({"f1": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]})
             training_data["position"] = ["RB", "WR"] * 5
-            training_data.to_csv(os.path.join(gold_dir, "target_3__training_set.csv"), index=False)
+            training_data.to_csv(os.path.join(gold_dir, "target_3__2025.csv"), index=False)
 
             data_builder = TabularModelDataBuilder(
-                data_dir=test_dir, config={"target": "target_3", "positions": ["RB"]}
+                data_dir=test_dir, config={"target": "target_3", "prediction_season": 2025, "positions": ["RB"]}
             )
             model = TabularModelTrainer(
                 data_dir=test_dir, tracking_dir=tracking_dir, data_builder=data_builder, model_type="ridge"
@@ -471,14 +472,16 @@ class TestTabularModelInference:
 
             training_data = _build_training_data({"f1": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]})
             training_data["position"] = ["RB", "WR"] * 5
-            training_data.to_csv(os.path.join(gold_dir, "target_3__training_set.csv"), index=False)
+            training_data.to_csv(os.path.join(gold_dir, "target_3__2025.csv"), index=False)
 
             prediction_data = _build_prediction_data({"f1": [1, 2, 3, 4]}, n=4)
             prediction_data["position"] = ["RB", "WR", "RB", "WR"]
-            prediction_data.to_csv(os.path.join(gold_dir, "target_3__prediction_set.csv"), index=False)
+            pd.concat([training_data, prediction_data], ignore_index=True).to_csv(
+                os.path.join(gold_dir, "target_3__2025.csv"), index=False
+            )
 
             data_builder = TabularModelDataBuilder(
-                data_dir=test_dir, config={"target": "target_3", "positions": ["RB"]}
+                data_dir=test_dir, config={"target": "target_3", "prediction_season": 2025, "positions": ["RB"]}
             )
             model = TabularModelTrainer(
                 data_dir=test_dir, tracking_dir=tracking_dir, data_builder=data_builder, model_type="ridge"
@@ -498,15 +501,27 @@ class TestTabularModelInference:
         finally:
             shutil.rmtree(test_dir)
 
-    def test_predict__never_needs_the_training_set_on_disk(self):
-        # The whole point of TabularModelInference.predict() calling data_builder.build_prediction_data()
-        # directly (never data_builder.get_data_splits()): a TabularModelInference built purely to
-        # make live predictions from an already-trained model should never need to load (or
-        # even have) a training set on disk.
-        training_set_path = os.path.join(self.gold_dir, "target_1__training_set.csv")
-        moved_path = training_set_path + ".moved"
-        os.rename(training_set_path, moved_path)
-        try:
+    def test_from_registry__keeps_the_training_season_after_rollover(self):
+        with patch("src.modeling.data_builder.get_current_season", return_value=2027) as current_season:
+            inference = TabularModelInference.from_registry(
+                data_dir=self.test_dir, tracking_dir=self.tracking_dir, registered_model="target_1_ridge", model_version=1
+            )
+            prediction = inference.data_builder.build_prediction_data()
+        current_season.assert_not_called()
+        assert inference.data_builder.prediction_season == 2025
+        assert prediction["identity"]["target_season"].tolist() == [2025, 2025]
+
+    def test_from_registry__rejects_legacy_config_without_a_pinned_season(self):
+        with patch("src.modeling.tabular.inference.load_data_builder_config", return_value={"target": "target_1"}):
+            with pytest.raises(ValueError, match="no prediction_season"):
+                TabularModelInference.from_registry(
+                    data_dir=self.test_dir, tracking_dir=self.tracking_dir,
+                    registered_model="target_1_ridge", model_version=1,
+                )
+
+    def test_predict__does_not_build_training_splits(self):
+        # Prediction reads the combined table but does not assemble training splits.
+        with patch.object(TabularModelDataBuilder, "get_data_splits", side_effect=AssertionError("Unexpected splits")):
             inference = TabularModelInference.from_registry(
                 data_dir=self.test_dir, tracking_dir=self.tracking_dir, registered_model="target_1_ridge", model_version=1
             )
@@ -516,8 +531,6 @@ class TestTabularModelInference:
 
             assert len(preds_df) == 2
             assert not hasattr(inference.data_builder, "source_data")
-        finally:
-            os.rename(moved_path, training_set_path)
 
 
 class TestTabularModelInferencePredictAndScore:

@@ -16,7 +16,11 @@ src/processing/ -- one file per data source, each with a `*Processor` class that
 - nflverse.py (`NflverseProcessor`): filters player stats to fantasy-relevant positions (QB/RB/WR/TE)
 - pro_football_reference.py (`ProFootballReferenceProcessor`): legacy silver-layer processing (name/team standardization, rolling averages, ratio stats) for the old pro-football-reference pipeline
 - column_registry.py / column_registry.yaml: registry of which raw columns from each silver table are identity columns, candidate stat features, prediction targets, or excluded entirely -- the single source of truth `gold.py` reads from, rather than hardcoding column lists
-- gold.py (`TrainingSetBuilder`): builds the gold training set from silver data -- computes a positional baseline (trailing 5-season league average per position, to avoid an all-time average going stale as league-wide offensive output drifts), expanding career-to-date features per player (average/std/max/min/trend, and a shrinkage-adjusted average that pulls short careers toward the positional baseline so a 1-year outlier season isn't treated as equally reliable as a decade-long track record), then joins each player's next-season target onto their most recent prior season's features (bridging gap seasons, e.g. a player who missed a year to injury, rather than dropping them)
+- gold.py (`TrainingSetBuilder`): loads silver player data and computes positional baselines (trailing 5-season league averages) and expanding career features (average/std/max/min/trend and shrinkage-adjusted averages). The CLI prepares historical rows by pairing next-season targets with strictly earlier player features, bridging gap seasons, and prepares blank-target prediction rows from each listed player's latest prior season. It concatenates these rows and uses `build_gold_set` to add team-context and draft features once, with a combined lookup of historical and current player teams. `save_to_gold` writes `data/gold/{target_col}__{prediction_season}.csv`, rounding numeric values to four significant figures without mutating the input.
+
+The gold CLI assumes the latest fantasy rankings describe nflreadpy's current roster season (rollover on March 15); historical player-pool reconstruction is not supported. Only earlier player seasons are used to build features. After row preparation and shared feature joins, the CLI calls `validate_data`, then saves the combined table. `build_gold_set` does not round or write files. Analysis quality checks remain separate.
+
+Model data builders select the gold table using `prediction_season` in their config. If omitted, it defaults to the current roster season and is recorded in the saved MLflow config, so later inference keeps using that snapshot. Model names are unchanged. Historical target seasons alone determine train/evaluation/test splits; sequence predictions retain the selected players' historical steps. Existing two-file gold outputs are not automatically migrated. Legacy registered models whose saved configs lack a prediction season require an explicitly pinned data builder via `TabularModelInference.from_fit_pipeline` rather than silently selecting the latest table.
 
 analysis.py
 - Performs some sanity checks on the training and live data
@@ -58,4 +62,4 @@ the team stats all fared poorly in the pearsons and mutual information analysis.
 
 ## License
 
-MIT 
+MIT

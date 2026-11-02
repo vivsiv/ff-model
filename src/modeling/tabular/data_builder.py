@@ -1,7 +1,7 @@
 import pandas as pd
 
 from src.modeling.data_builder import EVAL_SPLIT, TEST_SPLIT, TRAIN_SPLIT, ModelDataBuilder, SplitYears
-from src.processing.gold import TARGET_COL, load_prediction_set, load_training_set
+from src.processing.gold import TARGET_COL, load_gold_set
 
 
 class TabularModelDataBuilder(ModelDataBuilder):
@@ -21,7 +21,7 @@ class TabularModelDataBuilder(ModelDataBuilder):
         Raises:
             ValueError: If requested split seasons exceed the distinct seasons available.
         """
-        self.source_data = load_training_set(self.gold_data_dir, self.target)
+        self.source_data = load_gold_set(self.gold_data_dir, self.target, self.prediction_season)
 
         data = self.source_data
         if self.positions:
@@ -42,7 +42,8 @@ class TabularModelDataBuilder(ModelDataBuilder):
 
     def build_prediction_data(self) -> dict[str, pd.DataFrame]:
         """Build live prediction data as row-aligned identity and features DataFrames."""
-        data = load_prediction_set(self.gold_data_dir, self.target)
+        data = load_gold_set(self.gold_data_dir, self.target, self.prediction_season)
+        data = data[data["target_season"] == self.prediction_season]
 
         if self.positions:
             data = self._filter_positions(data, self.positions)

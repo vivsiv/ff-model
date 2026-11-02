@@ -83,8 +83,8 @@ PHASE 4. Predictions & Rankings [PAUSED]
 
 PHASE 5. Sequential Model [IN PROGRESS]
 1. Build the sequence data prep: the analog of TabularModelDataBuilder (src/modeling/) that assembles sequences from gold data and masks them [DONE]
-2. Refactor tabular and sequence into their own subdirs, extract common dataprep code [IN PROGRESS]
-3. Rename training set created by gold to something else (probably gold), combine prediction set into gold.
+2. Refactor tabular and sequence into their own subdirs, extract common dataprep code [DONE]
+3. Rename training set created by gold to something else (probably gold), combine prediction set into gold. [DONE]
 4. Build an lstm model and evaluate it
 5. Implement per batch padding instead of global padding.
 6. Build a trasformer model or finetune an existing one and evaluate it

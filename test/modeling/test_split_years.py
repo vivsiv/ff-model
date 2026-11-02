@@ -1,11 +1,28 @@
 import numpy as np
 import pandas as pd
 import pytest
+from unittest.mock import patch
 
 from src.modeling.data_builder import SplitYears
 
 
 class TestSplitYears:
+    def test_default_prediction_season__uses_current_roster_year_at_construction(self):
+        with patch("src.modeling.data_builder.get_current_season", side_effect=[2026, 2027]) as current_season:
+            first = SplitYears()
+            second = SplitYears()
+        assert first.prediction_season == 2026
+        assert second.prediction_season == 2027
+        assert current_season.call_count == 2
+        current_season.assert_called_with(roster=True)
+
+    def test_from_config__uses_explicit_snapshot_year_without_resolving_current_year(self):
+        with patch("src.modeling.data_builder.get_current_season") as current_season:
+            split_years = SplitYears.from_config({"test_data_years": 2}, prediction_season=2025)
+        current_season.assert_not_called()
+        assert split_years.prediction_season == 2025
+        assert split_years.test_data_years == 2
+
     def test_from_config__applies_defaults_for_omitted_fields(self):
         assert SplitYears.from_config({}) == SplitYears(eval_data_years=1, test_data_years=1, num_training_seasons=None)
 
@@ -16,6 +33,26 @@ class TestSplitYears:
 
 
 class TestSplitYearsToMasks:
+    def test_to_masks__excludes_prediction_and_future_seasons_without_shifting_holdouts(self):
+        seasons = pd.Series([2020, 2021, 2022, 2023, 2024, 2025, 2026], index=[8, 2, 5, 1, 9, 0, 3])
+        masks = SplitYears(prediction_season=2025).to_masks(seasons)
+
+        assert masks["train"].tolist() == [True, True, True, False, False, False, False]
+        assert masks["eval"].tolist() == [False, False, False, True, False, False, False]
+        assert masks["test"].tolist() == [False, False, False, False, True, False, False]
+        for mask in masks.values():
+            pd.testing.assert_index_equal(mask.index, seasons.index)
+
+    def test_to_masks__counts_only_historical_seasons_when_validating_requested_window(self):
+        seasons = pd.Series([2021, 2022, 2023, 2024, 2025])
+        with pytest.raises(ValueError, match="exceeds the 3 distinct"):
+            SplitYears(prediction_season=2024, num_training_seasons=2).to_masks(seasons)
+
+    def test_to_masks__no_historical_seasons_produces_empty_scored_masks(self):
+        seasons = pd.Series([2025, 2026, np.nan])
+        masks = SplitYears(prediction_season=2025).to_masks(seasons)
+        assert all(not mask.any() for mask in masks.values())
+
     def test_to_masks__partitions_seasons_chronologically(self):
         target_season = pd.Series([2019, 2020, 2021, 2022, 2023, 2024])
 
