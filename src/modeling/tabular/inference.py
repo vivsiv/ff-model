@@ -10,7 +10,7 @@ import mlflow
 from sklearn.metrics import mean_squared_error
 from sklearn.pipeline import Pipeline
 
-from src.modeling.data_builder import DATA_BUILDER_CONFIG_ARTIFACT_PATH, EVAL_SPLIT, TEST_SPLIT, PREDICTION_SPLIT
+from src.modeling.data_builder import DATA_BUILDER_CONFIG_ARTIFACT_PATH, EVAL_SPLIT, TEST_SPLIT
 from src.modeling.tabular.data_builder import TabularModelDataBuilder
 from src.modeling.utils import load_data_builder_config, load_mlflow_model, set_mlflow_tracking_uri, setup_mlflow_run
 
@@ -377,12 +377,12 @@ class TabularModelInference:
         Returns:
             DataFrame of live predictions (see _predict()).
         """
-        prediction_set = self.data_builder.get_data_splits()[PREDICTION_SPLIT]
-        X = self._select_pipeline_features(prediction_set["features"])
+        data = self.data_builder.get_data_splits()
+        X = self._select_pipeline_features(data["X_pred"])
 
         return self._predict(
             X=X,
-            identity=prediction_set["identity"],
+            identity=data["identity_pred"],
             run_id=run_id,
             csv_path=csv_path,
         )

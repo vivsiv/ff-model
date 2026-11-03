@@ -88,7 +88,7 @@ class TestTabularModelTrainer:
             "y_train", "y_eval", "y_test",
             "identity_train", "identity_eval", "identity_test",
             "sample_weight_train",
-            "prediction",
+            "X_pred", "identity_pred",
         }
         assert set(self.model.data["identity_test"]["target_season"]) == {2024}
 

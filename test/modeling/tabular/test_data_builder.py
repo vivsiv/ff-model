@@ -151,7 +151,7 @@ class TestTabularModelDataBuilder:
             "y_train", "y_eval", "y_test",
             "identity_train", "identity_eval", "identity_test",
             "sample_weight_train",
-            "prediction",
+            "X_pred", "identity_pred",
         }
 
     def test_build_data_splits__applies_position_filter_without_changing_source(self):
@@ -265,18 +265,21 @@ class TestTabularModelDataBuilder:
             "target": "target_1", "split": {"prediction_season": 2025},
             "features": {"mode": "exclude", "columns": ["f2"]},
         })
-        prediction_set = builder.get_data_splits()["prediction"]
+        prediction_set = builder.get_data_splits()
 
-        assert list(prediction_set["features"].columns) == ["f1", "receiving_yards"]
-        assert list(prediction_set["features"]["f1"]) == [11, 12, 13, 14]
-        assert set(prediction_set["identity"]["position"]) == {"QB", "RB", "WR", "TE"}
+        assert list(prediction_set["X_pred"].columns) == ["f1", "receiving_yards"]
+        assert list(prediction_set["X_pred"]["f1"]) == [11, 12, 13, 14]
+        assert set(prediction_set["identity_pred"]["position"]) == {"QB", "RB", "WR", "TE"}
+        assert "y_pred" not in prediction_set
+        assert "prediction" not in prediction_set
+        pd.testing.assert_index_equal(prediction_set["X_pred"].index, prediction_set["identity_pred"].index)
 
     def test_build_data_splits__prediction_respects_position_filtering(self):
         builder = TabularModelDataBuilder(self.test_dir, {"target": "target_1", "split": {"prediction_season": 2025}, "positions": ["RB"]})
-        prediction_set = builder.get_data_splits()["prediction"]
+        prediction_set = builder.get_data_splits()
 
-        assert set(prediction_set["identity"]["position"]) == {"RB"}
-        assert list(prediction_set["features"]["f1"]) == [12]
+        assert set(prediction_set["identity_pred"]["position"]) == {"RB"}
+        assert list(prediction_set["X_pred"]["f1"]) == [12]
 
     def test_build_data_splits__prediction_only_table_has_empty_scored_splits(self):
         # A combined gold table may contain only prediction rows.
@@ -284,11 +287,10 @@ class TestTabularModelDataBuilder:
 
         builder = TabularModelDataBuilder(data_dir=self.test_dir, config={"target": "target_predict_only", "split": {"prediction_season": 2025}})
         splits = builder.get_data_splits()
-        prediction_set = splits["prediction"]
 
         assert all(splits[f"X_{split}"].empty for split in ["train", "eval", "test"])
-        assert len(prediction_set["identity"]) == 4
-        assert list(prediction_set["features"].columns) == ["f1", "f2", "receiving_yards"]
+        assert len(splits["identity_pred"]) == 4
+        assert list(splits["X_pred"].columns) == ["f1", "f2", "receiving_yards"]
 
     def test_prediction_split__backtest_excludes_targets_and_future_rows(self):
         source = self.gold_data.copy(deep=True)
@@ -299,11 +301,10 @@ class TestTabularModelDataBuilder:
         with patch("src.modeling.tabular.data_builder.load_gold_set", return_value=source):
             splits = builder.get_data_splits()
 
-        prediction = splits["prediction"]
-        assert prediction["identity"]["target_season"].tolist() == [2023, 2023]
-        assert prediction["features"]["f1"].tolist() == [7, 8]
-        assert set(prediction) == {"identity", "features"}
-        assert "target" not in prediction["features"]
+        assert splits["identity_pred"]["target_season"].tolist() == [2023, 2023]
+        assert splits["X_pred"]["f1"].tolist() == [7, 8]
+        assert "y_pred" not in splits
+        assert "target" not in splits["X_pred"]
         assert set(splits["identity_test"]["target_season"]) == {2022}
         assert set(splits["identity_eval"]["target_season"]) == {2021}
         pd.testing.assert_frame_equal(source, original)
@@ -314,5 +315,6 @@ class TestTabularModelDataBuilder:
         })
         with patch("src.modeling.tabular.data_builder.load_gold_set", wraps=load_gold_set) as load:
             first = builder.get_data_splits()
-            assert builder.get_data_splits()["prediction"] is first["prediction"]
+            assert builder.get_data_splits()["X_pred"] is first["X_pred"]
+            assert builder.get_data_splits()["identity_pred"] is first["identity_pred"]
             load.assert_called_once()

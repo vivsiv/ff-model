@@ -9,7 +9,7 @@ import pytest
 import torch
 
 from src.modeling.data_builder import ModelDataBuilder
-from src.modeling.sequence.data_builder import SequenceDataset, SequenceModelDataBuilder
+from src.modeling.sequence.data_builder import LOSS_STEP_COL, SELECTED_STEP_COL, SequenceDataset, SequenceModelDataBuilder
 from src.processing.gold import load_gold_set
 
 
@@ -80,6 +80,16 @@ class TestSequenceDataset:
 
 
 class TestSequenceModelDataBuilder:
+    def test_get_input_rows_mask__uses_selection_independently_of_loss(self):
+        data = pd.DataFrame({
+            "player_id": ["A", "A", "A", "B", "B"],
+            "step_idx": [0, 1, 2, 0, 1],
+            SELECTED_STEP_COL: [False, True, False, False, False],
+            LOSS_STEP_COL: [False, False, False, True, True],
+        })
+        mask = SequenceModelDataBuilder._get_input_rows_mask(data)
+        assert mask.tolist() == [True, True, False, False, False]
+
     def test_inheritance__uses_shared_base_and_helpers(self):
         assert SequenceModelDataBuilder.__bases__ == (ModelDataBuilder,)
         assert SequenceModelDataBuilder.from_config_file.__func__ is ModelDataBuilder.from_config_file.__func__

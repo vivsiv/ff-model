@@ -10,13 +10,13 @@ class TabularModelDataBuilder(ModelDataBuilder):
     See ModelDataBuilder for the shared config schema.
     """
 
-    def _build_data_splits(self) -> dict[str, pd.DataFrame | dict[str, pd.DataFrame]]:
+    def _build_data_splits(self) -> dict[str, pd.DataFrame | pd.Series]:
         """Build train/eval/test/prediction datasets from one load of the gold table.
 
         Returns:
             X_train/X_eval/X_test, y_train/y_eval/y_test,
             identity_train/identity_eval/identity_test, sample_weight_train, and
-            prediction (a dict of row-aligned identity/features frames with no targets).
+            X_pred/identity_pred (row-aligned prediction frames with no targets).
             Always builds fresh data; use get_data_splits() for cached access.
 
         Raises:
@@ -49,7 +49,7 @@ class TabularModelDataBuilder(ModelDataBuilder):
         target_df: pd.Series,
         identity_df: pd.DataFrame,
         sample_weights: pd.Series,
-    ) -> dict[str, pd.DataFrame | dict[str, pd.DataFrame]]:
+    ) -> dict[str, pd.DataFrame | pd.Series]:
         """Slice aligned tabular inputs into train/eval/test/prediction splits.
 
         See SplitYears.to_masks for season allocation. Sample weights are returned
@@ -57,6 +57,7 @@ class TabularModelDataBuilder(ModelDataBuilder):
         """
         masks = split_years.to_masks(target_season)
         is_train, is_eval, is_test = masks[TRAIN_SPLIT], masks[EVAL_SPLIT], masks[TEST_SPLIT]
+        is_prediction = masks[PREDICTION_SPLIT]
 
         return {
             "X_train": features_df[is_train],
@@ -69,8 +70,6 @@ class TabularModelDataBuilder(ModelDataBuilder):
             "identity_eval": identity_df[is_eval],
             "identity_test": identity_df[is_test],
             "sample_weight_train": sample_weights[is_train],
-            PREDICTION_SPLIT: {
-                "identity": identity_df[masks[PREDICTION_SPLIT]],
-                "features": features_df[masks[PREDICTION_SPLIT]],
-            },
+            "X_pred": features_df[is_prediction],
+            "identity_pred": identity_df[is_prediction],
         }

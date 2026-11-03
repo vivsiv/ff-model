@@ -21,7 +21,7 @@ class TestModelDataBuilder:
         config = {"target": "ppr_points_per_game", "split": {"prediction_season": 2025, "test_data_years": 2}}
         with patch("src.modeling.data_builder.get_current_season") as current_season:
             builder = _ConcreteDataBuilder("data", config)
-        current_season.assert_not_called()
+        current_season.assert_called_once_with(roster=True)
         assert builder.split_years.prediction_season == 2025
         assert builder.split_years.test_data_years == 2
         assert not hasattr(builder, "prediction_season")
@@ -40,10 +40,10 @@ class TestModelDataBuilder:
 
         with patch("src.modeling.data_builder.get_current_season", return_value=2027) as current_season:
             restored = _ConcreteDataBuilder("data", builder.config)
-        current_season.assert_not_called()
+        current_season.assert_called_once_with(roster=True)
         assert restored.split_years.prediction_season == 2026
 
-    @pytest.mark.parametrize("year", [True, "2026", 2026.5])
+    @pytest.mark.parametrize("year", [True, "2026", 2026.5, None])
     def test_init__rejects_non_integer_prediction_seasons(self, year):
         with pytest.raises(ValueError, match="integer year"):
             _ConcreteDataBuilder("data", {"target": "ppr_points_per_game", "split": {"prediction_season": year}})

@@ -37,13 +37,11 @@ class SplitYears:
     @classmethod
     def from_config(cls, split_config: dict[str, Any]) -> "SplitYears":
         """Read the split config, defaulting omitted fields."""
-        prediction_season = split_config.get("prediction_season")
-        season_kwargs = {} if prediction_season is None else {"prediction_season": prediction_season}
         return cls(
             eval_data_years=split_config.get("eval_data_years", 1),
             test_data_years=split_config.get("test_data_years", 1),
             num_training_seasons=split_config.get("num_training_seasons"),
-            **season_kwargs,
+            prediction_season=split_config.get("prediction_season", get_current_season(roster=True)),
         )
 
     def to_masks(self, target_season: pd.Series) -> dict[str, pd.Series]:

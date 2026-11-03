@@ -16,10 +16,10 @@ class TestSplitYears:
         assert current_season.call_count == 2
         current_season.assert_called_with(roster=True)
 
-    def test_from_config__uses_explicit_snapshot_year_without_resolving_current_year(self):
-        with patch("src.modeling.data_builder.get_current_season") as current_season:
+    def test_from_config__uses_explicit_snapshot_year_instead_of_current_year(self):
+        with patch("src.modeling.data_builder.get_current_season", return_value=2027) as current_season:
             split_years = SplitYears.from_config({"test_data_years": 2, "prediction_season": 2025})
-        current_season.assert_not_called()
+        current_season.assert_called_once_with(roster=True)
         assert split_years.prediction_season == 2025
         assert split_years.test_data_years == 2
 

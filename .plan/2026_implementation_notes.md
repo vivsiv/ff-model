@@ -512,7 +512,7 @@ Existing staged changes, including temporary legacy-model fallback, were preserv
 
 - Added a `prediction` mask to `SplitYears.to_masks`. Both data builders now create
   prediction data inside `_build_data_splits`, using the same masks, gold load, and
-  cache as the scored splits. Tabular prediction is an identity/features dict;
+  cache as the scored splits. Tabular prediction uses flat `X_pred`/`identity_pred` keys;
   sequence prediction is a `SequenceDataset` with zero targets and a false loss mask.
 - Prediction sequences are trimmed at their selected prediction step, so later gold
   rows do not leak into backtests. Known targets remain intact in source data but

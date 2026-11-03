@@ -432,10 +432,10 @@ class TestTabularModelInference:
         csv_path = self.inference.build_predictions_csv_path(os.path.join(self.test_dir, "predictions"), self.inference.registered_model, self.inference.model_version, run_id)
         preds_df = self.inference.predict(run_id=run_id, csv_path=csv_path)
 
-        prediction_set = self.data_builder.get_data_splits()["prediction"]
+        prediction_set = self.data_builder.get_data_splits()
         expected = pd.Series(
-            self.pipeline.predict(prediction_set["features"][["f1", "f2"]]),
-            index=prediction_set["features"].index,
+            self.pipeline.predict(prediction_set["X_pred"][["f1", "f2"]]),
+            index=prediction_set["X_pred"].index,
         )
 
         pd.testing.assert_series_equal(
@@ -507,10 +507,10 @@ class TestTabularModelInference:
             inference = TabularModelInference.from_registry(
                 data_dir=self.test_dir, tracking_dir=self.tracking_dir, registered_model="target_1_ridge", model_version=1
             )
-            prediction = inference.data_builder.get_data_splits()["prediction"]
-        current_season.assert_not_called()
+            prediction = inference.data_builder.get_data_splits()
+        current_season.assert_called_once_with(roster=True)
         assert inference.data_builder.split_years.prediction_season == 2025
-        assert prediction["identity"]["target_season"].tolist() == [2025, 2025]
+        assert prediction["identity_pred"]["target_season"].tolist() == [2025, 2025]
 
     def test_from_registry__temporarily_defaults_legacy_config_to_current_season_with_warning(self, caplog):
         legacy_config = dict(self.config)
@@ -525,14 +525,14 @@ class TestTabularModelInference:
                 data_dir=self.test_dir, tracking_dir=self.tracking_dir,
                 registered_model="target_1_ridge", model_version=1,
             )
-            prediction = inference.data_builder.get_data_splits()["prediction"]
+            prediction = inference.data_builder.get_data_splits()
         current_season.assert_called_once_with(roster=True)
         assert inference.data_builder.split_years.prediction_season == 2025
         assert inference.config == {
             **legacy_config, "split": {**legacy_config["split"], "prediction_season": 2025},
         }
         assert "prediction_season" not in legacy_config
-        assert prediction["identity"]["target_season"].tolist() == [2025, 2025]
+        assert prediction["identity_pred"]["target_season"].tolist() == [2025, 2025]
         assert "temporarily using current roster season 2025" in caplog.text
 
     def test_predict__reuses_the_cached_prediction_split(self):
