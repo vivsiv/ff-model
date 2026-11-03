@@ -520,7 +520,8 @@ class GoldSetBuilder:
         )
         return self._join_draft_features(gold_df, draft_features_df)
 
-    #TODO: should this move to common code in the data quality checks?
+    # TODO: move reusable checks to common data-quality code; make each check its
+    # own function so validate_data is a series of validation function calls.
     @staticmethod
     def validate_data(
         gold_df: pd.DataFrame,
@@ -541,9 +542,9 @@ class GoldSetBuilder:
         identity_columns = get_identity_columns("nflverse", "player_stats") + ["target_season"]
         non_feature_columns = identity_columns + [TARGET_COL]
         feature_cols = [col for col in gold_df.columns if col not in non_feature_columns]
-        non_numeric = [col for col in feature_cols if not pd.api.types.is_numeric_dtype(gold_df[col])]
-        if non_numeric:
-            raise ValueError(f"Gold features must be numeric, got non-numeric: {non_numeric}")
+        non_numeric_feature_cols = [col for col in feature_cols if not pd.api.types.is_numeric_dtype(gold_df[col])]
+        if non_numeric_feature_cols:
+            raise ValueError(f"Gold features must be numeric, got non-numeric: {non_numeric_feature_cols}")
         if gold_df.duplicated(["player_id", "season"]).any():
             raise ValueError("More than one row for some (player_id, season) in gold data")
         if gold_df["target_season"].isna().any() or (gold_df["target_season"] > current_season).any():
@@ -622,6 +623,8 @@ class GoldSetBuilder:
 
         return latest_df.reset_index(drop=True)
 
+    # TODO: consider moving silver-table loading (here and the load_*_features
+    # methods) to the source processor, analogous to gold's load_gold_set helper.
     def load_current_players(self) -> pd.DataFrame:
         """
         Loads the `ff_rankings` silver table: the fantasy viable players for the current

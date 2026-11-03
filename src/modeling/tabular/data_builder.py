@@ -1,6 +1,6 @@
 import pandas as pd
 
-from src.modeling.data_builder import EVAL_SPLIT, TEST_SPLIT, TRAIN_SPLIT, ModelDataBuilder, SplitYears
+from src.modeling.data_builder import PREDICTION_SPLIT, EVAL_SPLIT, TEST_SPLIT, TRAIN_SPLIT, ModelDataBuilder, SplitYears
 from src.processing.gold import TARGET_COL, load_gold_set
 
 
@@ -10,18 +10,19 @@ class TabularModelDataBuilder(ModelDataBuilder):
     See ModelDataBuilder for the shared config schema.
     """
 
-    def _build_data_splits(self) -> dict[str, pd.DataFrame]:
-        """Build train/eval/test datasets from the gold source table.
+    def _build_data_splits(self) -> dict[str, pd.DataFrame | dict[str, pd.DataFrame]]:
+        """Build train/eval/test/prediction datasets from one load of the gold table.
 
         Returns:
             X_train/X_eval/X_test, y_train/y_eval/y_test,
-            identity_train/identity_eval/identity_test, and sample_weight_train.
+            identity_train/identity_eval/identity_test, sample_weight_train, and
+            prediction (a dict of row-aligned identity/features frames with no targets).
             Always builds fresh data; use get_data_splits() for cached access.
 
         Raises:
             ValueError: If requested split seasons exceed the distinct seasons available.
         """
-        self.source_data = load_gold_set(self.gold_data_dir, self.target, self.prediction_season)
+        self.source_data = load_gold_set(self.gold_data_dir, self.target, self.split_years.prediction_season)
 
         data = self.source_data
         if self.positions:
@@ -40,21 +41,6 @@ class TabularModelDataBuilder(ModelDataBuilder):
             sample_weights=self._compute_sample_weights(target_df),
         )
 
-    def build_prediction_data(self) -> dict[str, pd.DataFrame]:
-        """Build live prediction data as row-aligned identity and features DataFrames."""
-        data = load_gold_set(self.gold_data_dir, self.target, self.prediction_season)
-        data = data[data["target_season"] == self.prediction_season]
-
-        if self.positions:
-            data = self._filter_positions(data, self.positions)
-
-        feature_cols = self._resolve_feature_columns(data.columns)
-
-        return {
-            "identity": data[self.identity_cols],
-            "features": data[feature_cols],
-        }
-
     @staticmethod
     def split(
         split_years: SplitYears,
@@ -63,8 +49,8 @@ class TabularModelDataBuilder(ModelDataBuilder):
         target_df: pd.Series,
         identity_df: pd.DataFrame,
         sample_weights: pd.Series,
-    ) -> dict[str, pd.DataFrame]:
-        """Slice aligned tabular inputs into chronological train/eval/test splits.
+    ) -> dict[str, pd.DataFrame | dict[str, pd.DataFrame]]:
+        """Slice aligned tabular inputs into train/eval/test/prediction splits.
 
         See SplitYears.to_masks for season allocation. Sample weights are returned
         only for training rows.
@@ -83,4 +69,8 @@ class TabularModelDataBuilder(ModelDataBuilder):
             "identity_eval": identity_df[is_eval],
             "identity_test": identity_df[is_test],
             "sample_weight_train": sample_weights[is_train],
+            PREDICTION_SPLIT: {
+                "identity": identity_df[masks[PREDICTION_SPLIT]],
+                "features": features_df[masks[PREDICTION_SPLIT]],
+            },
         }

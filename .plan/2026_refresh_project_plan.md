@@ -88,3 +88,4 @@ PHASE 5. Sequential Model [IN PROGRESS]
 4. Build an lstm model and evaluate it
 5. Implement per batch padding instead of global padding.
 6. Build a trasformer model or finetune an existing one and evaluate it
+7. Fix data integration tests, preferably with a golden set and make them run with prs.

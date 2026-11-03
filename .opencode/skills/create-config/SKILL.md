@@ -17,7 +17,7 @@ Translate the user's description into one or more valid YAML files for the proje
 ## Current schema details
 
 - `target` is required. `positions` is an optional list; omitting it or providing an empty list keeps all positions.
-- `prediction_season` optionally selects a year-specific combined gold table. Omit it unless requested; the builder defaults to the current roster season and records the resolved year in the saved model config. Historical rows alone determine chronological split boundaries.
+- `split.prediction_season` optionally selects a year-specific combined gold table. Omit it unless requested; the builder defaults to the current roster season and records the resolved year in the saved split config. Historical rows alone determine chronological split boundaries.
 - `split` can contain `eval_data_years`, `test_data_years`, and `num_training_seasons`. The current defaults are 1, 1, and no limit, respectively. The split uses `target_season` chronologically.
 - `sample_weights` can contain `global_weight` or `buckets` of `{min, weight}`. Currently omitted/empty buckets use global weight 1.0 unless specified; nonempty buckets determine the weight and rows below the smallest `min` get zero weight. Clarify ambiguous bucket boundaries rather than guessing.
 - `features` takes `mode: include` or `mode: exclude` and a `columns` list. The implementation supports `*` at the beginning, end, or both ends for matching; it is not a general glob. Quote YAML values that begin with `*`. If omitted, the code uses all non-identity, non-target candidate columns.

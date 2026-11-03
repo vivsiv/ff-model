@@ -18,7 +18,7 @@ class TestSplitYears:
 
     def test_from_config__uses_explicit_snapshot_year_without_resolving_current_year(self):
         with patch("src.modeling.data_builder.get_current_season") as current_season:
-            split_years = SplitYears.from_config({"test_data_years": 2}, prediction_season=2025)
+            split_years = SplitYears.from_config({"test_data_years": 2, "prediction_season": 2025})
         current_season.assert_not_called()
         assert split_years.prediction_season == 2025
         assert split_years.test_data_years == 2
@@ -40,6 +40,7 @@ class TestSplitYearsToMasks:
         assert masks["train"].tolist() == [True, True, True, False, False, False, False]
         assert masks["eval"].tolist() == [False, False, False, True, False, False, False]
         assert masks["test"].tolist() == [False, False, False, False, True, False, False]
+        assert masks["prediction"].tolist() == [False, False, False, False, False, True, False]
         for mask in masks.values():
             pd.testing.assert_index_equal(mask.index, seasons.index)
 
@@ -51,14 +52,15 @@ class TestSplitYearsToMasks:
     def test_to_masks__no_historical_seasons_produces_empty_scored_masks(self):
         seasons = pd.Series([2025, 2026, np.nan])
         masks = SplitYears(prediction_season=2025).to_masks(seasons)
-        assert all(not mask.any() for mask in masks.values())
+        assert all(not masks[split].any() for split in ["train", "eval", "test"])
+        assert masks["prediction"].tolist() == [True, False, False]
 
     def test_to_masks__partitions_seasons_chronologically(self):
         target_season = pd.Series([2019, 2020, 2021, 2022, 2023, 2024])
 
         masks = SplitYears(eval_data_years=1, test_data_years=2).to_masks(target_season)
 
-        assert list(masks) == ["train", "eval", "test"]
+        assert list(masks) == ["train", "eval", "test", "prediction"]
         assert masks["test"].tolist() == [False, False, False, False, True, True]
         assert masks["eval"].tolist() == [False, False, False, True, False, False]
         assert masks["train"].tolist() == [True, True, True, False, False, False]
@@ -84,7 +86,7 @@ class TestSplitYearsToMasks:
 
         masks = SplitYears().to_masks(target_season)
 
-        assert [mask[3] for mask in masks.values()] == [False, False, False]
+        assert [mask[3] for mask in masks.values()] == [False, False, False, False]
         assert masks["test"].tolist() == [False, False, True, False]
 
     def test_to_masks__masks_are_disjoint(self):

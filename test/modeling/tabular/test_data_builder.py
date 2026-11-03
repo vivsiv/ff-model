@@ -82,7 +82,7 @@ class TestTabularModelDataBuilder:
         shutil.rmtree(cls.test_dir)
 
     def test_init__sets_base_fields_correctly(self):
-        builder = TabularModelDataBuilder(data_dir=self.test_dir, config={"target": "target_1", "prediction_season": 2025})
+        builder = TabularModelDataBuilder(data_dir=self.test_dir, config={"target": "target_1", "split": {"prediction_season": 2025}})
         assert builder.target == "target_1"
         assert builder.positions is None
 
@@ -90,9 +90,9 @@ class TestTabularModelDataBuilder:
         config_path = os.path.join(self.test_dir, "target_1.yaml")
         with open(config_path, "w") as f:
             yaml.safe_dump({
-                "target": "target_1", "prediction_season": 2025,
+                "target": "target_1",
                 "features": {"mode": "include", "columns": ["f1"]},
-                "split": {"eval_data_years": 1, "test_data_years": 1},
+                "split": {"prediction_season": 2025, "eval_data_years": 1, "test_data_years": 1},
             }, f)
 
         builder = TabularModelDataBuilder.from_config_file(data_dir=self.test_dir, config_path=config_path)
@@ -103,7 +103,7 @@ class TestTabularModelDataBuilder:
 
     def test_get_data_splits__builds_lazily_then_reuses_cache(self):
         with patch("src.modeling.tabular.data_builder.load_gold_set", wraps=load_gold_set) as load:
-            builder = TabularModelDataBuilder(self.test_dir, {"target": "target_1", "prediction_season": 2025})
+            builder = TabularModelDataBuilder(self.test_dir, {"target": "target_1", "split": {"prediction_season": 2025}})
             load.assert_not_called()
             assert not hasattr(builder, "source_data")
 
@@ -120,7 +120,7 @@ class TestTabularModelDataBuilder:
         source = _build_training_data()
         source_path = gold_dir / "target_1__2025.csv"
         source.to_csv(source_path, index=False)
-        builder = TabularModelDataBuilder(str(tmp_path), {"target": "target_1", "prediction_season": 2025})
+        builder = TabularModelDataBuilder(str(tmp_path), {"target": "target_1", "split": {"prediction_season": 2025}})
 
         first = builder.get_data_splits()
 
@@ -137,24 +137,25 @@ class TestTabularModelDataBuilder:
             pd.testing.assert_series_equal(refreshed[f"y_{split}"], first[f"y_{split}"] + 100)
 
     def test_build_data_splits__loads_gold_data_correctly(self):
-        builder = TabularModelDataBuilder(self.test_dir, {"target": "target_1", "prediction_season": 2025})
+        builder = TabularModelDataBuilder(self.test_dir, {"target": "target_1", "split": {"prediction_season": 2025}})
         builder._build_data_splits()
         assert len(builder.source_data) == 14
 
     def test_build_data_splits__returns_the_train_eval_test_split(self):
         # _build_data_splits() calls split() itself and returns the result, so consumers
         # (TabularModelTrainer, TabularModelInference) don't need to call .split() themselves.
-        builder = TabularModelDataBuilder(data_dir=self.test_dir, config={"target": "target_1", "prediction_season": 2025})
+        builder = TabularModelDataBuilder(data_dir=self.test_dir, config={"target": "target_1", "split": {"prediction_season": 2025}})
         data = builder._build_data_splits()
         assert set(data.keys()) == {
             "X_train", "X_eval", "X_test",
             "y_train", "y_eval", "y_test",
             "identity_train", "identity_eval", "identity_test",
             "sample_weight_train",
+            "prediction",
         }
 
     def test_build_data_splits__applies_position_filter_without_changing_source(self):
-        builder = TabularModelDataBuilder(self.test_dir, {"target": "target_1", "prediction_season": 2025, "positions": ["RB"]})
+        builder = TabularModelDataBuilder(self.test_dir, {"target": "target_1", "split": {"prediction_season": 2025}, "positions": ["RB"]})
         splits = builder._build_data_splits()
 
         for split in ["train", "eval", "test"]:
@@ -207,7 +208,10 @@ class TestTabularModelDataBuilder:
         ),
     ])
     def test_build_data_splits__assigns_seasons_and_targets_chronologically(self, config, expected_seasons, expected_targets):
-        builder = TabularModelDataBuilder(self.test_dir, {"target": "target_1", "prediction_season": 2025, **config})
+        builder = TabularModelDataBuilder(self.test_dir, {
+            "target": "target_1", **config,
+            "split": {"prediction_season": 2025, **config.get("split", {})},
+        })
         data = builder._build_data_splits()
 
         for split, seasons, targets in zip(["train", "eval", "test"], expected_seasons, expected_targets):
@@ -216,8 +220,8 @@ class TestTabularModelDataBuilder:
 
     def test_build_data_splits__raises_if_requested_seasons_exceed_available_seasons(self):
         builder = TabularModelDataBuilder(self.test_dir, {
-            "target": "target_1", "prediction_season": 2025,
-            "split": {"eval_data_years": 1, "test_data_years": 1, "num_training_seasons": 4},
+            "target": "target_1",
+            "split": {"prediction_season": 2025, "eval_data_years": 1, "test_data_years": 1, "num_training_seasons": 4},
         })
         with pytest.raises(ValueError):
             builder._build_data_splits()
@@ -246,38 +250,69 @@ class TestTabularModelDataBuilder:
         ),
     ])
     def test_build_data_splits__applies_sample_weights_only_to_training(self, config, expected_weights):
-        builder = TabularModelDataBuilder(self.test_dir, {"target": "target_1", "prediction_season": 2025, **config})
+        builder = TabularModelDataBuilder(self.test_dir, {
+            "target": "target_1", **config,
+            "split": {"prediction_season": 2025, **config.get("split", {})},
+        })
         data = builder._build_data_splits()
 
         assert data["sample_weight_train"].tolist() == pytest.approx(expected_weights)
         assert "sample_weight_eval" not in data
         assert "sample_weight_test" not in data
 
-    def test_build_prediction_data__splits_into_identity_and_resolved_feature_columns(self):
+    def test_build_data_splits__prediction_has_identity_and_resolved_features(self):
         builder = TabularModelDataBuilder(self.test_dir, {
-            "target": "target_1", "prediction_season": 2025,
+            "target": "target_1", "split": {"prediction_season": 2025},
             "features": {"mode": "exclude", "columns": ["f2"]},
         })
-        prediction_set = builder.build_prediction_data()
+        prediction_set = builder.get_data_splits()["prediction"]
 
         assert list(prediction_set["features"].columns) == ["f1", "receiving_yards"]
         assert list(prediction_set["features"]["f1"]) == [11, 12, 13, 14]
         assert set(prediction_set["identity"]["position"]) == {"QB", "RB", "WR", "TE"}
 
-    def test_build_prediction_data__respects_position_filtering(self):
-        builder = TabularModelDataBuilder(self.test_dir, {"target": "target_1", "prediction_season": 2025, "positions": ["RB"]})
-        prediction_set = builder.build_prediction_data()
+    def test_build_data_splits__prediction_respects_position_filtering(self):
+        builder = TabularModelDataBuilder(self.test_dir, {"target": "target_1", "split": {"prediction_season": 2025}, "positions": ["RB"]})
+        prediction_set = builder.get_data_splits()["prediction"]
 
         assert set(prediction_set["identity"]["position"]) == {"RB"}
         assert list(prediction_set["features"]["f1"]) == [12]
 
-    def test_build_prediction_data__works_without_training_data(self):
+    def test_build_data_splits__prediction_only_table_has_empty_scored_splits(self):
         # A combined gold table may contain only prediction rows.
         _build_prediction_data().to_csv(os.path.join(self.gold_dir, "target_predict_only__2025.csv"), index=False)
 
-        builder = TabularModelDataBuilder(data_dir=self.test_dir, config={"target": "target_predict_only", "prediction_season": 2025})
-        prediction_set = builder.build_prediction_data()
+        builder = TabularModelDataBuilder(data_dir=self.test_dir, config={"target": "target_predict_only", "split": {"prediction_season": 2025}})
+        splits = builder.get_data_splits()
+        prediction_set = splits["prediction"]
 
-        assert not hasattr(builder, "source_data")
+        assert all(splits[f"X_{split}"].empty for split in ["train", "eval", "test"])
         assert len(prediction_set["identity"]) == 4
         assert list(prediction_set["features"].columns) == ["f1", "f2", "receiving_yards"]
+
+    def test_prediction_split__backtest_excludes_targets_and_future_rows(self):
+        source = self.gold_data.copy(deep=True)
+        original = source.copy(deep=True)
+        builder = TabularModelDataBuilder(self.test_dir, {
+            "target": "target_1", "split": {"prediction_season": 2023},
+        })
+        with patch("src.modeling.tabular.data_builder.load_gold_set", return_value=source):
+            splits = builder.get_data_splits()
+
+        prediction = splits["prediction"]
+        assert prediction["identity"]["target_season"].tolist() == [2023, 2023]
+        assert prediction["features"]["f1"].tolist() == [7, 8]
+        assert set(prediction) == {"identity", "features"}
+        assert "target" not in prediction["features"]
+        assert set(splits["identity_test"]["target_season"]) == {2022}
+        assert set(splits["identity_eval"]["target_season"]) == {2021}
+        pd.testing.assert_frame_equal(source, original)
+
+    def test_prediction_split__is_cached_with_other_splits_after_one_gold_load(self):
+        builder = TabularModelDataBuilder(self.test_dir, {
+            "target": "target_1", "split": {"prediction_season": 2025},
+        })
+        with patch("src.modeling.tabular.data_builder.load_gold_set", wraps=load_gold_set) as load:
+            first = builder.get_data_splits()
+            assert builder.get_data_splits()["prediction"] is first["prediction"]
+            load.assert_called_once()

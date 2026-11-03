@@ -483,8 +483,9 @@ discussion) — a good overall score could still mask poor performance there.
   players' historical rows and end at their prediction row.
 - Model configs support `prediction_season`, defaulting to the current roster year
   and recording the resolved value in the existing MLflow config artifact. Registered
-  model names are unchanged. Registry configs without a pinned year fail clearly;
-  legacy pipelines can be wrapped with an explicitly season-pinned data builder.
+   model names are unchanged. Registry configs without a pinned year temporarily
+   default to the current roster season with a warning. Selection of retained models
+   and migration to explicitly pinned seasons are deferred to artifact cleanup.
 - Generated real `fantasy_points_ppr__2026.csv` and `ppr_points_per_game__2026.csv`
   from the existing silver snapshot without refreshing upstream sources. Each has
   11,372 rows x 943 columns: 11,152 historical rows (targets 2000–2025) and 220
@@ -500,4 +501,55 @@ discussion) — a good overall score could still mask poor performance there.
   targeting 2026. No model training was performed.
 - SHA-256 hashes confirm all five silver inputs and four legacy gold CSVs were
   preserved. Saved model artifacts were not migrated. Default suite: 311 passed,
-  4 integration tests deselected. CLI help and `git diff --check` verified.
+   4 integration tests deselected. CLI help and `git diff --check` verified.
+
+## PR #45 comment follow-up (2026-11-02)
+
+Comments reviewed on PR head `252d41fe8913117804492c5c96031b42aca6c1bf`.
+Existing staged changes, including temporary legacy-model fallback, were preserved.
+
+### Applied changes
+
+- Added a `prediction` mask to `SplitYears.to_masks`. Both data builders now create
+  prediction data inside `_build_data_splits`, using the same masks, gold load, and
+  cache as the scored splits. Tabular prediction is an identity/features dict;
+  sequence prediction is a `SequenceDataset` with zero targets and a false loss mask.
+- Prediction sequences are trimmed at their selected prediction step, so later gold
+  rows do not leak into backtests. Known targets remain intact in source data but
+  are neither returned as tabular prediction targets nor exposed in prediction tensors.
+- Moved the canonical config field to `split.prediction_season` and removed the
+  extra `SplitYears.from_config` parameter and `ModelDataBuilder.prediction_season`
+  property. Configs use the nested field only; unused top-level compatibility handling
+  was removed on 2026-11-03, along with its tests, and all fixtures were updated.
+- Renamed `non_numeric` to `non_numeric_feature_cols` in gold validation and added
+  the requested TODOs for composable validation functions and silver-loader ownership.
+- Fixed an empty-training-split edge case exposed by the backtest test: sample
+  weights are aligned to retained row indices so assigning them cannot create
+  phantom rows in an empty sequence split.
+
+### Verification
+
+- `uv run --no-sync pytest -m ""`: 319 passed, including all four real-data integration
+  checks. `git diff --check` passed.
+- Real tabular/sequence data preparation retains the previous scored split counts
+  (4,509 train, 471 eval, 486 test) and returns 220 cached prediction rows/sequences.
+  Prediction sequence targets are all zero and no prediction step contributes to loss.
+- No real data or saved model artifacts were rebuilt or migrated in this follow-up.
+  No GitHub comments were posted and no review threads were resolved.
+
+### Questions to discuss together
+
+1. **Backtest source selection:** should an independent gold snapshot year/path allow
+   `split.prediction_season=2024` against the existing 2026 gold file, or should
+   backtests require separately named historical gold snapshots? Target masking and
+   future-step trimming are implemented, but the filename is still selected using
+   the prediction year. Historical labeled rows also represent a different player
+   pool from a true archived preseason roster. [Related comment](https://github.com/vivsiv/ff-model/pull/45#discussion_r4447782689).
+2. **Validation ownership:** should structural checks live in a shared processing
+   validation module and be reused by analysis, or remain gold-owned? Splitting each
+   check into a function is recorded as requested; analysis's snapshot-specific
+   assertions remain separate. [Related TODO comment](https://github.com/vivsiv/ff-model/pull/45#discussion_r4447885755).
+3. **Silver-loader ownership:** should loading silver tables belong to the source
+   processor class or standalone source-specific loader helpers? Feature engineering
+   should remain in gold regardless. The requested TODO is in `load_current_players`.
+   [Related comment](https://github.com/vivsiv/ff-model/pull/45#discussion_r4447932578).

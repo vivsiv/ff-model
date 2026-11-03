@@ -53,7 +53,7 @@ class TestTabularModelTrainer:
         })
         training_data.to_csv(os.path.join(cls.gold_dir, "target_1__2025.csv"), index=False)
 
-        cls.data_builder = TabularModelDataBuilder(data_dir=cls.test_dir, config={"target": "target_1", "prediction_season": 2025})
+        cls.data_builder = TabularModelDataBuilder(data_dir=cls.test_dir, config={"target": "target_1", "split": {"prediction_season": 2025}})
         cls.model = TabularModelTrainer(
             data_dir=cls.test_dir, tracking_dir=cls.tracking_dir, data_builder=cls.data_builder, model_type="ridge"
         )
@@ -88,6 +88,7 @@ class TestTabularModelTrainer:
             "y_train", "y_eval", "y_test",
             "identity_train", "identity_eval", "identity_test",
             "sample_weight_train",
+            "prediction",
         }
         assert set(self.model.data["identity_test"]["target_season"]) == {2024}
 
@@ -95,7 +96,7 @@ class TestTabularModelTrainer:
         assert self.model.base_model_name == "target_1"
 
     def test_base_model_name__includes_single_lowercased_position_when_data_builder_has_one(self):
-        data_builder = TabularModelDataBuilder(data_dir=self.test_dir, config={"target": "target_1", "prediction_season": 2025, "positions": ["RB"]})
+        data_builder = TabularModelDataBuilder(data_dir=self.test_dir, config={"target": "target_1", "split": {"prediction_season": 2025}, "positions": ["RB"]})
         model = TabularModelTrainer(
             data_dir=self.test_dir, tracking_dir=self.tracking_dir, data_builder=data_builder, model_type="ridge"
         )
@@ -104,7 +105,7 @@ class TestTabularModelTrainer:
 
     def test_base_model_name__sorts_multiple_lowercased_positions_regardless_of_config_order(self):
         data_builder = TabularModelDataBuilder(
-            data_dir=self.test_dir, config={"target": "target_1", "prediction_season": 2025, "positions": ["WR", "RB"]}
+            data_dir=self.test_dir, config={"target": "target_1", "split": {"prediction_season": 2025}, "positions": ["WR", "RB"]}
         )
         model = TabularModelTrainer(
             data_dir=self.test_dir, tracking_dir=self.tracking_dir, data_builder=data_builder, model_type="ridge"
@@ -117,7 +118,7 @@ class TestTabularModelTrainer:
 
         logged_config = mlflow.artifacts.load_dict(f"runs:/{run_id}/data_prep_config.json")
         assert logged_config == self.data_builder.config
-        assert logged_config["prediction_season"] == 2025
+        assert logged_config["split"]["prediction_season"] == 2025
         assert self._experiment_name_for_run(run_id) == "target_1_tabular"
 
     def test_setup_mlflow__tags_the_run_with_model_type_and_phase_train(self):
@@ -128,7 +129,7 @@ class TestTabularModelTrainer:
         assert tags["phase"] == "train"
 
     def test_setup_mlflow__uses_position_specific_experiment_name_when_data_builder_has_one(self):
-        data_builder = TabularModelDataBuilder(data_dir=self.test_dir, config={"target": "target_1", "prediction_season": 2025, "positions": ["RB"]})
+        data_builder = TabularModelDataBuilder(data_dir=self.test_dir, config={"target": "target_1", "split": {"prediction_season": 2025}, "positions": ["RB"]})
         model = TabularModelTrainer(
             data_dir=self.test_dir, tracking_dir=self.tracking_dir, data_builder=data_builder, model_type="ridge"
         )
@@ -139,7 +140,7 @@ class TestTabularModelTrainer:
 
     def test_setup_mlflow__sorts_multiple_positions_regardless_of_config_order(self):
         data_builder = TabularModelDataBuilder(
-            data_dir=self.test_dir, config={"target": "target_1", "prediction_season": 2025, "positions": ["WR", "RB"]}
+            data_dir=self.test_dir, config={"target": "target_1", "split": {"prediction_season": 2025}, "positions": ["WR", "RB"]}
         )
         model = TabularModelTrainer(
             data_dir=self.test_dir, tracking_dir=self.tracking_dir, data_builder=data_builder, model_type="ridge"
@@ -169,7 +170,7 @@ class TestTabularModelTrainer:
         })
         training_data.to_csv(os.path.join(self.gold_dir, "target_4__2025.csv"), index=False)
 
-        data_builder = TabularModelDataBuilder(data_dir=self.test_dir, config={"target": "target_4", "prediction_season": 2025, "positions": ["RB"]})
+        data_builder = TabularModelDataBuilder(data_dir=self.test_dir, config={"target": "target_4", "split": {"prediction_season": 2025}, "positions": ["RB"]})
         model = TabularModelTrainer(
             data_dir=self.test_dir, tracking_dir=self.tracking_dir, data_builder=data_builder, model_type="ridge"
         )

@@ -11,41 +11,42 @@ class _ConcreteDataBuilder(ModelDataBuilder):
     def _build_data_splits(self):
         return {}
 
-    def build_prediction_data(self):
-        return {}
 
-
-class _SplitsOnlyDataBuilder(ModelDataBuilder):
-    def _build_data_splits(self):
-        return {}
-
-
-class _PredictionOnlyDataBuilder(ModelDataBuilder):
-    def build_prediction_data(self):
-        return {}
+class _MissingSplitsDataBuilder(ModelDataBuilder):
+    pass
 
 
 class TestModelDataBuilder:
+    def test_init__reads_prediction_season_from_split_without_mutating_input(self):
+        config = {"target": "ppr_points_per_game", "split": {"prediction_season": 2025, "test_data_years": 2}}
+        with patch("src.modeling.data_builder.get_current_season") as current_season:
+            builder = _ConcreteDataBuilder("data", config)
+        current_season.assert_not_called()
+        assert builder.split_years.prediction_season == 2025
+        assert builder.split_years.test_data_years == 2
+        assert not hasattr(builder, "prediction_season")
+        assert builder.config == config
+        assert builder.config["split"] is not config["split"]
+
     def test_init__resolves_current_season_into_config_without_mutating_input(self):
         config = {"target": "ppr_points_per_game"}
         with patch("src.modeling.data_builder.get_current_season", return_value=2026) as current_season:
             builder = _ConcreteDataBuilder("data", config)
         current_season.assert_called_once_with(roster=True)
-        assert builder.prediction_season == 2026
         assert builder.split_years.prediction_season == 2026
         assert "prediction_season" not in builder.__dict__
-        assert builder.config["prediction_season"] == 2026
+        assert builder.config["split"]["prediction_season"] == 2026
         assert config == {"target": "ppr_points_per_game"}
 
         with patch("src.modeling.data_builder.get_current_season", return_value=2027) as current_season:
             restored = _ConcreteDataBuilder("data", builder.config)
         current_season.assert_not_called()
-        assert restored.prediction_season == 2026
+        assert restored.split_years.prediction_season == 2026
 
     @pytest.mark.parametrize("year", [True, "2026", 2026.5])
     def test_init__rejects_non_integer_prediction_seasons(self, year):
         with pytest.raises(ValueError, match="integer year"):
-            _ConcreteDataBuilder("data", {"target": "ppr_points_per_game", "prediction_season": year})
+            _ConcreteDataBuilder("data", {"target": "ppr_points_per_game", "split": {"prediction_season": year}})
 
     @pytest.mark.parametrize("recompute", [
         pytest.param(False, id="default-first-build"),
@@ -104,9 +105,8 @@ class TestModelDataBuilder:
             build.assert_called_once_with()
 
     @pytest.mark.parametrize("builder_cls, missing_methods", [
-        pytest.param(ModelDataBuilder, {"_build_data_splits", "build_prediction_data"}, id="missing-both-methods"),
-        pytest.param(_SplitsOnlyDataBuilder, {"build_prediction_data"}, id="missing-prediction-method"),
-        pytest.param(_PredictionOnlyDataBuilder, {"_build_data_splits"}, id="missing-splits-method"),
+        pytest.param(ModelDataBuilder, {"_build_data_splits"}, id="base-class"),
+        pytest.param(_MissingSplitsDataBuilder, {"_build_data_splits"}, id="missing-splits-method"),
     ])
     def test_abstract_methods__requires_both_build_methods(self, builder_cls, missing_methods):
         assert builder_cls.__abstractmethods__ == missing_methods
@@ -147,7 +147,8 @@ class TestModelDataBuilder:
 
         assert type(builder) is _ConcreteDataBuilder
         assert builder.config == {
-            "target": "ppr_points_per_game", "positions": ["RB"], "prediction_season": builder.prediction_season,
+            "target": "ppr_points_per_game", "positions": ["RB"],
+            "split": {"prediction_season": builder.split_years.prediction_season},
         }
         assert not hasattr(builder, "source_data")
 

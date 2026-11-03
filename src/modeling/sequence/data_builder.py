@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import torch
 
-from src.modeling.data_builder import TRAIN_SPLIT, ModelDataBuilder
+from src.modeling.data_builder import PREDICTION_SPLIT, TRAIN_SPLIT, ModelDataBuilder
 from src.processing.gold import TARGET_COL, load_gold_set
 
 logger = logging.getLogger(__name__)
@@ -25,7 +25,7 @@ SAMPLE_WEIGHT_COL = "_sample_weight"
 @dataclass
 class SequenceDataset:
     """
-    A sequential dataset for a split (train, eval, or test).
+    A sequential dataset for a split (train, eval, test, or prediction).
 
     Each tabular row (player, season, target_season, target) becomes one step in a player's sequence, steps are ordered by season.
     The target is the player's target value for a step's target_season (the player's next active season).
@@ -123,14 +123,17 @@ class SequenceModelDataBuilder(ModelDataBuilder):
         - Players with no loss steps in a split are left out of it.
 
         Returns:
-            dict with "train", "eval", "test" SequenceDatasets (y/loss_mask set, sample_weight on "train" only).
+            dict with "train", "eval", "test", "prediction" SequenceDatasets.
+            Prediction holds each selected player's history through their prediction step,
+            with y zeroed and loss_mask false even if gold contains known targets.
+            Sample weights are set on "train" only.
             Always builds fresh data; use get_data_splits() for cached access.
 
         Raises:
             ValueError: If split config's num_training_seasons + eval_data_years + test_data_years exceeds
                 the total number of distinct seasons available.
         """
-        self.source_data = load_gold_set(self.gold_data_dir, self.target, self.prediction_season)
+        self.source_data = load_gold_set(self.gold_data_dir, self.target, self.split_years.prediction_season)
 
         data = self.source_data
         if self.positions:
@@ -145,10 +148,14 @@ class SequenceModelDataBuilder(ModelDataBuilder):
 
         datasets = {}
         for split, split_mask in split_masks.items():
-            split_data = data.assign(**{LOSS_STEP_COL: split_mask & is_labeled})
+            # Prediction steps select input histories but never contribute to loss.
+            selected_steps = split_mask if split == PREDICTION_SPLIT else split_mask & is_labeled
+            split_data = data.assign(**{LOSS_STEP_COL: selected_steps})
             split_data = split_data[self._get_input_rows_mask(split_data)]
-            if split == TRAIN_SPLIT:
-                split_data[SAMPLE_WEIGHT_COL] = sample_weights
+            if split == PREDICTION_SPLIT:
+                split_data = split_data.assign(**{LOSS_STEP_COL: False, TARGET_COL: 0.0})
+            elif split == TRAIN_SPLIT:
+                split_data[SAMPLE_WEIGHT_COL] = sample_weights.reindex(split_data.index)
 
             datasets[split] = self._build_sequence_dataset(split_data, feature_cols)
             logger.info(
@@ -157,28 +164,6 @@ class SequenceModelDataBuilder(ModelDataBuilder):
             )
 
         return datasets
-
-    def build_prediction_data(self) -> SequenceDataset:
-        """
-        Builds prediction sequences from the combined gold table for players with
-        a row targeting prediction_season. Their historical rows remain input steps;
-        the prediction row is the last step used to generate the prediction.
-
-        Returns:
-            SequenceDataset (no y/loss_mask/sample_weight) with one sequence per player in the prediction set.
-            Use last_step_mask / last_step_identity() to pick out the predictions.
-
-        Gold tables are structurally validated before saving by GoldSetBuilder.validate_data.
-        """
-        data = load_gold_set(self.gold_data_dir, self.target, self.prediction_season)
-        if self.positions:
-            data = self._filter_positions(data, self.positions)
-        prediction_players = data.loc[data[TARGET_SEASON_COL] == self.prediction_season, PLAYER_COL]
-        data = data[data[PLAYER_COL].isin(prediction_players)]
-        feature_cols = self._resolve_feature_columns(data.columns)
-        data = self._order_by_step(data)
-
-        return self._build_sequence_dataset(data, feature_cols)
 
     @staticmethod
     def _order_by_step(data: pd.DataFrame) -> pd.DataFrame:
@@ -194,7 +179,8 @@ class SequenceModelDataBuilder(ModelDataBuilder):
     def _get_input_rows_mask(data: pd.DataFrame) -> pd.Series:
         """
         Finds the rows a split's dataset reads as input: each player's steps from their first season up to and
-        including their last loss step in the split.
+        including their last selected step in the split. For scored splits this is a loss step;
+        for prediction it is an input endpoint whose loss flag is cleared before packing.
 
         Args:
             data: Output of _order_by_step with a LOSS_STEP_COL column.

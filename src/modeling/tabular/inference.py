@@ -10,7 +10,7 @@ import mlflow
 from sklearn.metrics import mean_squared_error
 from sklearn.pipeline import Pipeline
 
-from src.modeling.data_builder import DATA_BUILDER_CONFIG_ARTIFACT_PATH, EVAL_SPLIT, TEST_SPLIT
+from src.modeling.data_builder import DATA_BUILDER_CONFIG_ARTIFACT_PATH, EVAL_SPLIT, TEST_SPLIT, PREDICTION_SPLIT
 from src.modeling.tabular.data_builder import TabularModelDataBuilder
 from src.modeling.utils import load_data_builder_config, load_mlflow_model, set_mlflow_tracking_uri, setup_mlflow_run
 
@@ -106,13 +106,14 @@ class TabularModelInference:
         pipeline, mv = load_mlflow_model(registered_model, model_version, tracking_dir)
         model_version, source_run_id = int(mv.version), mv.run_id
         config = load_data_builder_config(source_run_id)
-        if config.get("prediction_season") is None:
-            raise ValueError(
-                "The saved data-preparation config has no prediction_season. "
-                "This legacy model needs an explicitly season-pinned data builder; "
-                "use from_fit_pipeline with that builder rather than selecting the latest gold table."
-            )
         data_builder = TabularModelDataBuilder(data_dir=data_dir, config=config)
+        if config.get("split", {}).get("prediction_season") is None:
+            logger.warning(
+                "Legacy model %s v%s has no saved prediction_season; temporarily using "
+                "current roster season %s. Migrate retained models to an explicit season "
+                "during artifact cleanup.",
+                registered_model, model_version, data_builder.split_years.prediction_season,
+            )
 
         return cls(
             pipeline=pipeline,
@@ -376,7 +377,7 @@ class TabularModelInference:
         Returns:
             DataFrame of live predictions (see _predict()).
         """
-        prediction_set = self.data_builder.build_prediction_data()
+        prediction_set = self.data_builder.get_data_splits()[PREDICTION_SPLIT]
         X = self._select_pipeline_features(prediction_set["features"])
 
         return self._predict(

@@ -19,6 +19,7 @@ DATA_BUILDER_CONFIG_ARTIFACT_PATH = "data_prep_config.json"
 TRAIN_SPLIT = "train"
 EVAL_SPLIT = "eval"
 TEST_SPLIT = "test"
+PREDICTION_SPLIT = "prediction"
 
 
 @dataclass
@@ -34,10 +35,9 @@ class SplitYears:
             raise ValueError("prediction_season must be an integer year")
 
     @classmethod
-    def from_config(
-        cls, split_config: dict[str, Any], *, prediction_season: Optional[int] = None,
-    ) -> "SplitYears":
-        """Read split counts and the config's snapshot year, defaulting omitted fields."""
+    def from_config(cls, split_config: dict[str, Any]) -> "SplitYears":
+        """Read the split config, defaulting omitted fields."""
+        prediction_season = split_config.get("prediction_season")
         season_kwargs = {} if prediction_season is None else {"prediction_season": prediction_season}
         return cls(
             eval_data_years=split_config.get("eval_data_years", 1),
@@ -55,14 +55,15 @@ class SplitYears:
         optionally limited to the most recent num_training_seasons.
 
         Returns:
-            Boolean row masks keyed by "train", "eval", and "test", aligned with
-            target_season. Missing seasons, prediction_season, and later seasons
-            are in no scored split.
+            Boolean row masks keyed by "train", "eval", "test", and "prediction",
+            aligned with target_season. Prediction rows target prediction_season;
+            missing and later seasons are in no split. Prediction rows are never scored.
 
         Raises:
             ValueError: If requested season counts exceed the distinct seasons available.
         """
         is_historical = target_season < self.prediction_season
+        is_prediction = target_season == self.prediction_season
         historical_seasons = target_season[is_historical]
         if self.num_training_seasons is not None:
             total_seasons = historical_seasons.nunique()
@@ -88,7 +89,10 @@ class SplitYears:
             train_cutoff_season = eval_cutoff_season - self.num_training_seasons
             is_train = is_historical & (target_season >= train_cutoff_season) & (target_season < eval_cutoff_season)
 
-        return {TRAIN_SPLIT: is_train, EVAL_SPLIT: is_eval, TEST_SPLIT: is_test}
+        return {
+            TRAIN_SPLIT: is_train, EVAL_SPLIT: is_eval, TEST_SPLIT: is_test,
+            PREDICTION_SPLIT: is_prediction,
+        }
 
 
 # TODO: introduce a typed model-data config with centralized defaults, validation,
@@ -96,16 +100,16 @@ class SplitYears:
 class ModelDataBuilder(ABC):
     """Shared configuration and row-level helpers for tabular and sequence data builders.
 
-    Subclasses build their own train/eval/test splits and prediction datasets.
+    Subclasses build all four splits through _build_data_splits, including prediction.
 
     Config schema (see configs/*.yaml for real examples):
         target: <str> e.g. "ppr_points_per_game", "fantasy_points_ppr"
-        prediction_season: optional -- gold snapshot year. Defaults to the current
-            roster season and is resolved into the saved config so trained models
-            keep loading the same year after rollover.
         positions: optional -- list[str] of "position" values (e.g. ["RB"], ["WR", "TE"]) to
             restrict the data to. Omit entirely (or leave empty) to keep every position.
         split:
+            prediction_season: <int, default current roster year> -- gold snapshot
+                year and scoring cutoff. Resolved into the saved split config so
+                trained models keep loading the same year after rollover.
             eval_data_years: <int, default 1>
             test_data_years: <int, default 1>
             num_training_seasons: <int, default None -- keep every remaining older season>
@@ -126,20 +130,14 @@ class ModelDataBuilder(ABC):
         self.gold_data_dir = os.path.join(data_dir, "gold")
         self.config = dict(config)
         self.target = config["target"]
-        self.split_years = SplitYears.from_config(
-            config.get("split", {}), prediction_season=config.get("prediction_season"),
-        )
+        split_config = dict(config.get("split", {}))
+        self.split_years = SplitYears.from_config(split_config)
         # TODO: should go away with config class.
-        self.config["prediction_season"] = self.prediction_season
+        self.config["split"] = {**split_config, "prediction_season": self.split_years.prediction_season}
         self.positions = config.get("positions") or None
         # TODO: why does target_season need to be added here? Why cant it be in the registry?
         self.identity_cols = get_identity_columns("nflverse", "player_stats") + ["target_season"]
         self._data_splits: Optional[dict[str, Any]] = None
-
-    @property
-    def prediction_season(self) -> int:
-        """The gold snapshot year and scoring cutoff owned by SplitYears."""
-        return self.split_years.prediction_season
 
     @classmethod
     def from_config_file(cls, data_dir: str, config_path: str) -> Self:
@@ -161,12 +159,7 @@ class ModelDataBuilder(ABC):
 
     @abstractmethod
     def _build_data_splits(self) -> dict[str, Any]:
-        """Build fresh train/eval/test datasets in the subclass's model-specific format."""
-        raise NotImplementedError
-
-    @abstractmethod
-    def build_prediction_data(self) -> Any:
-        """Build prediction data in the subclass's model-specific format."""
+        """Build fresh train/eval/test/prediction datasets in model-specific format."""
         raise NotImplementedError
 
     @staticmethod

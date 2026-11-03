@@ -33,7 +33,7 @@ class _FakeDataBuilder:
 
     def __init__(self, target: str = "ppr"):
         self.target = target
-        self.config = {"target": target, "prediction_season": 2025}
+        self.config = {"target": target, "split": {"prediction_season": 2025}}
 
 
 def _build_training_data(feature_cols: dict[str, list]) -> pd.DataFrame:
@@ -68,7 +68,7 @@ def _train_and_register_ridge_model(
     Returns (pipeline, source_run_id)."""
     training_data.to_csv(os.path.join(gold_dir, f"{target}__2025.csv"), index=False)
 
-    data_builder = TabularModelDataBuilder(data_dir=os.path.dirname(gold_dir), config={"target": target, "prediction_season": 2025})
+    data_builder = TabularModelDataBuilder(data_dir=os.path.dirname(gold_dir), config={"target": target, "split": {"prediction_season": 2025}})
     model = TabularModelTrainer(
         data_dir=os.path.dirname(gold_dir), tracking_dir=tracking_dir, data_builder=data_builder, model_type="ridge"
     )
@@ -117,11 +117,12 @@ class TestTabularModelInference:
         # Simulate what tabular/trainer.py's CLI (main()) does when training+registering a
         # model: split (per a data prep config), fit, log the config + eval, all under one run.
         cls.config = {
-            "target": "target_1", "prediction_season": 2025,
+            "target": "target_1",
             "features": {"mode": "exclude", "columns": ["f3"]},
-            "split": {"eval_data_years": 1, "test_data_years": 1, "num_training_seasons": 2},
+            "split": {"prediction_season": 2025, "eval_data_years": 1, "test_data_years": 1, "num_training_seasons": 2},
         }
         cls.data_builder = TabularModelDataBuilder(data_dir=cls.test_dir, config=cls.config)
+        cls.config = cls.data_builder.config
         model = TabularModelTrainer(
             data_dir=cls.test_dir, tracking_dir=cls.tracking_dir, data_builder=cls.data_builder, model_type="ridge"
         )
@@ -173,7 +174,7 @@ class TestTabularModelInference:
 
     def test_predict__also_works_from_a_fit_pipeline_given_explicit_run_id_and_csv_path(self):
         # predict() only needs registry metadata to build run_id/csv_path defaults --
-        # build_prediction_data() itself has no dependency on the registry, so a
+        # Prediction split preparation has no dependency on the registry, so a
         # from_fit_pipeline instance can predict() too as long as both are passed explicitly.
         inference = TabularModelInference.from_fit_pipeline(self.pipeline, self.data_builder)
         run_id = setup_mlflow_run(
@@ -233,7 +234,7 @@ class TestTabularModelInference:
             training_data.to_csv(os.path.join(gold_dir, "target_3__2025.csv"), index=False)
 
             data_builder = TabularModelDataBuilder(
-                data_dir=test_dir, config={"target": "target_3", "prediction_season": 2025, "positions": ["RB"]}
+                data_dir=test_dir, config={"target": "target_3", "split": {"prediction_season": 2025}, "positions": ["RB"]}
             )
             model = TabularModelTrainer(
                 data_dir=test_dir, tracking_dir=tracking_dir, data_builder=data_builder, model_type="ridge"
@@ -397,7 +398,7 @@ class TestTabularModelInference:
             training_data.to_csv(os.path.join(gold_dir, "target_3__2025.csv"), index=False)
 
             data_builder = TabularModelDataBuilder(
-                data_dir=test_dir, config={"target": "target_3", "prediction_season": 2025, "positions": ["RB"]}
+                data_dir=test_dir, config={"target": "target_3", "split": {"prediction_season": 2025}, "positions": ["RB"]}
             )
             model = TabularModelTrainer(
                 data_dir=test_dir, tracking_dir=tracking_dir, data_builder=data_builder, model_type="ridge"
@@ -431,7 +432,7 @@ class TestTabularModelInference:
         csv_path = self.inference.build_predictions_csv_path(os.path.join(self.test_dir, "predictions"), self.inference.registered_model, self.inference.model_version, run_id)
         preds_df = self.inference.predict(run_id=run_id, csv_path=csv_path)
 
-        prediction_set = self.data_builder.build_prediction_data()
+        prediction_set = self.data_builder.get_data_splits()["prediction"]
         expected = pd.Series(
             self.pipeline.predict(prediction_set["features"][["f1", "f2"]]),
             index=prediction_set["features"].index,
@@ -481,7 +482,7 @@ class TestTabularModelInference:
             )
 
             data_builder = TabularModelDataBuilder(
-                data_dir=test_dir, config={"target": "target_3", "prediction_season": 2025, "positions": ["RB"]}
+                data_dir=test_dir, config={"target": "target_3", "split": {"prediction_season": 2025}, "positions": ["RB"]}
             )
             model = TabularModelTrainer(
                 data_dir=test_dir, tracking_dir=tracking_dir, data_builder=data_builder, model_type="ridge"
@@ -506,31 +507,48 @@ class TestTabularModelInference:
             inference = TabularModelInference.from_registry(
                 data_dir=self.test_dir, tracking_dir=self.tracking_dir, registered_model="target_1_ridge", model_version=1
             )
-            prediction = inference.data_builder.build_prediction_data()
+            prediction = inference.data_builder.get_data_splits()["prediction"]
         current_season.assert_not_called()
-        assert inference.data_builder.prediction_season == 2025
+        assert inference.data_builder.split_years.prediction_season == 2025
         assert prediction["identity"]["target_season"].tolist() == [2025, 2025]
 
-    def test_from_registry__rejects_legacy_config_without_a_pinned_season(self):
-        with patch("src.modeling.tabular.inference.load_data_builder_config", return_value={"target": "target_1"}):
-            with pytest.raises(ValueError, match="no prediction_season"):
-                TabularModelInference.from_registry(
-                    data_dir=self.test_dir, tracking_dir=self.tracking_dir,
-                    registered_model="target_1_ridge", model_version=1,
-                )
-
-    def test_predict__does_not_build_training_splits(self):
-        # Prediction reads the combined table but does not assemble training splits.
-        with patch.object(TabularModelDataBuilder, "get_data_splits", side_effect=AssertionError("Unexpected splits")):
+    def test_from_registry__temporarily_defaults_legacy_config_to_current_season_with_warning(self, caplog):
+        legacy_config = dict(self.config)
+        legacy_config["split"] = {
+            key: value for key, value in legacy_config["split"].items() if key != "prediction_season"
+        }
+        with (
+            patch("src.modeling.tabular.inference.load_data_builder_config", return_value=legacy_config),
+            patch("src.modeling.data_builder.get_current_season", return_value=2025) as current_season,
+        ):
             inference = TabularModelInference.from_registry(
-                data_dir=self.test_dir, tracking_dir=self.tracking_dir, registered_model="target_1_ridge", model_version=1
+                data_dir=self.test_dir, tracking_dir=self.tracking_dir,
+                registered_model="target_1_ridge", model_version=1,
             )
+            prediction = inference.data_builder.get_data_splits()["prediction"]
+        current_season.assert_called_once_with(roster=True)
+        assert inference.data_builder.split_years.prediction_season == 2025
+        assert inference.config == {
+            **legacy_config, "split": {**legacy_config["split"], "prediction_season": 2025},
+        }
+        assert "prediction_season" not in legacy_config
+        assert prediction["identity"]["target_season"].tolist() == [2025, 2025]
+        assert "temporarily using current roster season 2025" in caplog.text
+
+    def test_predict__reuses_the_cached_prediction_split(self):
+        # Inference selects prediction from the same cached split build as evaluation.
+        inference = TabularModelInference.from_registry(
+            data_dir=self.test_dir, tracking_dir=self.tracking_dir, registered_model="target_1_ridge", model_version=1
+        )
+        with patch.object(inference.data_builder, "_build_data_splits", wraps=inference.data_builder._build_data_splits) as build:
             run_id = inference.setup_mlflow(phase="predict", run_name_suffix="predictions")
             csv_path = inference.build_predictions_csv_path(os.path.join(self.test_dir, "predictions"), inference.registered_model, inference.model_version, run_id)
             preds_df = inference.predict(run_id=run_id, csv_path=csv_path)
 
             assert len(preds_df) == 2
-            assert not hasattr(inference.data_builder, "source_data")
+            inference.predict(run_id=run_id, csv_path=csv_path)
+            assert hasattr(inference.data_builder, "source_data")
+            build.assert_called_once()
 
 
 class TestTabularModelInferencePredictAndScore:
