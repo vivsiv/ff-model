@@ -563,20 +563,45 @@ Saved from the tester's audit of `test/processing/test_gold.py` against
 was not measured; these are coverage observations, not confirmed defects. Establish
 the intended validation/cardinality policies before adding rejection assertions.
 
-1. **Validation boundaries:** add cases for missing player IDs/feature seasons,
-   historical feature seasons not before their target seasons, missing target seasons,
-   and multiple current rows for one player with distinct feature seasons. The latter
-   must exercise the current-player uniqueness check rather than the earlier duplicate
-   `(player_id, season)` check.
+1. **Validation boundaries:** missing player IDs and source season identifiers are
+   silver integrity concerns, deferred to plan 6.2 (decision on 2026-11-04), not missing
+   optional feature values. Historical feature seasons equal to/later than their target
+   seasons are now explicitly rejected and tested in gold. Missing source seasons and
+   duplicate current-player inputs belong to silver validation; manufactured malformed
+   gold rows for those cases are not a priority. Existing final gold guards remain.
 2. **Silver-loader wiring:** directly test `load_draft_features` and `load_team_features`
    with temporary silver CSVs. Assert registry projection, draft-year renaming, and
-   null-team filtering; existing main tests mock these loaders.
-3. **Empty rankings:** test a header-only `ff_rankings.csv`, the loader's explicit
-   `ValueError`, and no gold output being written by a failing main invocation.
-4. **Join cardinality/context:** test duplicate snap-count, player-team, and team-season
-   keys, matched current players with null teams, and unavailable origin/destination
-   team stats. Decide where duplicates should be rejected and assert the intended
-   NaN/fallback behavior without confusing allowable feature missingness with bad keys.
+   null-team filtering; existing main tests mock these loaders. This wiring coverage
+   is deferred to the golden pipeline test in plan 6.1 rather than more heavyweight
+   loader unit tests.
+3. **Current-player pool integrity:** empty rankings, expected population size, and
+   unique/non-null player IDs belong to silver validation (plan 6.2), per the
+   2026-11-04 discussion. Gold's existing empty-input and uniqueness safeguards stay,
+   but artificial malformed-pool cases are not a gold testing priority. The actual
+   `FF_RANKINGS_LIMIT` is 250, applied before ID mapping and deduplication; final
+   silver rows may legitimately be fewer (249 in the verified snapshot). Decide an
+   appropriate completeness/minimum-count policy rather than assuming exactly 250
+   mapped players. Gold's eligible population is smaller still because rookies with
+   no prior stats cannot produce feature rows (220 in that snapshot).
+4. **Join cardinality/context:** normal join keys, season selection, player isolation,
+   and output cardinality are covered by existing expected-dataset tests. The four
+   team-join tests now compare complete expected DataFrames, including row counts and
+   removal of temporary columns. Duplicate source join keys are a silver concern
+   (plan 6.2), not a reason for another generic gold join test. The existing fallback
+   test now covers both an absent current-season mapping and a matched free-agent
+   mapping with a null team; both must use the prior team's actual stats. Unavailable
+   origin/destination stats are a cross-table gold concern: they now use the league
+   average from the feature season (decision on 2026-11-04). Tests cover missing
+   destination, missing origin, both missing, a missing stat on an existing team row,
+   and preserving NaN when no feature-season average is available. Target-season
+   team stats must never supply this fallback.
+
+### Team-stat fallback verification (2026-11-04)
+
+- Full suite including integration: 332 passed. `git diff --check` passed.
+- In-memory assembly of both real gold targets fills team context in 217 rows each.
+  All non-team fields and previously known team values match the saved CSVs exactly.
+  No generated files were rewritten; the existing gold snapshots predate this fallback.
 
 ## Local REVIEW comment cleanup (2026-11-03)
 

@@ -376,11 +376,12 @@ class GoldSetBuilder:
 
         The "season" column in player_stats_df is used to join with the "season" column in team_features_df
         (along with "team") as only the team's stats prior to "target_season" can be in a training row.
+        Missing origin/destination stats fall back to that feature season's league average.
+        If no league average is available for that season/stat, the feature remains NaN.
 
         Adds the following types of columns:
-          - "team_{stat}": how much better/worse at {stat} the player's team in "target_season" was than leage avg.
-          - "team_shift_{stat}" = How much better/worse at {stat} the player's team in "target_season" was than
-            the player's team in "season".
+          - "team_{stat}": destination team's feature-season stat minus that season's league average.
+          - "team_shift_{stat}": destination minus origin team stats, both from the feature season.
 
         Args:
             player_stats_df: Prepared player rows with feature-season stats, "season",
@@ -406,7 +407,7 @@ class GoldSetBuilder:
         )
 
         df = df.merge(destination_lookup, on=[player_grouping_col, "target_season"], how="left")
-        # Fill rows with no destination team with the player's current team.
+        # Fall back to the player's feature-season team when no current team is known.
         df["destination_team"] = df["destination_team"].fillna(df[team_col])
 
         team_lookup = team_features_df[["team", "season"] + team_stat_columns]
@@ -427,12 +428,20 @@ class GoldSetBuilder:
         league_avg_df = self._league_average_team_stats(team_features_df, team_stat_columns)
         df = df.merge(league_avg_df, on="season", how="left")
 
+        origin_team_values = {
+            stat: df[f"_origin_team_{stat}"].fillna(df[f"{stat}_league_avg"])
+            for stat in team_stat_columns
+        }
+        destination_team_values = {
+            stat: df[f"_destination_team_{stat}"].fillna(df[f"{stat}_league_avg"])
+            for stat in team_stat_columns
+        }
         team_columns = {
-            f"team_{stat}": df[f"_destination_team_{stat}"] - df[f"{stat}_league_avg"]
+            f"team_{stat}": destination_team_values[stat] - df[f"{stat}_league_avg"]
             for stat in team_stat_columns
         }
         shift_columns = {
-            f"team_shift_{stat}": df[f"_destination_team_{stat}"] - df[f"_origin_team_{stat}"]
+            f"team_shift_{stat}": destination_team_values[stat] - origin_team_values[stat]
             for stat in team_stat_columns
         }
         df = pd.concat(
@@ -575,7 +584,8 @@ class GoldSetBuilder:
         """Validate the combined gold table before saving.
 
         Historical targets must be present and current targets must be blank.
-        Features must be numeric and player/feature-season keys unique. Each
+        Features must be numeric, player/feature-season keys unique, and feature
+        seasons strictly before their corresponding target seasons. Each
         current row must be later than that player's historical feature rows.
         Feature NaNs are allowed for downstream imputation.
 
@@ -596,6 +606,8 @@ class GoldSetBuilder:
             raise ValueError("Gold target seasons must be present and no later than current_season")
         if (gold_df["season"] >= current_season).any():
             raise ValueError("Gold feature seasons must be before current_season")
+        if (gold_df["season"] >= gold_df["target_season"]).any():
+            raise ValueError("Gold feature seasons must be strictly before target_season")
 
         historical_df = gold_df[gold_df["target_season"] < current_season]
         current_df = gold_df[gold_df["target_season"] == current_season]
