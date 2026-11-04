@@ -88,8 +88,7 @@ class SplitYears:
             is_train = is_historical & (target_season >= train_cutoff_season) & (target_season < eval_cutoff_season)
 
         return {
-            TRAIN_SPLIT: is_train, EVAL_SPLIT: is_eval, TEST_SPLIT: is_test,
-            PREDICTION_SPLIT: is_prediction,
+            TRAIN_SPLIT: is_train, EVAL_SPLIT: is_eval, TEST_SPLIT: is_test, PREDICTION_SPLIT: is_prediction,
         }
 
 

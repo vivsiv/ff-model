@@ -9,7 +9,7 @@ import pytest
 import torch
 
 from src.modeling.data_builder import ModelDataBuilder
-from src.modeling.sequence.data_builder import LOSS_STEP_COL, SELECTED_STEP_COL, SequenceDataset, SequenceModelDataBuilder
+from src.modeling.sequence.data_builder import LOSS_STEP_COL, OUTPUT_STEP_COL, SequenceDataset, SequenceModelDataBuilder
 from src.processing.gold import load_gold_set
 
 
@@ -80,11 +80,11 @@ class TestSequenceDataset:
 
 
 class TestSequenceModelDataBuilder:
-    def test_get_input_rows_mask__uses_selection_independently_of_loss(self):
+    def test_get_input_rows_mask__uses_output_steps_independently_of_loss(self):
         data = pd.DataFrame({
             "player_id": ["A", "A", "A", "B", "B"],
             "step_idx": [0, 1, 2, 0, 1],
-            SELECTED_STEP_COL: [False, True, False, False, False],
+            OUTPUT_STEP_COL: [False, True, False, False, False],
             LOSS_STEP_COL: [False, False, False, True, True],
         })
         mask = SequenceModelDataBuilder._get_input_rows_mask(data)

@@ -18,7 +18,7 @@ TARGET_SEASON_COL = "target_season"
 
 # Per-step columns attached to a split's steps while it is being assembled, so every per-step value is trimmed
 # and ordered together with the rows. Never features/identity (those are resolved from the gold columns first).
-SELECTED_STEP_COL = "_is_selected_step"
+OUTPUT_STEP_COL = "_is_output_step"
 LOSS_STEP_COL = "_is_loss_step"
 SAMPLE_WEIGHT_COL = "_sample_weight"
 
@@ -116,12 +116,13 @@ class SequenceModelDataBuilder(ModelDataBuilder):
         Splitting is done on a step's target_season.
 
         - A step contributes to loss for the split when it has a target value and its target_season is in the split's seasons.
-        - Every split holds each player's full history up to their last loss step as input or up to their last step for the pred split
-            - an eval step sees the player's training-era seasons, and a training window (num_training_seasons) limits
-            loss steps without hiding older history from the inputs.
-        - Steps after a player's last loss step are removed (except for the pred split), so a split never contains inputs from a
-          period after what it scores.
-        - Players with no loss steps in a split are left out of it (except for the pred split).
+        - Every split holds each player's full history through their last output step:
+          a loss step for train/eval/test, or the prediction endpoint for prediction.
+          An eval step sees training-era history, and num_training_seasons limits
+          loss steps without hiding older history from the inputs.
+        - Steps after a player's last output step are removed, including for prediction,
+          so inputs never extend beyond the season being scored or predicted.
+        - Players with no output steps in a split are left out of it.
 
         Returns:
             dict with "train", "eval", "test", "prediction" SequenceDatasets.
@@ -149,13 +150,13 @@ class SequenceModelDataBuilder(ModelDataBuilder):
 
         datasets = {}
         for split, split_mask in split_masks.items():
-            # Prediction steps select input histories but never contribute to loss.
-            selected_steps = split_mask if split == PREDICTION_SPLIT else split_mask & is_labeled
-            split_data = data.assign(**{SELECTED_STEP_COL: selected_steps})
+            # Output steps define input endpoints; prediction outputs never contribute to loss.
+            output_steps = split_mask if split == PREDICTION_SPLIT else split_mask & is_labeled
+            split_data = data.assign(**{OUTPUT_STEP_COL: output_steps})
             split_data = split_data[self._get_input_rows_mask(split_data)]
 
             split_data = split_data.assign(**{
-                LOSS_STEP_COL: split_data[SELECTED_STEP_COL] & (split != PREDICTION_SPLIT),
+                LOSS_STEP_COL: split_data[OUTPUT_STEP_COL] & (split != PREDICTION_SPLIT),
             })
 
             if split == PREDICTION_SPLIT:
@@ -186,18 +187,18 @@ class SequenceModelDataBuilder(ModelDataBuilder):
     def _get_input_rows_mask(data: pd.DataFrame) -> pd.Series:
         """
         Finds the rows a split's dataset reads as input: each player's steps from their first season up to and
-        including their last selected step in the split. Selection controls input
-        history independently of whether a step contributes to loss.
+        including their last output step in the split. Output endpoints control
+        input history independently of whether a step contributes to loss.
 
         Args:
-            data: Output of _order_by_step with a SELECTED_STEP_COL column.
+            data: Output of _order_by_step with an OUTPUT_STEP_COL column.
 
         Returns:
-            Boolean Series aligned with data, True for input rows. False for every step of a player with no selected
+            Boolean Series aligned with data, True for input rows. False for every step of a player with no output
             steps in the split, since such players are left out of the split entirely.
         """
-        last_selected_step = data["step_idx"].where(data[SELECTED_STEP_COL]).groupby(data[PLAYER_COL]).transform("max")
-        return data["step_idx"] <= last_selected_step
+        last_output_step = data["step_idx"].where(data[OUTPUT_STEP_COL]).groupby(data[PLAYER_COL]).transform("max")
+        return data["step_idx"] <= last_output_step
 
     def _build_sequence_dataset(self, data: pd.DataFrame, feature_cols: List[str]) -> SequenceDataset:
         """
