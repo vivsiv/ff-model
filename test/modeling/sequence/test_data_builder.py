@@ -203,12 +203,15 @@ class TestSequenceModelDataBuilder:
             ]},
         }
         expected = SequenceModelDataBuilder(self.test_dir, config)._build_data_splits()
-        shuffled = self._gold_frame(self.TRAINING_ROWS).sample(frac=1, random_state=42)
-        self._write_gold_tables(str(tmp_path), shuffled, self._gold_frame(self.PREDICTION_ROWS))
+        shuffled = self._gold_frame(self.TRAINING_ROWS + self.PREDICTION_ROWS).sample(frac=1, random_state=42)
+        gold_dir = tmp_path / "gold"
+        gold_dir.mkdir()
+        shuffled.to_csv(gold_dir / "target_1__2025.csv", index=False)
 
         actual = SequenceModelDataBuilder(str(tmp_path), config)._build_data_splits()
 
-        for split in ["train", "eval", "test"]:
+        assert set(actual) == set(expected) == {"train", "eval", "test", "prediction"}
+        for split in expected:
             identity = actual[split].identity
             pd.testing.assert_frame_equal(
                 identity,

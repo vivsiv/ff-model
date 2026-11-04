@@ -186,6 +186,52 @@ class TestTabularModelDataBuilder:
         assert set(data["identity_eval"]["target_season"]) == {2021}
         assert set(data["identity_train"]["target_season"]) == {2020}
 
+    def test_split__preserves_complete_row_alignment_with_shuffled_non_default_indexes(self):
+        source = pd.DataFrame({
+            "row_marker": [10, 20, 30, 40, 50, 60, 70, 80, 90],
+            "feature": [100.0, 200.0, 300.0, 400.0, 500.0, 600.0, 700.0, 800.0, 900.0],
+            "player_id": list("ABCDEFGHI"),
+            "target_season": [2021, 2022, 2023, 2023, 2024, 2024, 2025, 2025, 2026],
+            "target": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, float("nan"), float("nan"), 9.0],
+            "sample_weight": [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9],
+        }, index=pd.Index([31, 7, 90, 12, 65, 3, 44, 18, 101], name="row_id"))
+        shuffled = source.iloc[[7, 3, 8, 1, 5, 2, 6, 0, 4]]
+
+        actual = TabularModelDataBuilder.split(
+            split_years=SplitYears(prediction_season=2025, num_training_seasons=2),
+            target_season=shuffled["target_season"],
+            features_df=shuffled[["feature", "row_marker"]],
+            target_df=shuffled["target"],
+            identity_df=shuffled[["player_id", "target_season"]],
+            sample_weights=shuffled["sample_weight"],
+        )
+
+        train_index = pd.Index([7, 31], name="row_id")
+        eval_index = pd.Index([12, 90], name="row_id")
+        test_index = pd.Index([3, 65], name="row_id")
+        pred_index = pd.Index([18, 44], name="row_id")
+        expected_frames = {
+            "X_train": pd.DataFrame({"feature": [200.0, 100.0], "row_marker": [20, 10]}, index=train_index),
+            "X_eval": pd.DataFrame({"feature": [400.0, 300.0], "row_marker": [40, 30]}, index=eval_index),
+            "X_test": pd.DataFrame({"feature": [600.0, 500.0], "row_marker": [60, 50]}, index=test_index),
+            "X_pred": pd.DataFrame({"feature": [800.0, 700.0], "row_marker": [80, 70]}, index=pred_index),
+            "identity_train": pd.DataFrame({"player_id": ["B", "A"], "target_season": [2022, 2021]}, index=train_index),
+            "identity_eval": pd.DataFrame({"player_id": ["D", "C"], "target_season": [2023, 2023]}, index=eval_index),
+            "identity_test": pd.DataFrame({"player_id": ["F", "E"], "target_season": [2024, 2024]}, index=test_index),
+            "identity_pred": pd.DataFrame({"player_id": ["H", "G"], "target_season": [2025, 2025]}, index=pred_index),
+        }
+        expected_series = {
+            "y_train": pd.Series([2.0, 1.0], index=train_index, name="target"),
+            "y_eval": pd.Series([4.0, 3.0], index=eval_index, name="target"),
+            "y_test": pd.Series([6.0, 5.0], index=test_index, name="target"),
+            "sample_weight_train": pd.Series([0.2, 0.1], index=train_index, name="sample_weight"),
+        }
+        assert set(actual) == set(expected_frames) | set(expected_series)
+        for key, expected in expected_frames.items():
+            pd.testing.assert_frame_equal(actual[key], expected)
+        for key, expected in expected_series.items():
+            pd.testing.assert_series_equal(actual[key], expected)
+
     @pytest.mark.parametrize("config, expected_seasons, expected_targets", [
         pytest.param(
             {"split": {"eval_data_years": 1, "test_data_years": 1}},
@@ -283,14 +329,33 @@ class TestTabularModelDataBuilder:
 
     def test_build_data_splits__prediction_only_table_has_empty_scored_splits(self):
         # A combined gold table may contain only prediction rows.
-        _build_prediction_data().to_csv(os.path.join(self.gold_dir, "target_predict_only__2025.csv"), index=False)
+        prediction_df = _build_prediction_data()
+        prediction_df.to_csv(os.path.join(self.gold_dir, "target_predict_only__2025.csv"), index=False)
 
         builder = TabularModelDataBuilder(data_dir=self.test_dir, config={"target": "target_predict_only", "split": {"prediction_season": 2025}})
         splits = builder.get_data_splits()
 
-        assert all(splits[f"X_{split}"].empty for split in ["train", "eval", "test"])
-        assert len(splits["identity_pred"]) == 4
-        assert list(splits["X_pred"].columns) == ["f1", "f2", "receiving_yards"]
+        expected_features = prediction_df[["f1", "f2", "receiving_yards"]]
+        expected_identity = prediction_df[get_identity_columns("nflverse", "player_stats") + ["target_season"]]
+        empty_index = pd.Index([], dtype="int64")
+        empty_features = expected_features.iloc[:0].set_axis(empty_index)
+        empty_identity = expected_identity.iloc[:0].set_axis(empty_index)
+        empty_target = pd.Series([], index=empty_index, dtype=float, name="target")
+        empty_weights = pd.Series([], index=empty_index, dtype=float)
+        expected_frames = {
+            "X_train": empty_features, "X_eval": empty_features, "X_test": empty_features,
+            "identity_train": empty_identity, "identity_eval": empty_identity, "identity_test": empty_identity,
+            "X_pred": expected_features, "identity_pred": expected_identity,
+        }
+        expected_series = {
+            "y_train": empty_target, "y_eval": empty_target, "y_test": empty_target,
+            "sample_weight_train": empty_weights,
+        }
+        assert set(splits) == set(expected_frames) | set(expected_series)
+        for key, expected in expected_frames.items():
+            pd.testing.assert_frame_equal(splits[key], expected)
+        for key, expected in expected_series.items():
+            pd.testing.assert_series_equal(splits[key], expected)
 
     def test_prediction_split__backtest_excludes_targets_and_future_rows(self):
         source = self.gold_data.copy(deep=True)
