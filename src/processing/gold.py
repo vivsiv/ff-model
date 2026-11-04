@@ -49,14 +49,12 @@ def load_gold_set(gold_dir: str, target_col: str, current_season: int) -> pd.Dat
     logger.info(f"Loaded gold set for {target_col}, current season {current_season}: {len(gold_df)} rows")
     return gold_df
 
-
-ROUNDING_EXCLUDED_COLUMNS = [
-    "season", "target_season", "seasons_since_played", "years_played", "games", "age", "draft_pick",
-]
-
-
 class GoldSetBuilder:
     """Builds gold layer historical/current data from nflverse silver layer data."""
+
+    ROUNDING_EXCLUDED_COLUMNS = [
+        "season", "target_season", "seasons_since_played", "years_played", "games", "age", "draft_pick",
+    ]
 
     def __init__(self, data_dir: str):
         """
@@ -72,6 +70,7 @@ class GoldSetBuilder:
         self.gold_dir = os.path.join(data_dir, "gold")
         os.makedirs(self.gold_dir, exist_ok=True)
 
+    # TODO: hardcoded column references should be constants.
     def _positional_baseline(
         self,
         df: pd.DataFrame,
@@ -114,15 +113,14 @@ class GoldSetBuilder:
 
     def _add_career_features(
         self,
-        df: pd.DataFrame,
+        player_stats_df: pd.DataFrame,
         positional_baseline_df: pd.DataFrame,
         stat_columns: List[str],
         shrinkage_k: float,
-        player_grouping_col: str = "player_id",
     ) -> pd.DataFrame:
         """
-        For each player-season combo computes the expanding career average/max/min/stddev features for each
-        stat in stat_columns. Feature computations are inclusive of the current row's own season.
+        For each player-season combo computes the expanding career average/max/min/stddev for each
+        stat in stat_columns. Computations are inclusive of the current row's own season.
 
         Adds, per stat:
           - {stat}_career_avg / _career_std / _career_max / _career_min: expanding aggregates.
@@ -135,18 +133,17 @@ class GoldSetBuilder:
           - years_played: count of seasons with data up to and including this one.
 
         Args:
-            df: Dataframe of player stats by season.
+            player_stats_df: Dataframe of player stats by season.
             positional_baseline_df: Output of _positional_baseline, joined in by (position, season)
             stat_columns: The stat columns to compute career features
             shrinkage_k: Shrinkage strength constant — higher pulls harder toward the positional
                 baseline for a given years_played.
-            player_grouping_col: Column identifying a unique player (default: "player_id")
 
         Returns:
             DataFrame with the career feature columns added
         """
-        df = df.sort_values([player_grouping_col, "season"]).copy()
-        grouped = df.groupby(player_grouping_col)
+        player_stats_df = player_stats_df.sort_values(["player_id", "season"]).copy()
+        grouped = player_stats_df.groupby("player_id")
 
         new_columns = {"years_played": grouped.cumcount() + 1}
         for stat in stat_columns:
@@ -155,21 +152,25 @@ class GoldSetBuilder:
             new_columns[f"{stat}_career_std"] = grouped[stat].transform(lambda x: x.expanding().std()).fillna(0)
             new_columns[f"{stat}_career_max"] = grouped[stat].transform(lambda x: x.expanding().max())
             new_columns[f"{stat}_career_min"] = grouped[stat].transform(lambda x: x.expanding().min())
-            new_columns[f"{stat}_trend"] = df[stat] - career_avg
+            new_columns[f"{stat}_trend"] = player_stats_df[stat] - career_avg
 
-        df = pd.concat([df, pd.DataFrame(new_columns, index=df.index)], axis=1)
-        df = df.merge(positional_baseline_df, on=["position", "season"], how="left")
+        player_stats_df = pd.concat(
+            [player_stats_df, pd.DataFrame(new_columns, index=player_stats_df.index)], axis=1
+        )
+        player_stats_df = player_stats_df.merge(positional_baseline_df, on=["position", "season"], how="left")
 
-        shrinkage_weight = df["years_played"] / (df["years_played"] + shrinkage_k)
+        shrinkage_weight = player_stats_df["years_played"] / (player_stats_df["years_played"] + shrinkage_k)
         shrunk_columns = {
             f"{stat}_shrunk_avg": (
-                shrinkage_weight * df[f"{stat}_career_avg"]
-                + (1 - shrinkage_weight) * df[f"{stat}_positional_baseline"]
+                shrinkage_weight * player_stats_df[f"{stat}_career_avg"]
+                + (1 - shrinkage_weight) * player_stats_df[f"{stat}_positional_baseline"]
             )
             for stat in stat_columns
         }
 
-        return pd.concat([df, pd.DataFrame(shrunk_columns, index=df.index)], axis=1)
+        return pd.concat(
+            [player_stats_df, pd.DataFrame(shrunk_columns, index=player_stats_df.index)], axis=1
+        )
 
     def _round_significant_figures(
         self,
@@ -239,7 +240,7 @@ class GoldSetBuilder:
         df = pd.concat([df, pd.DataFrame(per_game_columns, index=df.index)], axis=1)
         return df, [f"{stat}{PER_GAME_SUFFIX}" for stat in eligible_stats]
 
-    def load_player_features(self, shrinkage_k: float = 1.5) -> pd.DataFrame:
+    def load_player_stat_features(self, shrinkage_k: float = 1.5) -> pd.DataFrame:
         """
         Loads the `player_stats` silver table, merges in the `snap_counts` silver table (joined on player_id + season),
         and adds computed feature values to the combined set of stat columns -- both season-total career features and
@@ -252,28 +253,28 @@ class GoldSetBuilder:
         Returns:
             One row per player-season, with career-to-date features through that season
         """
-        player_df = pd.read_csv(os.path.join(self.silver_dir, "player_stats.csv"), low_memory=False)
-        player_identity_columns = get_identity_columns("nflverse", "player_stats")
-        player_stat_columns = get_stat_columns("nflverse", "player_stats")
-        player_df = player_df[player_identity_columns + player_stat_columns]
+        player_stats_df = pd.read_csv(os.path.join(self.silver_dir, "player_stats.csv"), low_memory=False)
+        player_stats_identity_columns = get_identity_columns("nflverse", "player_stats")
+        player_stats_stat_columns = get_stat_columns("nflverse", "player_stats")
+        player_stats_df = player_stats_df[player_stats_identity_columns + player_stats_stat_columns]
 
         snap_counts_df = pd.read_csv(os.path.join(self.silver_dir, "snap_counts.csv"), low_memory=False)
         snap_count_identity_columns = get_identity_columns("nflverse", "snap_counts")
         snap_count_stat_columns = get_stat_columns("nflverse", "snap_counts")
         snap_counts_df = snap_counts_df[snap_count_identity_columns + snap_count_stat_columns]
 
-        player_df = player_df.merge(snap_counts_df, on=snap_count_identity_columns, how="left")
-        stat_columns = player_stat_columns + snap_count_stat_columns
+        player_stats_df = player_stats_df.merge(snap_counts_df, on=snap_count_identity_columns, how="left")
+        stat_columns = player_stats_stat_columns + snap_count_stat_columns
 
         counting_stat_columns = (
             get_counting_stat_columns("nflverse", "player_stats")
             + get_counting_stat_columns("nflverse", "snap_counts")
         )
-        player_df, per_game_columns = self._add_per_game_stats(player_df, counting_stat_columns)
+        player_stats_df, per_game_columns = self._add_per_game_stats(player_stats_df, counting_stat_columns)
         all_stat_columns = stat_columns + per_game_columns
 
-        baseline_df = self._positional_baseline(player_df, all_stat_columns)
-        return self._add_career_features(player_df, baseline_df, all_stat_columns, shrinkage_k=shrinkage_k)
+        baseline_df = self._positional_baseline(player_stats_df, all_stat_columns)
+        return self._add_career_features(player_stats_df, baseline_df, all_stat_columns, shrinkage_k=shrinkage_k)
 
     def load_draft_features(self) -> pd.DataFrame:
         """
@@ -362,7 +363,7 @@ class GoldSetBuilder:
 
     def _join_team_features(
         self,
-        df: pd.DataFrame,
+        player_stats_df: pd.DataFrame,
         player_team_by_season: pd.DataFrame,
         team_features_df: pd.DataFrame,
         team_stat_columns: List[str],
@@ -370,10 +371,10 @@ class GoldSetBuilder:
         team_col: str = "recent_team",
     ) -> pd.DataFrame:
         """
-        Adds team-context features to each row of df, capturing the level of a
+        Adds team-context features to each row of player_stats_df, capturing the level of a
         player's team relative to league avg and the shift in team quality when a player changes teams.
 
-        The "season" column in df is used to join with the "season" column in team_features_df
+        The "season" column in player_stats_df is used to join with the "season" column in team_features_df
         (along with "team") as only the team's stats prior to "target_season" can be in a training row.
 
         Adds the following types of columns:
@@ -382,22 +383,22 @@ class GoldSetBuilder:
             the player's team in "season".
 
         Args:
-            df: Dataframe with player_stats.
+            player_stats_df: Prepared player rows with feature-season stats, "season",
+                "target_season", and the origin team in team_col.
             player_team_by_season: One row per player-season, with at least
                 [player_grouping_col, "season", team_col] columns -- used only to look up
-                each player's actual team in target_season (e.g.
-                features_df[[player_grouping_col, "season", team_col]]; doesn't need the
-                full feature set)
+                each player's team in target_season. Output of build_player_team_by_season;
+                does not need the full feature set.
             team_features_df: Output of load_team_features.
             team_stat_columns: Team stat columns to join in and compute a shift for
             player_grouping_col: Column identifying a unique player (default: "player_id")
             team_col: Column identifying a player's team on a given row (default: "recent_team")
 
         Returns:
-            df with "team_{stat}"/"team_shift_{stat}" columns added per stat in
+            A copy of player_stats_df with "team_{stat}"/"team_shift_{stat}" columns added per stat in
             team_stat_columns
         """
-        df = df.copy()
+        df = player_stats_df.copy()
 
         destination_lookup = (
             player_team_by_season[[player_grouping_col, "season", team_col]]
@@ -446,6 +447,7 @@ class GoldSetBuilder:
         )
         return df.drop(columns=drop_columns)
 
+    # TODO: why not just join in all possible targets and let modeling choose which it will build models on?
     def _join_with_target(
         self,
         features_df: pd.DataFrame,
@@ -493,9 +495,52 @@ class GoldSetBuilder:
         feature_columns = list(features_df.columns)
         return merged[feature_columns + ["target_season", TARGET_COL, "seasons_since_played"]]
 
+    def prepare_player_rows(
+        self,
+        features_df: pd.DataFrame,
+        current_players_df: pd.DataFrame,
+        current_season: int,
+        target_col: str,
+    ) -> pd.DataFrame:
+        """Prepare historical/current player rows.
+
+        Append current-player identities as blank-target season placeholders to
+        strictly prior feature rows, then pair all targets with their nearest prior
+        features in one backward asof join. Exact-season matches are disallowed, so
+        current placeholders cannot supply features and rookies remain excluded.
+        Current performance stats in features_df are excluded before the join.
+
+        Returns:
+            Player rows with targets paired to prior features, without rounding or saving.
+        """
+        historical_features_df = features_df[features_df["season"] < current_season]
+        combined_df = pd.concat(
+            [historical_features_df, current_players_df], ignore_index=True
+        )
+        return self._join_with_target(combined_df, target_col)
+
+    @staticmethod
+    def build_player_team_by_season(
+        features_df: pd.DataFrame,
+        current_players_df: pd.DataFrame,
+        current_season: int,
+    ) -> pd.DataFrame:
+        """Build the team lookup independently of target/feature pairing.
+
+        Keep historical player-season teams strictly before current_season, then
+        append current-player teams. Players without prior stats (including rookies)
+        remain in this lookup, even though they cannot produce modeling rows.
+        Performance columns are excluded and the inputs are left unchanged.
+        """
+        team_columns = ["player_id", "season", "recent_team"]
+        return pd.concat(
+            [features_df.loc[features_df["season"] < current_season, team_columns], current_players_df[team_columns]],
+            ignore_index=True,
+        )
+
     def build_gold_set(
         self,
-        rows_df: pd.DataFrame,
+        player_rows_df: pd.DataFrame,
         team_features_df: pd.DataFrame,
         draft_features_df: pd.DataFrame,
         player_team_by_season: pd.DataFrame,
@@ -504,7 +549,7 @@ class GoldSetBuilder:
         Adds team-context and draft features to prepared historical/current rows.
 
         Args:
-            rows_df: Output of _join_with_target and/or _build_current_rows.
+            player_rows_df: Player rows from prepare_player_rows (or _join_with_target).
             team_features_df: Output of load_team_features
             draft_features_df: Output of load_draft_features
             player_team_by_season: Player/team lookup for each target season. Combine
@@ -516,7 +561,7 @@ class GoldSetBuilder:
         """
         team_stat_columns = get_stat_columns("nflverse", "team_stats")
         gold_df = self._join_team_features(
-            rows_df, player_team_by_season, team_features_df, team_stat_columns
+            player_rows_df, player_team_by_season, team_features_df, team_stat_columns
         )
         return self._join_draft_features(gold_df, draft_features_df)
 
@@ -576,52 +621,10 @@ class GoldSetBuilder:
             filename: Output filename relative to gold_dir.
         """
         output_path = os.path.join(self.gold_dir, filename)
-        self._round_significant_figures(df, exclude_columns=ROUNDING_EXCLUDED_COLUMNS).to_csv(
+        self._round_significant_figures(df, exclude_columns=self.ROUNDING_EXCLUDED_COLUMNS).to_csv(
             output_path, index=False
         )
         logger.info(f"Saved gold table to {output_path}")
-
-    def _build_current_rows(
-        self,
-        features_df: pd.DataFrame,
-        players_df: pd.DataFrame,
-        current_season: int,
-        player_grouping_col: str = "player_id",
-    ) -> pd.DataFrame:
-        """
-        Takes each player's most recent season from the features dataframe and reframes it as
-        a current-season row with a blank target.
-
-        Only players present in players_df get a row, so retired players are excluded. A player who
-        missed some seasons still gets a row built from their last active season, and players with no prior
-        season on record (rookies) are dropped as there is nothing to build features from.
-
-        Args:
-            features_df: Output of load_player_features (one row per player-season)
-            players_df: Output of load_current_players, the players to build current rows for
-            current_season: The season to build a current row for, e.g. 2026
-            player_grouping_col: Column identifying a unique player (default: "player_id")
-
-        Returns:
-            DataFrame with one row per player in players_df with prior stats, "target_season" set to
-            current_season, "target" as NaN, and "seasons_since_played" computed the same way as
-            _join_with_target
-        """
-        latest_df = (
-            features_df[
-                features_df[player_grouping_col].isin(players_df[player_grouping_col])
-                & (features_df["season"] < current_season)
-            ]
-            .sort_values("season")
-            .groupby(player_grouping_col, as_index=False)
-            .tail(1)
-            .copy()
-        )
-        latest_df["target_season"] = current_season
-        latest_df["seasons_since_played"] = current_season - latest_df["season"] - 1
-        latest_df[TARGET_COL] = np.nan
-
-        return latest_df.reset_index(drop=True)
 
     # TODO: consider moving silver-table loading (here and the load_*_features
     # methods) to the source processor, analogous to gold's load_gold_set helper.
@@ -673,22 +676,19 @@ def main():
 
     builder = GoldSetBuilder(data_dir=args.data_dir)
 
-    players_df = builder.load_current_players()
-    current_season = int(players_df["season"].iloc[0])
+    current_players_df = builder.load_current_players()
+    current_season = int(current_players_df["season"].iloc[0])
 
-    features_df = builder.load_player_features(shrinkage_k=args.shrinkage_k)
-    features_df = features_df[features_df["season"] < current_season]
-    team_features_df = builder.load_team_features()
-    draft_features_df = builder.load_draft_features()
-
-    historical_rows = builder._join_with_target(features_df, target_col=args.target_col)
-    current_rows = builder._build_current_rows(features_df, players_df, current_season)
-    rows_df = pd.concat([historical_rows, current_rows], ignore_index=True)
-    player_team_by_season = pd.concat(
-        [features_df[["player_id", "season", "recent_team"]], players_df], ignore_index=True
+    features_df = builder.load_player_stat_features(shrinkage_k=args.shrinkage_k)
+    player_rows_df = builder.prepare_player_rows(
+        features_df, current_players_df, current_season, target_col=args.target_col
     )
 
-    gold_df = builder.build_gold_set(rows_df, team_features_df, draft_features_df, player_team_by_season)
+    team_features_df = builder.load_team_features()
+    draft_features_df = builder.load_draft_features()
+    player_team_by_season = builder.build_player_team_by_season(features_df, current_players_df, current_season)
+    gold_df = builder.build_gold_set(player_rows_df, team_features_df, draft_features_df, player_team_by_season)
+
     builder.validate_data(gold_df, current_season)
     builder.save_to_gold(gold_df, gold_set_filename(args.target_col, current_season))
 

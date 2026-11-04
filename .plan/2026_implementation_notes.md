@@ -462,12 +462,14 @@ discussion) — a good overall score could still mask poor performance there.
   responsibility rather than model-specific training-set construction.
 - Initially renamed `build_training_set` to `build_historical_set`, then unified the
   historical/prediction enrichment paths as `build_gold_set`. `main` prepares rows
-  via `_join_with_target` and `_build_current_rows`, concatenates them, and adds
-  team/draft features once using a combined historical/current player-team lookup.
+  via `prepare_player_rows`, which appends current identities to prior features,
+  applies `_join_with_target` once, and returns only player rows. A separate
+  `build_player_team_by_season` method independently creates the team lookup,
+  including rookies/free agents. It adds team/draft features once using that lookup.
   It then validates the combined table and calls `save_to_gold` for rounding and
   persistence. Row preparation and enrichment return unrounded rows without saving.
 - Gold output is now `{target_col}__{current_season}.csv`. Gold uses current-season
-  terminology (`load_current_players`, `_build_current_rows`); modeling retains
+  terminology (`load_current_players`, blank-target current rows); modeling retains
   `prediction_season` as the saved snapshot-selection config key. Builds use the latest
   rankings and nflreadpy's current roster season (rollover on March 15); there is no
   historical player-pool reconstruction or prediction-season CLI override. Player
@@ -553,3 +555,61 @@ Existing staged changes, including temporary legacy-model fallback, were preserv
    processor class or standalone source-specific loader helpers? Feature engineering
    should remain in gold regardless. The requested TODO is in `load_current_players`.
    [Related comment](https://github.com/vivsiv/ff-model/pull/45#discussion_r4447932578).
+
+## Gold test coverage follow-ups (2026-11-03)
+
+Saved from the tester's audit of `test/processing/test_gold.py` against
+`src/processing/gold.py`. The requested run passed all 59 tests. Numerical coverage
+was not measured; these are coverage observations, not confirmed defects. Establish
+the intended validation/cardinality policies before adding rejection assertions.
+
+1. **Validation boundaries:** add cases for missing player IDs/feature seasons,
+   historical feature seasons not before their target seasons, missing target seasons,
+   and multiple current rows for one player with distinct feature seasons. The latter
+   must exercise the current-player uniqueness check rather than the earlier duplicate
+   `(player_id, season)` check.
+2. **Silver-loader wiring:** directly test `load_draft_features` and `load_team_features`
+   with temporary silver CSVs. Assert registry projection, draft-year renaming, and
+   null-team filtering; existing main tests mock these loaders.
+3. **Empty rankings:** test a header-only `ff_rankings.csv`, the loader's explicit
+   `ValueError`, and no gold output being written by a failing main invocation.
+4. **Join cardinality/context:** test duplicate snap-count, player-team, and team-season
+   keys, matched current players with null teams, and unavailable origin/destination
+   team stats. Decide where duplicates should be rejected and assert the intended
+   NaN/fallback behavior without confusing allowable feature missingness with bad keys.
+
+## Local REVIEW comment cleanup (2026-11-03)
+
+- Moved rounding exclusions into `GoldSetBuilder` and renamed the main current-player
+  variable to `current_players_df`.
+- Factored row assembly into `prepare_player_rows` and team-lookup assembly into the
+  independent `build_player_team_by_season`, both with direct tests.
+  Current-player identities are appended to strictly prior feature rows before one
+  backward asof target join; current targets stay blank, current/future stats cannot
+  supply features, gap seasons are preserved, and rookies without history are omitted.
+  The redundant `_build_current_rows` path was removed. An ordinary same-season left
+  join would not provide the required prior-season matching behavior.
+- Reordered builder test groups to follow source method order, kept validation/main/
+  loader tests in their existing separate classes, and changed career-feature checks
+  to expected-DataFrame comparisons.
+- Verification: `test/processing/test_gold.py` has 62 passing tests; the full suite
+  including integration has 324 passing tests. Both real target tables have exact
+  value parity after in-memory assembly/rounding/CSV serialization (11,372 x 943),
+  ignoring row/column order and inferred dtypes. No real CSVs were written or upstream
+  inputs refreshed. The tester's remaining coverage notes are saved above.
+
+### Further naming cleanup
+
+- Renamed `load_player_features` to `load_player_stat_features`, updating main and
+  all direct tests/mocks. Its local dataframe and registry selections now use the
+  `player_stats_*` naming requested in the review comments.
+- `_add_career_features` now takes `player_stats_df` and groups on the fixed
+  `player_id` column; the unused grouping-column parameter was removed. Shared
+  column constants remain deferred as requested.
+- Preserved the user's `player_rows_df` rename and fixed its incomplete use inside
+  `build_gold_set`, which otherwise referenced the undefined old name `rows_df`.
+- The new multi-target-gold TODO remains deferred: building all future targets in
+  one table would also require changing model target selection, excluding every
+  future-target column from features, and deciding how to version the gold output.
+- Latest full-suite run: 324 passed, including the four integration checks; source
+  method/test ordering and `git diff --check` also passed. No real data was rewritten.
