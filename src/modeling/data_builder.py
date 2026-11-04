@@ -1,57 +1,70 @@
 import logging
 import os
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, List, Optional, Self
 
 import pandas as pd
 import yaml
+from nflreadpy import get_current_season
 
 from src.processing.column_registry import get_identity_columns
 from src.processing.gold import TARGET_COL
 
 logger = logging.getLogger(__name__)
 
-# Preserve the artifact name so existing registered models remain loadable.
+# Preserve the artifact name used for data-preparation config discovery.
 DATA_BUILDER_CONFIG_ARTIFACT_PATH = "data_prep_config.json"
 
 TRAIN_SPLIT = "train"
 EVAL_SPLIT = "eval"
 TEST_SPLIT = "test"
+PREDICTION_SPLIT = "prediction"
 
 
 @dataclass
 class SplitYears:
-    """Season counts for chronological splits; see ModelDataBuilder's config schema."""
+    """Prediction cutoff and season counts for chronological splits."""
     eval_data_years: int = 1
     test_data_years: int = 1
     num_training_seasons: Optional[int] = None
+    prediction_season: int = field(default_factory=lambda: get_current_season(roster=True))
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.prediction_season, int) or isinstance(self.prediction_season, bool):
+            raise ValueError("prediction_season must be an integer year")
 
     @classmethod
     def from_config(cls, split_config: dict[str, Any]) -> "SplitYears":
-        """Read the config's split section, applying defaults for omitted fields."""
+        """Read the split config, defaulting omitted fields."""
         return cls(
             eval_data_years=split_config.get("eval_data_years", 1),
             test_data_years=split_config.get("test_data_years", 1),
             num_training_seasons=split_config.get("num_training_seasons"),
+            prediction_season=split_config.get("prediction_season", get_current_season(roster=True)),
         )
 
     def to_masks(self, target_season: pd.Series) -> dict[str, pd.Series]:
         """Assign rows chronologically by target_season.
 
-        The most recent test_data_years seasons form the test split, followed by
+        Only target seasons strictly before prediction_season are eligible.
+        The most recent eligible test_data_years seasons form the test split, followed by
         eval_data_years seasons for evaluation. Older seasons form training,
         optionally limited to the most recent num_training_seasons.
 
         Returns:
-            Boolean row masks keyed by "train", "eval", and "test", aligned with
-            target_season. Missing target seasons are in no split.
+            Boolean row masks keyed by "train", "eval", "test", and "prediction",
+            aligned with target_season. Prediction rows target prediction_season;
+            missing and later seasons are in no split. Prediction rows are never scored.
 
         Raises:
             ValueError: If requested season counts exceed the distinct seasons available.
         """
+        is_historical = target_season < self.prediction_season
+        is_prediction = target_season == self.prediction_season
+        historical_seasons = target_season[is_historical]
         if self.num_training_seasons is not None:
-            total_seasons = target_season.nunique()
+            total_seasons = historical_seasons.nunique()
             requested_seasons = self.num_training_seasons + self.eval_data_years + self.test_data_years
             if requested_seasons > total_seasons:
                 raise ValueError(
@@ -61,20 +74,22 @@ class SplitYears:
                     "season(s) available in the training set"
                 )
 
-        max_target_season = target_season.max()
+        max_target_season = historical_seasons.max()
         test_cutoff_season = max_target_season - self.test_data_years + 1
         eval_cutoff_season = test_cutoff_season - self.eval_data_years
 
-        is_test = target_season >= test_cutoff_season
-        is_eval = (target_season >= eval_cutoff_season) & ~is_test
+        is_test = is_historical & (target_season >= test_cutoff_season)
+        is_eval = is_historical & (target_season >= eval_cutoff_season) & ~is_test
 
         if self.num_training_seasons is None:
-            is_train = target_season < eval_cutoff_season
+            is_train = is_historical & (target_season < eval_cutoff_season)
         else:
             train_cutoff_season = eval_cutoff_season - self.num_training_seasons
-            is_train = (target_season >= train_cutoff_season) & (target_season < eval_cutoff_season)
+            is_train = is_historical & (target_season >= train_cutoff_season) & (target_season < eval_cutoff_season)
 
-        return {TRAIN_SPLIT: is_train, EVAL_SPLIT: is_eval, TEST_SPLIT: is_test}
+        return {
+            TRAIN_SPLIT: is_train, EVAL_SPLIT: is_eval, TEST_SPLIT: is_test, PREDICTION_SPLIT: is_prediction,
+        }
 
 
 # TODO: introduce a typed model-data config with centralized defaults, validation,
@@ -82,13 +97,16 @@ class SplitYears:
 class ModelDataBuilder(ABC):
     """Shared configuration and row-level helpers for tabular and sequence data builders.
 
-    Subclasses build their own train/eval/test splits and prediction datasets.
+    Subclasses build all four splits through _build_data_splits, including prediction.
 
     Config schema (see configs/*.yaml for real examples):
         target: <str> e.g. "ppr_points_per_game", "fantasy_points_ppr"
         positions: optional -- list[str] of "position" values (e.g. ["RB"], ["WR", "TE"]) to
             restrict the data to. Omit entirely (or leave empty) to keep every position.
         split:
+            prediction_season: <int, default current roster year> -- gold snapshot
+                year and scoring cutoff. Resolved into the saved split config so
+                trained models keep loading the same year after rollover.
             eval_data_years: <int, default 1>
             test_data_years: <int, default 1>
             num_training_seasons: <int, default None -- keep every remaining older season>
@@ -107,10 +125,13 @@ class ModelDataBuilder(ABC):
     def __init__(self, data_dir: str, config: dict[str, Any]):
         """Configure the data builder without loading data from data_dir/gold."""
         self.gold_data_dir = os.path.join(data_dir, "gold")
-        self.config = config
+        self.config = dict(config)
         self.target = config["target"]
+        split_config = dict(config.get("split", {}))
+        self.split_years = SplitYears.from_config(split_config)
+        # TODO: should go away with config class.
+        self.config["split"] = {**split_config, "prediction_season": self.split_years.prediction_season}
         self.positions = config.get("positions") or None
-        self.split_years = SplitYears.from_config(config.get("split", {}))
         # TODO: why does target_season need to be added here? Why cant it be in the registry?
         self.identity_cols = get_identity_columns("nflverse", "player_stats") + ["target_season"]
         self._data_splits: Optional[dict[str, Any]] = None
@@ -135,12 +156,7 @@ class ModelDataBuilder(ABC):
 
     @abstractmethod
     def _build_data_splits(self) -> dict[str, Any]:
-        """Build fresh train/eval/test datasets in the subclass's model-specific format."""
-        raise NotImplementedError
-
-    @abstractmethod
-    def build_prediction_data(self) -> Any:
-        """Build prediction data in the subclass's model-specific format."""
+        """Build fresh train/eval/test/prediction datasets in model-specific format."""
         raise NotImplementedError
 
     @staticmethod

@@ -107,6 +107,13 @@ class TabularModelInference:
         model_version, source_run_id = int(mv.version), mv.run_id
         config = load_data_builder_config(source_run_id)
         data_builder = TabularModelDataBuilder(data_dir=data_dir, config=config)
+        if config.get("split", {}).get("prediction_season") is None:
+            logger.warning(
+                "Legacy model %s v%s has no saved prediction_season; temporarily using "
+                "current roster season %s. Migrate retained models to an explicit season "
+                "during artifact cleanup.",
+                registered_model, model_version, data_builder.split_years.prediction_season,
+            )
 
         return cls(
             pipeline=pipeline,
@@ -370,12 +377,12 @@ class TabularModelInference:
         Returns:
             DataFrame of live predictions (see _predict()).
         """
-        prediction_set = self.data_builder.build_prediction_data()
-        X = self._select_pipeline_features(prediction_set["features"])
+        data = self.data_builder.get_data_splits()
+        X = self._select_pipeline_features(data["X_pred"])
 
         return self._predict(
             X=X,
-            identity=prediction_set["identity"],
+            identity=data["identity_pred"],
             run_id=run_id,
             csv_path=csv_path,
         )

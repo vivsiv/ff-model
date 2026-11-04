@@ -12,6 +12,10 @@ This project builds both tabular and sequential machine learning models for pred
 
 Dependencies are managed with uv
 
+# Testing
+- Tests of DataFrame transformations should generally construct the full expected DataFrame and compare it with `pd.testing.assert_frame_equal(actual, expected)`. This checks values, columns, row counts, indexes, and dtypes together.
+- Use focused assertions instead when the test intentionally targets a specific DataFrame detail, such as one column, a dtype, missing-value behavior, or an error condition.
+
 # Plans
 Current project plans can be found in .plan/. Typically work goes in before the football season to refresh and improve the models
 before the next football season.

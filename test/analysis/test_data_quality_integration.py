@@ -1,6 +1,6 @@
 """
 Integration tests that run the real data_quality checks against real, on-disk gold-layer
-output (data/gold/{target}__training_set.csv / __prediction_set.csv).
+output (data/gold/{target}__2026.csv).
 
 Excluded from the default test run (see pyproject.toml's `addopts`/`markers`) since they:
   - depend on real generated data existing on disk (gitignored, not present in a fresh
@@ -24,6 +24,7 @@ pytestmark = pytest.mark.integration
 DATA_DIR = "data"
 GOLD_DIR = os.path.join(DATA_DIR, "gold")
 TARGETS = ["fantasy_points_ppr", "ppr_points_per_game"]
+PREDICTION_SEASON = 2026  # These spot checks are tied to this snapshot, not the current season.
 
 NON_FEATURE_COLS = get_identity_columns("nflverse", "player_stats") + ["target_season", "target"]
 
@@ -40,20 +41,22 @@ def _load_gold_csv(filename: str) -> pd.DataFrame:
 class TestTrainingDataQuality:
     # ids= makes the actual gold_dir/ filename being read show up directly in the test ID
     # (e.g. `pytest -v` output), rather than just the bare target name.
-    @pytest.mark.parametrize("target", TARGETS, ids=[f"{t}__training_set.csv" for t in TARGETS])
+    @pytest.mark.parametrize("target", TARGETS, ids=[f"{t}__{PREDICTION_SEASON}.csv" for t in TARGETS])
     def test_training_set_passes_quality_checks(self, target):
-        filename = f"{target}__training_set.csv"
-        training_data = _load_gold_csv(filename)
+        filename = f"{target}__{PREDICTION_SEASON}.csv"
+        gold_data = _load_gold_csv(filename)
+        training_data = gold_data[gold_data["target_season"] < PREDICTION_SEASON]
         feature_cols = [col for col in training_data.columns if col not in NON_FEATURE_COLS]
 
         run_training_data_quality_checks(training_data, feature_cols)
 
 
 class TestPredictionDataQuality:
-    @pytest.mark.parametrize("target", TARGETS, ids=[f"{t}__prediction_set.csv" for t in TARGETS])
+    @pytest.mark.parametrize("target", TARGETS, ids=[f"{t}__{PREDICTION_SEASON}.csv" for t in TARGETS])
     def test_prediction_set_passes_quality_checks(self, target):
-        filename = f"{target}__prediction_set.csv"
-        prediction_data = _load_gold_csv(filename)
+        filename = f"{target}__{PREDICTION_SEASON}.csv"
+        gold_data = _load_gold_csv(filename)
+        prediction_data = gold_data[gold_data["target_season"] == PREDICTION_SEASON]
         feature_cols = [col for col in prediction_data.columns if col not in NON_FEATURE_COLS]
 
         run_prediction_data_quality_checks(prediction_data, feature_cols)

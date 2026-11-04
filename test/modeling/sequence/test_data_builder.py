@@ -9,8 +9,8 @@ import pytest
 import torch
 
 from src.modeling.data_builder import ModelDataBuilder
-from src.modeling.sequence.data_builder import SequenceDataset, SequenceModelDataBuilder
-from src.processing.gold import load_training_set
+from src.modeling.sequence.data_builder import LOSS_STEP_COL, OUTPUT_STEP_COL, SequenceDataset, SequenceModelDataBuilder
+from src.processing.gold import load_gold_set
 
 
 def _assert_tensors_equal(actual: torch.Tensor, expected: torch.Tensor):
@@ -79,9 +79,17 @@ class TestSequenceDataset:
         )
 
 
-# TODO: revisit prediction-column reorder coverage after gold-table consolidation;
-# add it if separate training/prediction tables still need column-order reconciliation.
 class TestSequenceModelDataBuilder:
+    def test_get_input_rows_mask__uses_output_steps_independently_of_loss(self):
+        data = pd.DataFrame({
+            "player_id": ["A", "A", "A", "B", "B"],
+            "step_idx": [0, 1, 2, 0, 1],
+            OUTPUT_STEP_COL: [False, True, False, False, False],
+            LOSS_STEP_COL: [False, False, False, True, True],
+        })
+        mask = SequenceModelDataBuilder._get_input_rows_mask(data)
+        assert mask.tolist() == [True, True, False, False, False]
+
     def test_inheritance__uses_shared_base_and_helpers(self):
         assert SequenceModelDataBuilder.__bases__ == (ModelDataBuilder,)
         assert SequenceModelDataBuilder.from_config_file.__func__ is ModelDataBuilder.from_config_file.__func__
@@ -137,8 +145,9 @@ class TestSequenceModelDataBuilder:
     def _write_gold_tables(data_dir, training_df, prediction_df):
         gold_dir = os.path.join(data_dir, "gold")
         os.makedirs(gold_dir, exist_ok=True)
-        training_df.to_csv(os.path.join(gold_dir, "target_1__training_set.csv"), index=False)
-        prediction_df.to_csv(os.path.join(gold_dir, "target_1__prediction_set.csv"), index=False)
+        pd.concat([training_df, prediction_df], ignore_index=True).to_csv(
+            os.path.join(gold_dir, "target_1__2025.csv"), index=False
+        )
 
     @classmethod
     def _identity_frame(cls, steps) -> pd.DataFrame:
@@ -164,8 +173,14 @@ class TestSequenceModelDataBuilder:
         shutil.rmtree(cls.test_dir)
 
     def _prep(self, config=None) -> SequenceModelDataBuilder:
-        base = {"target": "target_1", "features": {"mode": "exclude", "columns": ["*_career_*"]}}
-        return SequenceModelDataBuilder(data_dir=self.test_dir, config={**base, **(config or {})})
+        base = {
+            "target": "target_1", "split": {"prediction_season": 2025},
+            "features": {"mode": "exclude", "columns": ["*_career_*"]},
+        }
+        config = config or {}
+        return SequenceModelDataBuilder(data_dir=self.test_dir, config={
+            **base, **config, "split": {**base["split"], **config.get("split", {})},
+        })
 
     def test_build_data_splits__resolves_feature_columns_correctly(self):
         data = self._prep()._build_data_splits()
@@ -179,7 +194,7 @@ class TestSequenceModelDataBuilder:
 
     def test_build_data_splits__orders_shuffled_rows_without_changing_step_alignment(self, tmp_path):
         config = {
-            "target": "target_1",
+            "target": "target_1", "split": {"prediction_season": 2025},
             "features": {"mode": "include", "columns": ["f1", "f2"]},
             "sample_weights": {"buckets": [
                 {"min": 0, "weight": 0.5},
@@ -188,12 +203,15 @@ class TestSequenceModelDataBuilder:
             ]},
         }
         expected = SequenceModelDataBuilder(self.test_dir, config)._build_data_splits()
-        shuffled = self._gold_frame(self.TRAINING_ROWS).sample(frac=1, random_state=42)
-        self._write_gold_tables(str(tmp_path), shuffled, self._gold_frame(self.PREDICTION_ROWS))
+        shuffled = self._gold_frame(self.TRAINING_ROWS + self.PREDICTION_ROWS).sample(frac=1, random_state=42)
+        gold_dir = tmp_path / "gold"
+        gold_dir.mkdir()
+        shuffled.to_csv(gold_dir / "target_1__2025.csv", index=False)
 
         actual = SequenceModelDataBuilder(str(tmp_path), config)._build_data_splits()
 
-        for split in ["train", "eval", "test"]:
+        assert set(actual) == set(expected) == {"train", "eval", "test", "prediction"}
+        for split in expected:
             identity = actual[split].identity
             pd.testing.assert_frame_equal(
                 identity,
@@ -202,7 +220,7 @@ class TestSequenceModelDataBuilder:
             _assert_sequence_datasets_equal(actual[split], expected[split])
 
     def test_get_data_splits__builds_lazily_then_reuses_cache(self):
-        with patch("src.modeling.sequence.data_builder.load_training_set", wraps=load_training_set) as load:
+        with patch("src.modeling.sequence.data_builder.load_gold_set", wraps=load_gold_set) as load:
             builder = self._prep()
             load.assert_not_called()
             assert not hasattr(builder, "source_data")
@@ -212,23 +230,25 @@ class TestSequenceModelDataBuilder:
 
                 assert builder.get_data_splits() is first
                 assert load.call_count == 1
-                assert assemble.call_count == 3
+                assert assemble.call_count == 4
 
     def test_get_data_splits__recompute_reloads_source_and_replaces_cache(self, tmp_path):
         source = self._gold_frame(self.TRAINING_ROWS)
         self._write_gold_tables(str(tmp_path), source, self._gold_frame(self.PREDICTION_ROWS))
-        builder = SequenceModelDataBuilder(str(tmp_path), {"target": "target_1"})
+        builder = SequenceModelDataBuilder(str(tmp_path), {"target": "target_1", "split": {"prediction_season": 2025}})
         first = builder.get_data_splits()
 
         source["target"] += 100
-        source.to_csv(tmp_path / "gold" / "target_1__training_set.csv", index=False)
+        self._write_gold_tables(str(tmp_path), source, self._gold_frame(self.PREDICTION_ROWS))
 
         assert builder.get_data_splits() is first
         refreshed = builder.get_data_splits(recompute=True)
 
         assert refreshed is not first
         assert builder.get_data_splits() is refreshed
-        pd.testing.assert_frame_equal(builder.source_data, source)
+        pd.testing.assert_frame_equal(
+            builder.source_data, pd.concat([source, self._gold_frame(self.PREDICTION_ROWS)], ignore_index=True)
+        )
         for split in ["train", "eval", "test"]:
             old, new = first[split], refreshed[split]
             _assert_tensors_equal(new.X, old.X)
@@ -271,7 +291,7 @@ class TestSequenceModelDataBuilder:
         ]
         self._write_gold_tables(str(tmp_path), self._gold_frame(rows), self._gold_frame(self.PREDICTION_ROWS))
         builder = SequenceModelDataBuilder(str(tmp_path), {
-            "target": "target_1",
+            "target": "target_1", "split": {"prediction_season": 2025},
             "features": {"mode": "include", "columns": ["f1", "f2"]},
             "sample_weights": {"buckets": [{"min": 0, "weight": 0.5}, {"min": 10, "weight": 2.0}]},
         })
@@ -428,40 +448,13 @@ class TestSequenceModelDataBuilder:
         with pytest.raises(ValueError, match="exceeds"):
             self._prep({"split": {"num_training_seasons": 10}})._build_data_splits()
 
-    def test_build_data_splits__raises_on_duplicate_player_season(self):
-        test_dir = tempfile.mkdtemp()
-        try:
-            training_df = self._gold_frame(self.TRAINING_ROWS + [self.TRAINING_ROWS[0]])
-            self._write_gold_tables(test_dir, training_df, self._gold_frame(self.PREDICTION_ROWS))
-            prep = SequenceModelDataBuilder(data_dir=test_dir, config={"target": "target_1"})
-
-            with pytest.raises(ValueError, match="More than one row"):
-                prep._build_data_splits()
-        finally:
-            shutil.rmtree(test_dir)
-
-    def test_build_data_splits__raises_on_non_numeric_feature(self):
-        test_dir = tempfile.mkdtemp()
-        try:
-            training_df = self._gold_frame(self.TRAINING_ROWS)
-            training_df["team_name"] = "KC"
-            prediction_df = self._gold_frame(self.PREDICTION_ROWS)
-            prediction_df["team_name"] = "KC"
-            self._write_gold_tables(test_dir, training_df, prediction_df)
-            prep = SequenceModelDataBuilder(data_dir=test_dir, config={"target": "target_1"})
-
-            with pytest.raises(ValueError, match="team_name"):
-                prep._build_data_splits()
-        finally:
-            shutil.rmtree(test_dir)
-
     def test_build_data_splits__keeps_missing_feature_values_as_nan(self):
         test_dir = tempfile.mkdtemp()
         try:
             training_df = self._gold_frame(self.TRAINING_ROWS)
             training_df.loc[(training_df["player_id"] == "D"), "f2"] = np.nan
             self._write_gold_tables(test_dir, training_df, self._gold_frame(self.PREDICTION_ROWS))
-            prep = SequenceModelDataBuilder(data_dir=test_dir, config={"target": "target_1"})
+            prep = SequenceModelDataBuilder(data_dir=test_dir, config={"target": "target_1", "split": {"prediction_season": 2025}})
 
             train = prep._build_data_splits()["train"]
             d_row = train.identity.index[train.identity["player_id"] == "D"][0]
@@ -469,8 +462,8 @@ class TestSequenceModelDataBuilder:
         finally:
             shutil.rmtree(test_dir)
 
-    def test_build_prediction_data__generates_prediction_set_correctly(self):
-        prediction = self._prep().build_prediction_data()
+    def test_build_data_splits__generates_prediction_split_correctly(self):
+        prediction = self._prep().get_data_splits()["prediction"]
 
         # - Each listed player's training steps are followed by their prediction row (2024, predicting 2025).
         # - D & E aren't in the prediction set, F has only the prediction row.
@@ -494,55 +487,51 @@ class TestSequenceModelDataBuilder:
                 (2, 0, "F", 2024, 2025),
             ]),
             feature_columns=["f1", "f2"],
+            y=torch.zeros((3, 5), dtype=torch.float32),
+            loss_mask=torch.zeros((3, 5), dtype=torch.bool),
         )
 
         _assert_sequence_datasets_equal(prediction, expected)
 
-    def test_build_prediction_data__respects_position_filter(self):
-        prediction = self._prep({"positions": ["WR", "TE"]}).build_prediction_data()
+    def test_build_data_splits__prediction_respects_position_filter(self):
+        prediction = self._prep({"positions": ["WR", "TE"]}).get_data_splits()["prediction"]
 
         assert set(prediction.identity["player_id"]) == {"A", "F"}
 
-    def test_build_prediction_data__raises_when_prediction_row_is_not_the_latest_season(self):
-        test_dir = tempfile.mkdtemp()
-        try:
-            stale_prediction_rows = [("A", 2019, 2025, np.nan)]
-            self._write_gold_tables(test_dir, self._gold_frame(self.TRAINING_ROWS), self._gold_frame(stale_prediction_rows))
-            prep = SequenceModelDataBuilder(data_dir=test_dir, config={"target": "target_1"})
+    def test_prediction_split__backtest_hides_known_targets_and_trims_future_steps(self):
+        source = self._gold_frame(self.TRAINING_ROWS + self.PREDICTION_ROWS)
+        original = source.copy(deep=True)
+        builder = self._prep({"split": {"prediction_season": 2023}})
+        with patch("src.modeling.sequence.data_builder.load_gold_set", return_value=source):
+            splits = builder.get_data_splits()
 
-            with pytest.raises(ValueError, match="latest season"):
-                prep.build_prediction_data()
-        finally:
-            shutil.rmtree(test_dir)
+        prediction = splits["prediction"]
+        assert set(prediction.last_step_identity()["target_season"]) == {2023}
+        assert set(prediction.last_step_identity()["player_id"]) == {"A", "B", "C", "E"}
+        assert (prediction.identity["target_season"] <= 2023).all()
+        assert not prediction.loss_mask.any()
+        assert torch.count_nonzero(prediction.y) == 0
+        assert prediction.sample_weight is None
+        assert "target" not in prediction.feature_columns
+        assert prediction.X[prediction.real_step_mask][:, 0].max().item() == 2022
+        for split in ["train", "eval", "test"]:
+            assert (splits[split].identity["target_season"] < 2023).all()
+        assert splits["train"].X.shape == (0, 0, 2)
+        assert splits["train"].identity.empty
+        assert splits["train"].sample_weight.numel() == 0
+        pd.testing.assert_frame_equal(source, original)
 
-    def test_build_prediction_data__raises_when_prediction_row_repeats_a_training_season(self):
-        test_dir = tempfile.mkdtemp()
-        try:
-            repeated_prediction_rows = [("A", 2023, 2025, np.nan)]
-            self._write_gold_tables(test_dir, self._gold_frame(self.TRAINING_ROWS), self._gold_frame(repeated_prediction_rows))
-            prep = SequenceModelDataBuilder(data_dir=test_dir, config={"target": "target_1"})
-
-            with pytest.raises(ValueError, match="More than one row"):
-                prep.build_prediction_data()
-        finally:
-            shutil.rmtree(test_dir)
-
-    def test_build_prediction_data__raises_when_columns_differ(self):
-        test_dir = tempfile.mkdtemp()
-        try:
-            prediction_df = self._gold_frame(self.PREDICTION_ROWS).drop(columns=["f2"])
-            self._write_gold_tables(test_dir, self._gold_frame(self.TRAINING_ROWS), prediction_df)
-            prep = SequenceModelDataBuilder(data_dir=test_dir, config={"target": "target_1"})
-
-            with pytest.raises(ValueError, match="same columns"):
-                prep.build_prediction_data()
-        finally:
-            shutil.rmtree(test_dir)
+    def test_prediction_split__is_cached_with_other_splits_after_one_gold_load(self):
+        builder = self._prep()
+        with patch("src.modeling.sequence.data_builder.load_gold_set", wraps=load_gold_set) as load:
+            first = builder.get_data_splits()
+            assert builder.get_data_splits()["prediction"] is first["prediction"]
+            load.assert_called_once()
 
     def test_from_config_file__loads_yaml_config(self):
         config_path = os.path.join(self.test_dir, "config.yaml")
         with open(config_path, "w") as f:
-            f.write("target: target_1\nfeatures:\n  mode: exclude\n  columns:\n    - '*_career_*'\n")
+            f.write("target: target_1\nsplit:\n  prediction_season: 2025\nfeatures:\n  mode: exclude\n  columns:\n    - '*_career_*'\n")
 
         prep = SequenceModelDataBuilder.from_config_file(self.test_dir, config_path)
 

@@ -6,8 +6,8 @@ import numpy as np
 import pandas as pd
 import torch
 
-from src.modeling.data_builder import TRAIN_SPLIT, ModelDataBuilder
-from src.processing.gold import TARGET_COL, load_prediction_set, load_training_set
+from src.modeling.data_builder import PREDICTION_SPLIT, TRAIN_SPLIT, ModelDataBuilder
+from src.processing.gold import TARGET_COL, load_gold_set
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +18,7 @@ TARGET_SEASON_COL = "target_season"
 
 # Per-step columns attached to a split's steps while it is being assembled, so every per-step value is trimmed
 # and ordered together with the rows. Never features/identity (those are resolved from the gold columns first).
+OUTPUT_STEP_COL = "_is_output_step"
 LOSS_STEP_COL = "_is_loss_step"
 SAMPLE_WEIGHT_COL = "_sample_weight"
 
@@ -25,7 +26,7 @@ SAMPLE_WEIGHT_COL = "_sample_weight"
 @dataclass
 class SequenceDataset:
     """
-    A sequential dataset for a split (train, eval, or test).
+    A sequential dataset for a split (train, eval, test, or prediction).
 
     Each tabular row (player, season, target_season, target) becomes one step in a player's sequence, steps are ordered by season.
     The target is the player's target value for a step's target_season (the player's next active season).
@@ -103,7 +104,7 @@ class SequenceDataset:
 
 class SequenceModelDataBuilder(ModelDataBuilder):
     """
-    Builds SequenceDatasets from a target's gold training and prediction tables.
+    Builds SequenceDatasets from a target's combined, season-specific gold table.
     Uses ModelDataBuilder's shared config schema to define:
     the target, seasons per data split, sample weighting for training, and feature inclusion/exclusion.
     """
@@ -115,30 +116,32 @@ class SequenceModelDataBuilder(ModelDataBuilder):
         Splitting is done on a step's target_season.
 
         - A step contributes to loss for the split when it has a target value and its target_season is in the split's seasons.
-        - Every split holds each player's full history up to their last loss step as input, so an eval
-          step sees the player's training-era seasons, and a training window (num_training_seasons) limits
+        - Every split holds each player's full history through their last output step:
+          a loss step for train/eval/test, or the prediction endpoint for prediction.
+          An eval step sees training-era history, and num_training_seasons limits
           loss steps without hiding older history from the inputs.
-        - Steps after a player's last loss step are removed, so a split never contains inputs from a
-          period after what it scores, whatever the model architecture (a bidirectional model could not leak).
-        - Players with no loss steps in a split are left out of it.
+        - Steps after a player's last output step are removed, including for prediction,
+          so inputs never extend beyond the season being scored or predicted.
+        - Players with no output steps in a split are left out of it.
 
         Returns:
-            dict with "train", "eval", "test" SequenceDatasets (y/loss_mask set, sample_weight on "train" only).
+            dict with "train", "eval", "test", "prediction" SequenceDatasets.
+            Prediction holds each selected player's history through their prediction step,
+            with y zeroed and loss_mask false even if gold contains known targets.
+            Sample weights are set on "train" only.
             Always builds fresh data; use get_data_splits() for cached access.
 
         Raises:
             ValueError: If split config's num_training_seasons + eval_data_years + test_data_years exceeds
-                the total number of distinct seasons available, if a player has two rows for one season, or if a
-                selected feature is not numeric.
+                the total number of distinct seasons available.
         """
-        self.source_data = load_training_set(self.gold_data_dir, self.target)
+        self.source_data = load_gold_set(self.gold_data_dir, self.target, self.split_years.prediction_season)
 
         data = self.source_data
         if self.positions:
             data = self._filter_positions(data, self.positions)
 
         feature_cols = self._resolve_feature_columns(data.columns)
-        self._check_numeric(data, feature_cols)
 
         data = self._order_by_step(data)
         split_masks = self.split_years.to_masks(data[TARGET_SEASON_COL])
@@ -147,10 +150,20 @@ class SequenceModelDataBuilder(ModelDataBuilder):
 
         datasets = {}
         for split, split_mask in split_masks.items():
-            split_data = data.assign(**{LOSS_STEP_COL: split_mask & is_labeled})
+            # Output steps define input endpoints; prediction outputs never contribute to loss.
+            output_steps = split_mask if split == PREDICTION_SPLIT else split_mask & is_labeled
+            split_data = data.assign(**{OUTPUT_STEP_COL: output_steps})
             split_data = split_data[self._get_input_rows_mask(split_data)]
+
+            split_data = split_data.assign(**{
+                LOSS_STEP_COL: split_data[OUTPUT_STEP_COL] & (split != PREDICTION_SPLIT),
+            })
+
+            if split == PREDICTION_SPLIT:
+                split_data = split_data.assign(**{TARGET_COL: 0.0})
+
             if split == TRAIN_SPLIT:
-                split_data[SAMPLE_WEIGHT_COL] = sample_weights
+                split_data[SAMPLE_WEIGHT_COL] = sample_weights.reindex(split_data.index)
 
             datasets[split] = self._build_sequence_dataset(split_data, feature_cols)
             logger.info(
@@ -160,64 +173,12 @@ class SequenceModelDataBuilder(ModelDataBuilder):
 
         return datasets
 
-    def build_prediction_data(self) -> SequenceDataset:
-        """
-        Builds prediction sequences by appending each player's prediction row to their historical rows.
-        The prediction row becomes the last step, which is used to generate the prediction.
-
-        Returns:
-            SequenceDataset (no y/loss_mask/sample_weight) with one sequence per player in the prediction set.
-            Use last_step_mask / last_step_identity() to pick out the predictions.
-
-        Raises:
-            ValueError: If the training and prediction sets don't have the same columns, a prediction row's season
-                is not later than all of the player's training rows, or a selected feature is not numeric.
-        """
-        training_data = load_training_set(self.gold_data_dir, self.target)
-        prediction_data = load_prediction_set(self.gold_data_dir, self.target)
-
-        if self.positions:
-            training_data = self._filter_positions(training_data, self.positions)
-            prediction_data = self._filter_positions(prediction_data, self.positions)
-
-        # TODO: move data validations into gold
-        if set(training_data.columns) != set(prediction_data.columns):
-            raise ValueError("Training set and prediction set must have the same columns")
-
-        history = training_data[training_data[PLAYER_COL].isin(prediction_data[PLAYER_COL])]
-        combined = pd.concat([history, prediction_data[history.columns]], ignore_index=True)
-
-        feature_cols = self._resolve_feature_columns(combined.columns)
-        self._check_numeric(combined, feature_cols)
-        data = self._order_by_step(combined)
-
-        # Gets the season for each player in the prediction set and compares it to the max season for each player in the combined set.
-        # TODO: move data validations into gold.
-        prediction_seasons = prediction_data.set_index(PLAYER_COL)[SEASON_COL]
-        last_seasons = data.groupby(PLAYER_COL)[SEASON_COL].transform("max")
-        if (last_seasons != data[PLAYER_COL].map(prediction_seasons)).any():
-            raise ValueError("A player's prediction row must be their latest season")
-
-        return self._build_sequence_dataset(data, feature_cols)
-
-    @staticmethod
-    def _check_numeric(data: pd.DataFrame, feature_cols: List[str]) -> None:
-        non_numeric = [col for col in feature_cols if not pd.api.types.is_numeric_dtype(data[col])]
-        if non_numeric:
-            raise ValueError(f"Selected features must be numeric, got non-numeric: {non_numeric}")
-
     @staticmethod
     def _order_by_step(data: pd.DataFrame) -> pd.DataFrame:
         """
         Orders rows by player and season, adds a "step_idx" that starts at 0 for each player and increases for each player-season combo.
 
-        Raises:
-            ValueError: If a player has two rows for the same season.
         """
-        #TODO: move data validation into gold.
-        if data.duplicated([PLAYER_COL, SEASON_COL]).any():
-            raise ValueError(f"More than one row for some ({PLAYER_COL}, {SEASON_COL})")
-
         data = data.sort_values([PLAYER_COL, SEASON_COL]).reset_index(drop=True)
         data["step_idx"] = data.groupby(PLAYER_COL).cumcount()
         return data
@@ -226,17 +187,18 @@ class SequenceModelDataBuilder(ModelDataBuilder):
     def _get_input_rows_mask(data: pd.DataFrame) -> pd.Series:
         """
         Finds the rows a split's dataset reads as input: each player's steps from their first season up to and
-        including their last loss step in the split.
+        including their last output step in the split. Output endpoints control
+        input history independently of whether a step contributes to loss.
 
         Args:
-            data: Output of _order_by_step with a LOSS_STEP_COL column.
+            data: Output of _order_by_step with an OUTPUT_STEP_COL column.
 
         Returns:
-            Boolean Series aligned with data, True for input rows. False for every step of a player with no loss
+            Boolean Series aligned with data, True for input rows. False for every step of a player with no output
             steps in the split, since such players are left out of the split entirely.
         """
-        last_loss_step = data["step_idx"].where(data[LOSS_STEP_COL]).groupby(data[PLAYER_COL]).transform("max")
-        return data["step_idx"] <= last_loss_step
+        last_output_step = data["step_idx"].where(data[OUTPUT_STEP_COL]).groupby(data[PLAYER_COL]).transform("max")
+        return data["step_idx"] <= last_output_step
 
     def _build_sequence_dataset(self, data: pd.DataFrame, feature_cols: List[str]) -> SequenceDataset:
         """

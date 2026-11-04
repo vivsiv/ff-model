@@ -455,3 +455,186 @@ low-experience players (`years_played <= 1`) as a diagnostic once the model
 is being evaluated, since that's specifically the population the career-length
 redesign was about (the Brian Thomas Jr. case that started this whole
 discussion) — a good overall score could still mask poor performance there.
+
+## Phase 5.3 — Combined, season-specific gold tables (2026-11-02)
+
+- Renamed `TrainingSetBuilder` to `GoldSetBuilder` to reflect its shared gold-layer
+  responsibility rather than model-specific training-set construction.
+- Initially renamed `build_training_set` to `build_historical_set`, then unified the
+  historical/prediction enrichment paths as `build_gold_set`. `main` prepares rows
+  via `prepare_player_rows`, which appends current identities to prior features,
+  applies `_join_with_target` once, and returns only player rows. A separate
+  `build_player_team_by_season` method independently creates the team lookup,
+  including rookies/free agents. It adds team/draft features once using that lookup.
+  It then validates the combined table and calls `save_to_gold` for rounding and
+  persistence. Row preparation and enrichment return unrounded rows without saving.
+- Gold output is now `{target_col}__{current_season}.csv`. Gold uses current-season
+  terminology (`load_current_players`, blank-target current rows); modeling retains
+  `prediction_season` as the saved snapshot-selection config key. Builds use the latest
+  rankings and nflreadpy's current roster season (rollover on March 15); there is no
+  historical player-pool reconstruction or prediction-season CLI override. Player
+  feature seasons at or after the prediction season are excluded.
+- Structural checks formerly in sequence preparation now live in gold's
+  `validate_data`. Analysis quality checks remain separate and unchanged; their
+  integration tests select historical/prediction rows from the combined 2026 file.
+- Tabular and sequence builders read one gold table. Only historical target seasons
+  determine scored split boundaries. `SplitYears` owns `prediction_season` (defaulting
+  to the current roster year), excludes that year and later years in its masks, and
+  counts only historical seasons when validating requested windows. The builders
+  no longer pre-filter historical rows independently. Prediction sequences retain the selected
+  players' historical rows and end at their prediction row.
+- Model configs support `prediction_season`, defaulting to the current roster year
+  and recording the resolved value in the existing MLflow config artifact. Registered
+   model names are unchanged. Registry configs without a pinned year temporarily
+   default to the current roster season with a warning. Selection of retained models
+   and migration to explicitly pinned seasons are deferred to artifact cleanup.
+- Generated real `fantasy_points_ppr__2026.csv` and `ppr_points_per_game__2026.csv`
+  from the existing silver snapshot without refreshing upstream sources. Each has
+  11,372 rows x 943 columns: 11,152 historical rows (targets 2000–2025) and 220
+  blank-target current rows. The rankings contain 249 players; 29 lack prior stats.
+- Historical values match both legacy training CSVs exactly. Current values match
+  the legacy per-game prediction CSV exactly. The older total-PPR prediction CSV
+  contains 3,400 additional players absent from current rankings and assumes no team
+  changes. All non-team values match for the 220 overlapping players; team features
+  differ for 41 players and were independently reconstructed from the current teams.
+- Real-data integration checks: 4 passed. Tabular and sequence data preparation
+  smoke checks passed: training scores 2014–2023 (4,509 rows/steps), eval scores 2024
+  (471), test scores 2025 (486), and current preparation produces 220 players/sequences
+  targeting 2026. No model training was performed.
+- SHA-256 hashes confirm all five silver inputs and four legacy gold CSVs were
+  preserved. Saved model artifacts were not migrated. Default suite: 311 passed,
+   4 integration tests deselected. CLI help and `git diff --check` verified.
+
+## PR #45 comment follow-up (2026-11-02)
+
+Comments reviewed on PR head `252d41fe8913117804492c5c96031b42aca6c1bf`.
+Existing staged changes, including temporary legacy-model fallback, were preserved.
+
+### Applied changes
+
+- Added a `prediction` mask to `SplitYears.to_masks`. Both data builders now create
+  prediction data inside `_build_data_splits`, using the same masks, gold load, and
+  cache as the scored splits. Tabular prediction uses flat `X_pred`/`identity_pred` keys;
+  sequence prediction is a `SequenceDataset` with zero targets and a false loss mask.
+- Prediction sequences are trimmed at their selected prediction step, so later gold
+  rows do not leak into backtests. Known targets remain intact in source data but
+  are neither returned as tabular prediction targets nor exposed in prediction tensors.
+- Moved the canonical config field to `split.prediction_season` and removed the
+  extra `SplitYears.from_config` parameter and `ModelDataBuilder.prediction_season`
+  property. Configs use the nested field only; unused top-level compatibility handling
+  was removed on 2026-11-03, along with its tests, and all fixtures were updated.
+- Renamed `non_numeric` to `non_numeric_feature_cols` in gold validation and added
+  the requested TODOs for composable validation functions and silver-loader ownership.
+- Fixed an empty-training-split edge case exposed by the backtest test: sample
+  weights are aligned to retained row indices so assigning them cannot create
+  phantom rows in an empty sequence split.
+
+### Verification
+
+- `uv run --no-sync pytest -m ""`: 319 passed, including all four real-data integration
+  checks. `git diff --check` passed.
+- Real tabular/sequence data preparation retains the previous scored split counts
+  (4,509 train, 471 eval, 486 test) and returns 220 cached prediction rows/sequences.
+  Prediction sequence targets are all zero and no prediction step contributes to loss.
+- No real data or saved model artifacts were rebuilt or migrated in this follow-up.
+  No GitHub comments were posted and no review threads were resolved.
+
+### Questions to discuss together
+
+1. **Backtest source selection:** should an independent gold snapshot year/path allow
+   `split.prediction_season=2024` against the existing 2026 gold file, or should
+   backtests require separately named historical gold snapshots? Target masking and
+   future-step trimming are implemented, but the filename is still selected using
+   the prediction year. Historical labeled rows also represent a different player
+   pool from a true archived preseason roster. [Related comment](https://github.com/vivsiv/ff-model/pull/45#discussion_r4447782689).
+2. **Validation ownership:** should structural checks live in a shared processing
+   validation module and be reused by analysis, or remain gold-owned? Splitting each
+   check into a function is recorded as requested; analysis's snapshot-specific
+   assertions remain separate. [Related TODO comment](https://github.com/vivsiv/ff-model/pull/45#discussion_r4447885755).
+3. **Silver-loader ownership:** should loading silver tables belong to the source
+   processor class or standalone source-specific loader helpers? Feature engineering
+   should remain in gold regardless. The requested TODO is in `load_current_players`.
+   [Related comment](https://github.com/vivsiv/ff-model/pull/45#discussion_r4447932578).
+
+## Gold test coverage follow-ups (2026-11-03)
+
+Saved from the tester's audit of `test/processing/test_gold.py` against
+`src/processing/gold.py`. The requested run passed all 59 tests. Numerical coverage
+was not measured; these are coverage observations, not confirmed defects. Establish
+the intended validation/cardinality policies before adding rejection assertions.
+
+1. **Validation boundaries:** missing player IDs and source season identifiers are
+   silver integrity concerns, deferred to plan 6.2 (decision on 2026-11-04), not missing
+   optional feature values. Historical feature seasons equal to/later than their target
+   seasons are now explicitly rejected and tested in gold. Missing source seasons and
+   duplicate current-player inputs belong to silver validation; manufactured malformed
+   gold rows for those cases are not a priority. Existing final gold guards remain.
+2. **Silver-loader wiring:** directly test `load_draft_features` and `load_team_features`
+   with temporary silver CSVs. Assert registry projection, draft-year renaming, and
+   null-team filtering; existing main tests mock these loaders. This wiring coverage
+   is deferred to the golden pipeline test in plan 6.1 rather than more heavyweight
+   loader unit tests.
+3. **Current-player pool integrity:** empty rankings, expected population size, and
+   unique/non-null player IDs belong to silver validation (plan 6.2), per the
+   2026-11-04 discussion. Gold's existing empty-input and uniqueness safeguards stay,
+   but artificial malformed-pool cases are not a gold testing priority. The actual
+   `FF_RANKINGS_LIMIT` is 250, applied before ID mapping and deduplication; final
+   silver rows may legitimately be fewer (249 in the verified snapshot). Decide an
+   appropriate completeness/minimum-count policy rather than assuming exactly 250
+   mapped players. Gold's eligible population is smaller still because rookies with
+   no prior stats cannot produce feature rows (220 in that snapshot).
+4. **Join cardinality/context:** normal join keys, season selection, player isolation,
+   and output cardinality are covered by existing expected-dataset tests. The four
+   team-join tests now compare complete expected DataFrames, including row counts and
+   removal of temporary columns. Duplicate source join keys are a silver concern
+   (plan 6.2), not a reason for another generic gold join test. The existing fallback
+   test now covers both an absent current-season mapping and a matched free-agent
+   mapping with a null team; both must use the prior team's actual stats. Unavailable
+   origin/destination stats are a cross-table gold concern: they now use the league
+   average from the feature season (decision on 2026-11-04). Tests cover missing
+   destination, missing origin, both missing, a missing stat on an existing team row,
+   and preserving NaN when no feature-season average is available. Target-season
+   team stats must never supply this fallback.
+
+### Team-stat fallback verification (2026-11-04)
+
+- Full suite including integration: 332 passed. `git diff --check` passed.
+- In-memory assembly of both real gold targets fills team context in 217 rows each.
+  All non-team fields and previously known team values match the saved CSVs exactly.
+  No generated files were rewritten; the existing gold snapshots predate this fallback.
+
+## Local REVIEW comment cleanup (2026-11-03)
+
+- Moved rounding exclusions into `GoldSetBuilder` and renamed the main current-player
+  variable to `current_players_df`.
+- Factored row assembly into `prepare_player_rows` and team-lookup assembly into the
+  independent `build_player_team_by_season`, both with direct tests.
+  Current-player identities are appended to strictly prior feature rows before one
+  backward asof target join; current targets stay blank, current/future stats cannot
+  supply features, gap seasons are preserved, and rookies without history are omitted.
+  The redundant `_build_current_rows` path was removed. An ordinary same-season left
+  join would not provide the required prior-season matching behavior.
+- Reordered builder test groups to follow source method order, kept validation/main/
+  loader tests in their existing separate classes, and changed career-feature checks
+  to expected-DataFrame comparisons.
+- Verification: `test/processing/test_gold.py` has 62 passing tests; the full suite
+  including integration has 324 passing tests. Both real target tables have exact
+  value parity after in-memory assembly/rounding/CSV serialization (11,372 x 943),
+  ignoring row/column order and inferred dtypes. No real CSVs were written or upstream
+  inputs refreshed. The tester's remaining coverage notes are saved above.
+
+### Further naming cleanup
+
+- Renamed `load_player_features` to `load_player_stat_features`, updating main and
+  all direct tests/mocks. Its local dataframe and registry selections now use the
+  `player_stats_*` naming requested in the review comments.
+- `_add_career_features` now takes `player_stats_df` and groups on the fixed
+  `player_id` column; the unused grouping-column parameter was removed. Shared
+  column constants remain deferred as requested.
+- Preserved the user's `player_rows_df` rename and fixed its incomplete use inside
+  `build_gold_set`, which otherwise referenced the undefined old name `rows_df`.
+- The new multi-target-gold TODO remains deferred: building all future targets in
+  one table would also require changing model target selection, excluding every
+  future-target column from features, and deciding how to version the gold output.
+- Latest full-suite run: 324 passed, including the four integration checks; source
+  method/test ordering and `git diff --check` also passed. No real data was rewritten.
