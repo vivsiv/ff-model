@@ -59,6 +59,37 @@ class TestSequenceDataset:
             ]),
         )
 
+    def test_build_real_step_mask(self):
+        _assert_tensors_equal(
+            SequenceDataset.build_real_step_mask(torch.tensor([1, 3, 0]), 4),
+            torch.tensor([
+                [True, False, False, False],
+                [True, True, True, False],
+                [False, False, False, False],
+            ]),
+        )
+
+    def test_build_real_step_mask_empty(self):
+        _assert_tensors_equal(
+            SequenceDataset.build_real_step_mask(torch.empty(0, dtype=torch.int64), 0),
+            torch.empty((0, 0), dtype=torch.bool),
+        )
+
+    @pytest.mark.parametrize("device", ["cuda", "mps"])
+    def test_real_step_mask_accelerator(self, device):
+        available = torch.cuda.is_available() if device == "cuda" else torch.backends.mps.is_available()
+        if not available:
+            pytest.skip(f"{device} is unavailable")
+        dataset = self._dataset()
+        dataset.X = dataset.X.to(device)
+        expected = torch.tensor([[True, True, True], [True, False, False]], device=device)
+
+        _assert_tensors_equal(dataset.real_step_mask, expected)
+        _assert_tensors_equal(
+            SequenceDataset.build_real_step_mask(dataset.lengths.to(device), 3),
+            expected,
+        )
+
     def test_last_step_mask(self):
         dataset = self._dataset()
 

@@ -76,6 +76,12 @@ class SequenceDataset:
     loss_mask: Optional[torch.Tensor] = None
     sample_weight: Optional[torch.Tensor] = None
 
+    @staticmethod
+    def build_real_step_mask(lengths: torch.Tensor, max_steps: int) -> torch.Tensor:
+        """Return an [N, max_steps] boolean mask on the lengths tensor's device."""
+        # Compare every step index with each player's length using broadcasting.
+        return torch.arange(max_steps, device=lengths.device)[None, :] < lengths[:, None]
+
     @property
     def real_step_mask(self) -> torch.Tensor:
         """
@@ -87,9 +93,7 @@ class SequenceDataset:
             ])
 
         """
-        max_step = self.X.shape[1] # torch.tensor([0, 1, 2])
-        # torch.tensor([0, 1, 2]) < torch.tensor([[3], [1]]) -> torch.tensor([T, T, T], [T, F, F]) (broadcasting on the steps tensor)
-        return torch.arange(max_step)[None, :] < self.lengths[:, None]
+        return self.build_real_step_mask(self.lengths.to(self.X.device), self.X.shape[1])
 
     @property
     def last_step_mask(self) -> torch.Tensor:
