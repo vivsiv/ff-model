@@ -85,7 +85,7 @@ PHASE 5. Sequential Model [IN PROGRESS]
 1. Build the sequence data prep: the analog of TabularModelDataBuilder (src/modeling/) that assembles sequences from gold data and masks them [DONE]
 2. Refactor tabular and sequence into their own subdirs, extract common dataprep code [DONE]
 3. Rename training set created by gold to something else (probably gold), combine prediction set into gold. [DONE]
-4. Build an lstm model and evaluate it
+4. Build an lstm model and evaluate it [IN PROGRESS]
 5. Implement per batch padding instead of global padding.
 6. Build a trasformer model or finetune an existing one and evaluate it
 
@@ -94,4 +94,5 @@ PHASE 6. Cleanups [TODO]
 2. Silver data validations
 3. Config class w/validations
 4. Column registry class (specify source on creation)
-5. Outstanding TODOs
+5. Save data as parquet
+6. Outstanding TODOs

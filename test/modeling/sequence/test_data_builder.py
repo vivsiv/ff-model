@@ -59,6 +59,37 @@ class TestSequenceDataset:
             ]),
         )
 
+    def test_build_real_step_mask(self):
+        _assert_tensors_equal(
+            SequenceDataset.build_real_step_mask(torch.tensor([1, 3, 0]), 4),
+            torch.tensor([
+                [True, False, False, False],
+                [True, True, True, False],
+                [False, False, False, False],
+            ]),
+        )
+
+    def test_build_real_step_mask_empty(self):
+        _assert_tensors_equal(
+            SequenceDataset.build_real_step_mask(torch.empty(0, dtype=torch.int64), 0),
+            torch.empty((0, 0), dtype=torch.bool),
+        )
+
+    @pytest.mark.parametrize("device", ["cuda", "mps"])
+    def test_real_step_mask_accelerator(self, device):
+        available = torch.cuda.is_available() if device == "cuda" else torch.backends.mps.is_available()
+        if not available:
+            pytest.skip(f"{device} is unavailable")
+        dataset = self._dataset()
+        dataset.X = dataset.X.to(device)
+        expected = torch.tensor([[True, True, True], [True, False, False]], device=device)
+
+        _assert_tensors_equal(dataset.real_step_mask, expected)
+        _assert_tensors_equal(
+            SequenceDataset.build_real_step_mask(dataset.lengths.to(device), 3),
+            expected,
+        )
+
     def test_last_step_mask(self):
         dataset = self._dataset()
 
@@ -448,19 +479,65 @@ class TestSequenceModelDataBuilder:
         with pytest.raises(ValueError, match="exceeds"):
             self._prep({"split": {"num_training_seasons": 10}})._build_data_splits()
 
-    def test_build_data_splits__keeps_missing_feature_values_as_nan(self):
-        test_dir = tempfile.mkdtemp()
-        try:
-            training_df = self._gold_frame(self.TRAINING_ROWS)
-            training_df.loc[(training_df["player_id"] == "D"), "f2"] = np.nan
-            self._write_gold_tables(test_dir, training_df, self._gold_frame(self.PREDICTION_ROWS))
-            prep = SequenceModelDataBuilder(data_dir=test_dir, config={"target": "target_1", "split": {"prediction_season": 2025}})
+    @pytest.mark.parametrize("value", [np.nan, np.inf, -np.inf])
+    @pytest.mark.parametrize("player, season, split", [
+        ("D", 2020, "train"), ("B", 2022, "eval"),
+        ("B", 2023, "test"), ("F", 2024, "prediction"),
+    ])
+    def test_build_data_splits__rejects_nonfinite_real_features(self, value, player, season, split):
+        source = self._gold_frame(self.TRAINING_ROWS + self.PREDICTION_ROWS)
+        source.loc[(source["player_id"] == player) & (source["season"] == season), "f2"] = value
+        with patch("src.modeling.sequence.data_builder.load_gold_set", return_value=source):
+            with pytest.raises(ValueError, match=f"{split}: Real input steps must be finite"):
+                self._prep().get_data_splits()
 
-            train = prep._build_data_splits()["train"]
-            d_row = train.identity.index[train.identity["player_id"] == "D"][0]
-            assert torch.isnan(train.X[train.real_step_mask][d_row, 1])
-        finally:
-            shutil.rmtree(test_dir)
+    def test_build_data_splits__rejects_nonfinite_unscored_context_features(self):
+        source = self._gold_frame(self.TRAINING_ROWS + self.PREDICTION_ROWS)
+        source.loc[(source["player_id"] == "A") & (source["season"] == 2020), "f2"] = np.nan
+        builder = self._prep({"split": {"num_training_seasons": 1}})
+        with patch("src.modeling.sequence.data_builder.load_gold_set", return_value=source):
+            with pytest.raises(ValueError, match="train: Real input steps must be finite"):
+                builder.get_data_splits()
+
+    @pytest.mark.parametrize("value", [np.inf, -np.inf])
+    @pytest.mark.parametrize("season, split", [(2020, "train"), (2022, "eval"), (2023, "test")])
+    def test_build_data_splits__rejects_nonfinite_scored_targets(self, value, season, split):
+        source = self._gold_frame(self.TRAINING_ROWS + self.PREDICTION_ROWS)
+        source.loc[(source["player_id"] == "A") & (source["season"] == season), "target"] = value
+        with patch("src.modeling.sequence.data_builder.load_gold_set", return_value=source):
+            with pytest.raises(ValueError, match=f"{split}: Scored targets must be finite"):
+                self._prep().get_data_splits()
+
+    @pytest.mark.parametrize("value", [np.nan, np.inf, -np.inf, -1.0])
+    @pytest.mark.parametrize("use_buckets", [False, True])
+    def test_build_data_splits__rejects_invalid_scored_sample_weights(self, value, use_buckets):
+        weights_config = (
+            {"buckets": [{"min": 0, "weight": value}]}
+            if use_buckets else {"global_weight": value}
+        )
+        with pytest.raises(ValueError, match="train: Scored sample weights must be finite and nonnegative"):
+            self._prep({"sample_weights": weights_config}).get_data_splits()
+
+    @pytest.mark.parametrize("config", [
+        {"sample_weights": {"global_weight": 0.0}},
+        {"sample_weights": {"buckets": [{"min": 1000, "weight": 1.0}]}},
+        {"split": {"num_training_seasons": 0}},
+        {"positions": ["TE"]},
+    ])
+    def test_build_data_splits__rejects_training_without_positive_scored_weight(self, config):
+        with pytest.raises(ValueError, match="train: At least one scored step with positive weight"):
+            self._prep(config).get_data_splits()
+
+    def test_build_data_splits__allows_empty_heldout_and_prediction_splits(self):
+        data = self._prep({
+            "positions": ["RB"],
+            "split": {"eval_data_years": 0, "test_data_years": 0},
+        }).get_data_splits()
+
+        assert data["train"].sample_weight[data["train"].loss_mask].sum() > 0
+        for split in ("eval", "test", "prediction"):
+            assert data[split].X.shape == (0, 0, 2)
+            assert not data[split].loss_mask.any()
 
     def test_build_data_splits__generates_prediction_split_correctly(self):
         prediction = self._prep().get_data_splits()["prediction"]
@@ -501,7 +578,9 @@ class TestSequenceModelDataBuilder:
     def test_prediction_split__backtest_hides_known_targets_and_trims_future_steps(self):
         source = self._gold_frame(self.TRAINING_ROWS + self.PREDICTION_ROWS)
         original = source.copy(deep=True)
-        builder = self._prep({"split": {"prediction_season": 2023}})
+        builder = self._prep({"split": {
+            "prediction_season": 2023, "eval_data_years": 0, "test_data_years": 0,
+        }})
         with patch("src.modeling.sequence.data_builder.load_gold_set", return_value=source):
             splits = builder.get_data_splits()
 
@@ -516,9 +595,8 @@ class TestSequenceModelDataBuilder:
         assert prediction.X[prediction.real_step_mask][:, 0].max().item() == 2022
         for split in ["train", "eval", "test"]:
             assert (splits[split].identity["target_season"] < 2023).all()
-        assert splits["train"].X.shape == (0, 0, 2)
-        assert splits["train"].identity.empty
-        assert splits["train"].sample_weight.numel() == 0
+        assert splits["train"].loss_mask.any()
+        assert splits["train"].sample_weight[splits["train"].loss_mask].sum() > 0
         pd.testing.assert_frame_equal(source, original)
 
     def test_prediction_split__is_cached_with_other_splits_after_one_gold_load(self):
