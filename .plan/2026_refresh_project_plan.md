@@ -94,4 +94,5 @@ PHASE 6. Cleanups [TODO]
 2. Silver data validations
 3. Config class w/validations
 4. Column registry class (specify source on creation)
-5. Outstanding TODOs
+5. Save data as parquet
+6. Outstanding TODOs
