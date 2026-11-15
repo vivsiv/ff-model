@@ -7,7 +7,7 @@ import torch
 
 from src.modeling.sequence.data_builder import SequenceDataset, SequenceModelDataBuilder
 from src.modeling.sequence.lstm import LSTMModel
-from src.modeling.sequence.lstm_trainer import LSTMModelTrainer
+from src.modeling.sequence.lstm_trainer import LSTMModelTrainer, main
 
 
 def make_data():
@@ -251,3 +251,74 @@ def test_prepared_features_are_validated_before_training():
     assert trainer.prepared_data is None
     for old, new in zip(before, trainer.model.parameters()):
         torch.testing.assert_close(old, new)
+
+
+def test_main_uses_default_params_and_infers_input_size(monkeypatch):
+    builder = make_builder()
+    monkeypatch.setattr("sys.argv", ["lstm_trainer", "--config", "sequence.yaml"])
+    with patch.object(SequenceModelDataBuilder, "from_config_file", return_value=builder) as from_config:
+        with patch("src.modeling.sequence.lstm_trainer.LSTMModelTrainer") as trainer_class:
+            main()
+
+    from_config.assert_called_once_with(data_dir="data", config_path="sequence.yaml")
+    kwargs = trainer_class.call_args.kwargs
+    model = kwargs["model"]
+    assert model.lstm.input_size == 1
+    assert model.lstm.hidden_size == 64
+    assert model.lstm.num_layers == 1
+    assert model.lstm.dropout == 0.0
+    assert kwargs["data_builder"] is builder
+    assert kwargs["batch_size"] == 32
+    assert kwargs["learning_rate"] == 1e-3
+    assert kwargs["device"] == "cpu"
+    trainer_class.return_value.fit.assert_called_once_with(epochs=20)
+    trainer_class.return_value.evaluate.assert_not_called()
+
+
+def test_main_passes_custom_params_and_evaluates_test_when_requested(monkeypatch):
+    builder = make_builder()
+    monkeypatch.setattr("sys.argv", [
+        "lstm_trainer", "--config", "sequence.yaml", "--data-dir", "custom-data",
+        "--hidden-size", "8", "--num-layers", "2", "--dropout", "0.2",
+        "--epochs", "3", "--batch-size", "4", "--learning-rate", "0.01",
+        "--device", "mps", "--seed", "123", "--evaluate-test",
+    ])
+    with patch.object(SequenceModelDataBuilder, "from_config_file", return_value=builder) as from_config:
+        with patch("src.modeling.sequence.lstm_trainer.LSTMModelTrainer") as trainer_class:
+            trainer_class.return_value.evaluate.return_value = 4.0
+            with patch("src.modeling.sequence.lstm_trainer.torch.manual_seed") as seed:
+                main()
+
+    from_config.assert_called_once_with(data_dir="custom-data", config_path="sequence.yaml")
+    seed.assert_called_once_with(123)
+    kwargs = trainer_class.call_args.kwargs
+    assert kwargs["model"].lstm.hidden_size == 8
+    assert kwargs["model"].lstm.num_layers == 2
+    assert kwargs["model"].lstm.dropout == 0.2
+    assert kwargs["batch_size"] == 4
+    assert kwargs["learning_rate"] == 0.01
+    assert kwargs["device"] == "mps"
+    trainer_class.return_value.fit.assert_called_once_with(epochs=3)
+    trainer_class.return_value.evaluate.assert_called_once_with(split="test")
+
+
+def test_main_requires_config(monkeypatch):
+    monkeypatch.setattr("sys.argv", ["lstm_trainer"])
+
+    with pytest.raises(SystemExit) as error:
+        main()
+
+    assert error.value.code == 2
+
+
+def test_main_trains_and_evaluates_with_synthetic_data(monkeypatch, caplog):
+    monkeypatch.setattr("sys.argv", [
+        "lstm_trainer", "--config", "sequence.yaml", "--epochs", "1",
+        "--hidden-size", "2", "--evaluate-test",
+    ])
+    with patch.object(SequenceModelDataBuilder, "from_config_file", return_value=make_builder()):
+        with caplog.at_level("INFO", logger="src.modeling.sequence.lstm_trainer"):
+            main()
+
+    assert "LSTM epoch metrics" in caplog.text
+    assert "LSTM test MSE" in caplog.text

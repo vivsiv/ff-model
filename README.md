@@ -44,6 +44,23 @@ rankings.py
 - Loads predictions, takes a league format and calculates per position rankings and overall rankings
 
 
+## Run the LSTM model
+
+From the repository root, using an existing gold dataset:
+
+```sh
+uv run --no-sync python -m src.modeling.sequence.lstm_trainer \
+  --config configs/sequence_ppr_points_per_game.yaml \
+  --epochs 20 --batch-size 32 --hidden-size 64
+```
+
+The config selects the target, features, sample weights, and chronological splits.
+The trainer fits mean imputation and scaling on real training inputs only and logs
+training/evaluation MSE each epoch. Training defaults to CPU; use `--device mps`
+on a supported Mac or `--device cuda` on a CUDA-enabled machine. Add
+`--evaluate-test` to report test MSE/RMSE after training. This entry point does not
+yet save model artifacts or log to MLflow. Use `--help` for all options.
+
 ## Thoughts
 - The first model build from this project was for the 2025 season and was a ridge regression model to predict ppr_points_per_game.
 - The model had:

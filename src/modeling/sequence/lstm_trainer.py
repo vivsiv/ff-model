@@ -1,3 +1,4 @@
+import argparse
 import logging
 from dataclasses import replace
 
@@ -168,3 +169,49 @@ class LSTMModelTrainer:
                 total_sample_weight += sample_weight_sum.item()
 
         return total_error / total_sample_weight
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Fits and evaluates an LSTM model against a gold dataset")
+    parser.add_argument(
+        "--data-dir", type=str, default="data",
+        help="Parent directory containing gold data, relative to the repo root (default: data)",
+    )
+    parser.add_argument(
+        "--config", type=str, required=True,
+        help="Path to a SequenceModelDataBuilder YAML config defining target, splits, features, and sample weights",
+    )
+    parser.add_argument("--hidden-size", type=int, default=64, help="Hidden and cell state size (default: 64)")
+    parser.add_argument("--num-layers", type=int, default=1, help="Number of stacked LSTM layers (default: 1)")
+    parser.add_argument("--dropout", type=float, default=0.0, help="Between-layer dropout probability (default: 0.0)")
+    parser.add_argument("--epochs", type=int, default=20, help="Number of training epochs (default: 20)")
+    parser.add_argument("--batch-size", type=int, default=32, help="Players per batch (default: 32)")
+    parser.add_argument("--learning-rate", type=float, default=1e-3, help="Adam learning rate (default: 0.001)")
+    parser.add_argument("--device", choices=["cpu", "cuda", "mps"], default="cpu", help="Training device (default: cpu)")
+    parser.add_argument("--seed", type=int, default=42, help="Seed for initialization and batch shuffling (default: 42)")
+    parser.add_argument(
+        "--evaluate-test", action="store_true",
+        help="Also evaluate the test split after training; omitted by default to keep test data held out",
+    )
+    args = parser.parse_args()
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+    torch.manual_seed(args.seed)
+    data_builder = SequenceModelDataBuilder.from_config_file(data_dir=args.data_dir, config_path=args.config)
+    train = data_builder.get_data_splits()[TRAIN_SPLIT]
+    model = LSTMModel(
+        input_size=train.X.shape[-1], hidden_size=args.hidden_size,
+        num_layers=args.num_layers, dropout=args.dropout,
+    )
+    trainer = LSTMModelTrainer(
+        model=model, data_builder=data_builder, batch_size=args.batch_size,
+        learning_rate=args.learning_rate, device=args.device,
+    )
+    trainer.fit(epochs=args.epochs)
+    if args.evaluate_test:
+        test_mse = trainer.evaluate(split=TEST_SPLIT)
+        logger.info("LSTM test MSE: %s; RMSE: %s", test_mse, test_mse ** 0.5)
+
+
+if __name__ == "__main__":
+    main()
