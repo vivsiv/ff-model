@@ -57,7 +57,10 @@ class LSTMModelTrainer:
         Optionally score its evaluation split each epoch, if it has scored steps.
 
         - Training applies sampling weights when supplied by scaling error by sample weight.
-        - Reported epoch MSE accounts for sampling weight by aggregating squared errors and weights across all batches in an epoch.
+          Batch loss is normalized by the batch's player count times the training
+          set's average scored weight per player, not by each batch's weight sum.
+          This preserves relative sample weights across uniformly sampled player batches.
+        - Reported epoch MSE accounts for sample weights by aggregating squared errors and sample weights across all batches in an epoch.
         - Repeated calls to fit from the same Trainer object continue training where the last fit() call left off.
           Fitted preprocessing and prepared splits are reused along with optimizer state.
         """
@@ -140,7 +143,13 @@ class LSTMModelTrainer:
         # from nn.Module, activate dropout for training if configured, disables it for eval.
         self.model.train(training)
         total_error = total_sample_weight = 0.0
+        if training:
+            # The loader batches players uniformly. Use a split-wide normalizer so
+            # low-weight batches retain less gradient influence, even at batch size 1.
+            _, _, _, loss_mask, sample_weights = loader.dataset.tensors
+            sample_weight_per_player = sample_weights[loss_mask].sum().item() / len(loader.dataset)
 
+        # TODO: clean up code paths that run during training vs non training (i.e. loss doesnt need to be calculated during eval)
         with torch.set_grad_enabled(training):
             for X, lengths, y, loss_mask, sample_weights in loader:
                 X, y = X.to(self.device), y.to(self.device)
@@ -156,7 +165,8 @@ class LSTMModelTrainer:
                 predictions = self.model(X, lengths)
                 errors = (predictions[loss_mask] - y[loss_mask]).square()
                 weighted_error = (errors * scored_sample_weights).sum()
-                loss = weighted_error / sample_weight_sum
+                denominator = X.shape[0] * sample_weight_per_player if training else sample_weight_sum
+                loss = weighted_error / denominator
 
                 if not torch.isfinite(loss):
                     raise ValueError("Non-finite loss encountered.")

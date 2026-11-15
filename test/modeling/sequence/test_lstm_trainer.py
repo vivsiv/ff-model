@@ -4,6 +4,7 @@ from unittest.mock import Mock, patch
 import pandas as pd
 import pytest
 import torch
+from torch.utils.data import DataLoader
 
 from src.modeling.sequence.data_builder import SequenceDataset, SequenceModelDataBuilder
 from src.modeling.sequence.lstm import LSTMModel
@@ -110,6 +111,53 @@ def test_zero_weight_batches_are_skipped():
     history = trainer.fit(epochs=1)
 
     assert history[0]["train_mse"] == pytest.approx(16.0)
+
+
+@pytest.mark.parametrize("sample_weights, expected_gradients", [
+    ([0.1, 1.0], [-4.0 * 0.1 / 0.55, -8.0 / 0.55]),
+    ([1.0, 1.0], [-4.0, -8.0]),
+    ([1.0, 10.0], [-4.0 / 5.5, -8.0 * 10.0 / 5.5]),
+])
+def test_single_player_batches_preserve_relative_sample_weights(sample_weights, expected_gradients):
+    data = replace(make_data(), sample_weight=torch.tensor([[sample_weights[0], 0.0], [0.0, sample_weights[1]]]))
+    trainer = LSTMModelTrainer(zero_model(), make_builder(train=data), batch_size=1)
+    gradients = []
+
+    # Record backward gradients without changing parameters, isolating the loss
+    # from Adam's adaptive update scaling. Shuffling may swap the two batches.
+    with patch.object(trainer.optimizer, "step", side_effect=lambda: gradients.append(trainer.model.head.bias.grad.item())):
+        trainer.fit(epochs=1, evaluate_each_epoch=False)
+
+    assert sorted(gradients) == pytest.approx(sorted(expected_gradients))
+
+
+@pytest.mark.parametrize("weighted", [True, False])
+def test_training_normalization_handles_unequal_scored_lengths_and_final_batch(weighted):
+    data = SequenceDataset(
+        X=torch.tensor([[[1.0], [float("nan")]], [[2.0], [3.0]], [[4.0], [float("nan")]]]),
+        lengths=torch.tensor([1, 2, 1]),
+        identity=pd.DataFrame(),
+        feature_columns=["feature"],
+        y=torch.tensor([[2.0, float("nan")], [3.0, 4.0], [5.0, float("nan")]]),
+        loss_mask=torch.tensor([[True, False], [True, True], [True, False]]),
+        sample_weight=torch.tensor([[0.1, 0.0], [1.0, 2.0], [0.4, 0.0]]) if weighted else None,
+    )
+    trainer = LSTMModelTrainer(zero_model(), make_builder(train=data), batch_size=2)
+    prepared = trainer._prepare_data()["train"]
+    tensors = trainer._make_loader(prepared, training=True).dataset
+    # Fix player order: first batch has 2 players/3 scored steps, final batch 1/1.
+    loader = DataLoader(tensors, batch_size=2, shuffle=False)
+    gradients = []
+    with patch.object(trainer.optimizer, "step", side_effect=lambda: gradients.append(trainer.model.head.bias.grad.item())):
+        reported_mse = trainer._run_epoch(loader, training=True)
+
+    expected_gradients = [-9.6, -24.0 / 7.0] if weighted else [-6.75, -7.5]
+    assert gradients == pytest.approx(expected_gradients)
+    # Weight batch gradients by their player counts to recover the full-split
+    # weighted objective's gradient at these unchanged parameters.
+    expected_global_gradient = -26.4 / 3.5 if weighted else -7.0
+    assert (2.0 * gradients[0] + gradients[1]) / 3.0 == pytest.approx(expected_global_gradient)
+    assert reported_mse == pytest.approx(51.4 / 3.5 if weighted else 13.5)
 
 
 def test_feature_count_must_match_model_input_size():
