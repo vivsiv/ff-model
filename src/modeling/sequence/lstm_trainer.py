@@ -152,6 +152,7 @@ class LSTMModelTrainer:
             sample_weight_per_player = sample_weights[loss_mask].sum().item() / len(loader.dataset)
 
         # TODO: clean up code paths that run during training vs non training (i.e. loss doesnt need to be calculated during eval)
+        # TODO: additional metrics like r^2
         with torch.set_grad_enabled(training):
             for X, lengths, y, loss_mask, sample_weights in loader:
                 X, y = X.to(self.device), y.to(self.device)
