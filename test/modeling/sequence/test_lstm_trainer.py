@@ -1,5 +1,5 @@
 from dataclasses import replace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import pandas as pd
 import pytest
@@ -77,7 +77,9 @@ def test_fit_clears_preloaded_gradients_before_backward():
 
 
 def test_evaluate_is_unweighted_and_does_not_update_parameters():
-    trainer = LSTMModelTrainer(zero_model(), make_builder(), batch_size=1)
+    trainer = LSTMModelTrainer(zero_model(), make_builder(), batch_size=1, learning_rate=0.0)
+    trainer.fit(epochs=1, evaluate_each_epoch=False)
+    trainer.optimizer.zero_grad(set_to_none=True)
     before = [parameter.detach().clone() for parameter in trainer.model.parameters()]
 
     actual = trainer.evaluate()
@@ -95,7 +97,8 @@ def test_epoch_loss_aggregates_scored_steps_not_batch_means():
         y=torch.tensor([[2.0, 0.0], [3.0, 4.0]]),
         loss_mask=torch.tensor([[True, False], [True, True]]),
     )
-    trainer = LSTMModelTrainer(zero_model(), make_builder(eval_data=data), batch_size=1)
+    trainer = LSTMModelTrainer(zero_model(), make_builder(eval_data=data), batch_size=1, learning_rate=0.0)
+    trainer.fit(epochs=1, evaluate_each_epoch=False)
 
     assert trainer.evaluate() == pytest.approx(29.0 / 3.0)
 
@@ -120,18 +123,23 @@ def test_repeated_fit_reuses_optimizer_state():
     trainer = LSTMModelTrainer(zero_model(), make_builder())
     trainer.fit(epochs=1)
     optimizer = trainer.optimizer
+    prepared = trainer.prepared_data
     step_before = optimizer.state[trainer.model.head.bias]["step"].item()
 
-    trainer.fit(epochs=1, evaluate_each_epoch=False)
+    with patch.object(trainer.preprocessor, "fit", wraps=trainer.preprocessor.fit) as fit_preprocessor:
+        trainer.fit(epochs=1, evaluate_each_epoch=False)
+        fit_preprocessor.assert_not_called()
 
     assert trainer.optimizer is optimizer
+    assert trainer.prepared_data is prepared
     assert optimizer.state[trainer.model.head.bias]["step"].item() > step_before
 
 
 def test_evaluate_selects_test_split():
     builder = make_builder()
     builder.get_data_splits.return_value["test"] = replace(make_data(), y=torch.full((2, 2), 5.0))
-    trainer = LSTMModelTrainer(zero_model(), builder)
+    trainer = LSTMModelTrainer(zero_model(), builder, learning_rate=0.0)
+    trainer.fit(epochs=1, evaluate_each_epoch=False)
 
     assert trainer.evaluate(split="test") == pytest.approx(25.0)
     with pytest.raises(ValueError, match="Evaluation split"):
@@ -150,6 +158,96 @@ def test_fit_skips_empty_eval_split():
 def test_evaluate_rejects_empty_eval_split():
     eval_data = replace(make_data(), loss_mask=torch.zeros(2, 2, dtype=torch.bool))
     trainer = LSTMModelTrainer(zero_model(), make_builder(eval_data=eval_data))
+    trainer.fit(epochs=1)
 
     with pytest.raises(ValueError, match="no scored steps"):
         trainer.evaluate()
+
+
+def test_evaluate_requires_fitted_preprocessing():
+    trainer = LSTMModelTrainer(zero_model(), make_builder())
+
+    with pytest.raises(ValueError, match="call fit"):
+        trainer.evaluate()
+
+
+def test_preprocessing_fits_on_real_training_history_and_preserves_raw_data():
+    train = make_data()
+    eval_data = make_data()
+    eval_data.X[1, 0, 0] = float("nan")
+    eval_data.X[1, 1, 0] = 100.0
+    builder = make_builder(train=train, eval_data=eval_data)
+    prediction = replace(
+        make_data(),
+        X=torch.empty((0, 0, 1)),
+        lengths=torch.empty(0, dtype=torch.int64),
+        y=torch.empty((0, 0)),
+        loss_mask=torch.empty((0, 0), dtype=torch.bool),
+        sample_weight=None,
+    )
+    builder.get_data_splits.return_value["prediction"] = prediction
+    trainer = LSTMModelTrainer(zero_model(), builder)
+    raw_X = {split: data.X.clone() for split, data in trainer.data.items()}
+    assert not hasattr(trainer.preprocessor.named_steps["scaler"], "mean_")
+
+    trainer.fit(epochs=1)
+
+    # Real training steps are [1, 2, 3]; the unscored context step 2 is included.
+    scaler = trainer.preprocessor.named_steps["scaler"]
+    imputer = trainer.preprocessor.named_steps["imputer"]
+    assert imputer.statistics_[0] == pytest.approx(2.0)
+    assert scaler.mean_[0] == pytest.approx(2.0)
+    assert scaler.scale_[0] == pytest.approx((2.0 / 3.0) ** 0.5)
+    expected_train = torch.tensor([
+        [[-1.0 / scaler.scale_[0]], [float("nan")]],
+        [[0.0], [1.0 / scaler.scale_[0]]],
+    ], dtype=torch.float32)
+    torch.testing.assert_close(trainer.prepared_data["train"].X, expected_train, equal_nan=True)
+    expected_eval = torch.tensor([
+        [[-1.0 / scaler.scale_[0]], [float("nan")]],
+        [[0.0], [98.0 / scaler.scale_[0]]],
+    ], dtype=torch.float32)
+    torch.testing.assert_close(trainer.prepared_data["eval"].X, expected_eval, equal_nan=True)
+    for split, raw in trainer.data.items():
+        prepared = trainer.prepared_data[split]
+        torch.testing.assert_close(raw.X, raw_X[split], equal_nan=True)
+        for field in ("identity", "lengths", "y", "loss_mask", "sample_weight", "feature_columns"):
+            assert getattr(prepared, field) is getattr(raw, field)
+        torch.testing.assert_close(prepared.X[~raw.real_step_mask], raw.X[~raw.real_step_mask], equal_nan=True)
+
+
+def test_missing_training_features_are_imputed_before_training():
+    data = make_data()
+    data.X[1, 0, 0] = float("nan")
+    trainer = LSTMModelTrainer(zero_model(), make_builder(train=data))
+
+    trainer.fit(epochs=1)
+
+    assert trainer.preprocessor.named_steps["imputer"].statistics_[0] == pytest.approx(2.0)
+    prepared = trainer.prepared_data["train"]
+    assert prepared.X[1, 0, 0] == 0.0
+    assert torch.isfinite(prepared.X[prepared.real_step_mask]).all()
+
+
+def test_entirely_missing_training_features_keep_their_columns():
+    train = make_data()
+    train.X[:] = float("nan")
+    trainer = LSTMModelTrainer(zero_model(), make_builder(train=train))
+
+    trainer.fit(epochs=1)
+
+    prepared = trainer.prepared_data["train"]
+    assert prepared.X.shape == train.X.shape
+    torch.testing.assert_close(prepared.X[prepared.real_step_mask], torch.zeros(3, 1))
+
+
+def test_prepared_features_are_validated_before_training():
+    trainer = LSTMModelTrainer(zero_model(), make_builder())
+    before = [parameter.detach().clone() for parameter in trainer.model.parameters()]
+    with patch.object(trainer.preprocessor, "transform", return_value=[[float("nan")]] * 3):
+        with pytest.raises(ValueError, match="finite after preprocessing"):
+            trainer.fit(epochs=1)
+
+    assert trainer.prepared_data is None
+    for old, new in zip(before, trainer.model.parameters()):
+        torch.testing.assert_close(old, new)

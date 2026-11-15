@@ -479,25 +479,27 @@ class TestSequenceModelDataBuilder:
         with pytest.raises(ValueError, match="exceeds"):
             self._prep({"split": {"num_training_seasons": 10}})._build_data_splits()
 
-    @pytest.mark.parametrize("value", [np.nan, np.inf, -np.inf])
     @pytest.mark.parametrize("player, season, split", [
         ("D", 2020, "train"), ("B", 2022, "eval"),
         ("B", 2023, "test"), ("F", 2024, "prediction"),
     ])
-    def test_build_data_splits__rejects_nonfinite_real_features(self, value, player, season, split):
+    def test_build_data_splits__preserves_missing_real_features(self, player, season, split):
         source = self._gold_frame(self.TRAINING_ROWS + self.PREDICTION_ROWS)
-        source.loc[(source["player_id"] == player) & (source["season"] == season), "f2"] = value
+        source.loc[(source["player_id"] == player) & (source["season"] == season), "f2"] = np.nan
         with patch("src.modeling.sequence.data_builder.load_gold_set", return_value=source):
-            with pytest.raises(ValueError, match=f"{split}: Real input steps must be finite"):
-                self._prep().get_data_splits()
+            data = self._prep().get_data_splits()[split]
+        rows = (data.identity["player_id"] == player) & (data.identity["season"] == season)
+        step = data.identity.loc[rows].iloc[0]
+        assert torch.isnan(data.X[step["seq_idx"], step["step_idx"], 1])
 
-    def test_build_data_splits__rejects_nonfinite_unscored_context_features(self):
+    def test_build_data_splits__preserves_missing_unscored_context_features(self):
         source = self._gold_frame(self.TRAINING_ROWS + self.PREDICTION_ROWS)
         source.loc[(source["player_id"] == "A") & (source["season"] == 2020), "f2"] = np.nan
         builder = self._prep({"split": {"num_training_seasons": 1}})
         with patch("src.modeling.sequence.data_builder.load_gold_set", return_value=source):
-            with pytest.raises(ValueError, match="train: Real input steps must be finite"):
-                builder.get_data_splits()
+            train = builder.get_data_splits()["train"]
+        assert torch.isnan(train.X[0, 0, 1])
+        assert not train.loss_mask[0, 0]
 
     @pytest.mark.parametrize("value", [np.inf, -np.inf])
     @pytest.mark.parametrize("season, split", [(2020, "train"), (2022, "eval"), (2023, "test")])

@@ -111,8 +111,9 @@ class SequenceModelDataBuilder(ModelDataBuilder):
     Builds SequenceDatasets from a target's combined, season-specific gold table.
     Uses ModelDataBuilder's shared config schema to define:
     the target, seasons per data split, sample weighting for training, and feature inclusion/exclusion.
-    Validates finite real features and scored targets, and requires a nonempty,
-    positively weighted training objective. Does not perform preprocessing.
+    Validates finite scored targets and requires a nonempty, positively weighted
+    training objective. Raw features may contain missing values; preprocessing
+    and finite-feature validation belong to the trainer.
     """
 
     def _build_data_splits(self) -> dict[str, SequenceDataset]:
@@ -139,8 +140,8 @@ class SequenceModelDataBuilder(ModelDataBuilder):
 
         Raises:
             ValueError: If split config's num_training_seasons + eval_data_years + test_data_years exceeds
-                the total number of distinct seasons available, real features or scored targets
-                are non-finite, scored sample weights are invalid, or training has no positive scored weight.
+                the total number of distinct seasons available, scored targets are non-finite,
+                scored sample weights are invalid, or training has no positive scored weight.
         """
         self.source_data = load_gold_set(self.gold_data_dir, self.target, self.split_years.prediction_season)
 
@@ -183,14 +184,12 @@ class SequenceModelDataBuilder(ModelDataBuilder):
 
     @staticmethod
     def _validate_split(data: SequenceDataset, split: str) -> None:
-        """Validate modeled values, ignoring padding and unscored targets/weights.
+        """Validate targets and weights, ignoring padding and unscored steps.
 
         Empty held-out and prediction splits are allowed; training must contain
-        at least one scored step with positive weight. Real context features are
-        checked even when the corresponding step does not contribute to loss.
+        at least one scored step with positive weight. Feature validation happens
+        after the trainer's preprocessing, not on these raw inputs.
         """
-        if not torch.isfinite(data.X[data.real_step_mask]).all():
-            raise ValueError(f"{split}: Real input steps must be finite; impute missing features before building splits.")
         if not torch.isfinite(data.y[data.loss_mask]).all():
             raise ValueError(f"{split}: Scored targets must be finite.")
         scored_sample_weights = (

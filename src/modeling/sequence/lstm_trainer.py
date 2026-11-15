@@ -1,6 +1,10 @@
 import logging
+from dataclasses import replace
 
 import torch
+from sklearn.impute import SimpleImputer
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
 from torch.utils.data import DataLoader, TensorDataset
 
 from src.modeling.data_builder import EVAL_SPLIT, TEST_SPLIT, TRAIN_SPLIT
@@ -14,7 +18,8 @@ class LSTMModelTrainer:
     """Trains and evaluates an LSTMModel on a builder's sequence splits,
     scoring only steps selected by loss_mask.
 
-    - Preprocessing is not performed here; real input steps must already be finite.
+    - Mean imputation and scaling are fitted on real training inputs on the first fit call.
+    - Every split uses the same fitted preprocessing; real prepared steps must be finite.
     - NaN padding is allowed, and the builder's cached datasets are left unchanged.
     - The trainer retains the dataset's global padding rather than padding per batch.
     """
@@ -32,6 +37,11 @@ class LSTMModelTrainer:
         self.data_builder = data_builder
         self.data = data_builder.get_data_splits()
         self.target = data_builder.target
+        self.preprocessor = Pipeline([
+            ("imputer", SimpleImputer(strategy="mean", keep_empty_features=True)),
+            ("scaler", StandardScaler()),
+        ])
+        self.prepared_data: dict[str, SequenceDataset] | None = None
         self.device = torch.device(device)
         self.model = model.to(self.device)
         self.batch_size = batch_size
@@ -48,14 +58,16 @@ class LSTMModelTrainer:
         - Training applies sampling weights when supplied by scaling error by sample weight.
         - Reported epoch MSE accounts for sampling weight by aggregating squared errors and weights across all batches in an epoch.
         - Repeated calls to fit from the same Trainer object continue training where the last fit() call left off.
+          Fitted preprocessing and prepared splits are reused along with optimizer state.
         """
         if epochs < 1:
             raise ValueError("epochs must be positive.")
-        train = self.data[TRAIN_SPLIT]
+        prepared = self._prepare_data()
+        train = prepared[TRAIN_SPLIT]
         train_loader = self._make_loader(train, training=True)
 
         eval_loader = None
-        eval_data = self.data[EVAL_SPLIT]
+        eval_data = prepared[EVAL_SPLIT]
         # A correctly built eval split can be empty when no seasons are reserved for it.
         if evaluate_each_epoch and eval_data.loss_mask.any():
             eval_loader = self._make_loader(eval_data, training=False)
@@ -71,18 +83,47 @@ class LSTMModelTrainer:
         return history
 
     def evaluate(self, split: str = EVAL_SPLIT) -> float:
-        """Return unweighted eval/test MSE without updating model parameters."""
+        """Return unweighted eval/test MSE using preprocessing learned by fit()."""
         if split not in (EVAL_SPLIT, TEST_SPLIT):
             raise ValueError("Evaluation split must be 'eval' or 'test'.")
 
-        data = self.data[split]
+        if self.prepared_data is None:
+            raise ValueError("Preprocessing has not been fitted; call fit() before evaluate().")
+        data = self.prepared_data[split]
         if not data.loss_mask.any():
             raise ValueError(f"Cannot evaluate an empty '{split}' split with no scored steps.")
 
         return self._run_epoch(self._make_loader(data, training=False), training=False)
 
-    # TODO: in tabular models the trainer imputed missing/nan values because it was all part of the same pipeline. Here we need a custom preprocessor.
-    # Decide if it goes here or in the builder (likely the builder). If it goes here the builder can't fail to build a dataset with NaN/missing feature values.
+    def _prepare_data(self) -> dict[str, SequenceDataset]:
+        """Fit preprocessing once and cache transformed copies of all raw splits.
+
+        Include real history even when excluded from loss; exclude padding from
+        fitting and transformation. Entirely missing training features are imputed
+        to zero without dropping their columns. Targets are not scaled.
+        """
+        if self.prepared_data is not None:
+            return self.prepared_data
+        train = self.data[TRAIN_SPLIT]
+        training_inputs = train.X[train.real_step_mask].detach().cpu().numpy()
+        self.preprocessor.fit(training_inputs)
+        self.prepared_data = {
+            split: self._transform_dataset(data, split) for split, data in self.data.items()
+        }
+        return self.prepared_data
+
+    def _transform_dataset(self, data: SequenceDataset, split: str) -> SequenceDataset:
+        """Transform only real features, preserving padding and all other fields."""
+        real_mask = data.real_step_mask
+        X = data.X.clone()
+        if real_mask.any():
+            inputs = data.X[real_mask].detach().cpu().numpy()
+            transformed = self.preprocessor.transform(inputs)
+            X[real_mask] = torch.as_tensor(transformed, dtype=X.dtype, device=X.device)
+        if not torch.isfinite(X[real_mask]).all():
+            raise ValueError(f"{split}: Real input steps must be finite after preprocessing.")
+        return replace(data, X=X)
+
     def _make_loader(self, data: SequenceDataset, training: bool) -> DataLoader:
         if data.X.shape[-1] != self.model.lstm.input_size:
             raise ValueError("Feature count must match the model's input_size.")
