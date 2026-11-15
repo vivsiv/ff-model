@@ -530,6 +530,22 @@ class TestSequenceModelDataBuilder:
         with pytest.raises(ValueError, match="train: At least one scored step with positive weight"):
             self._prep(config).get_data_splits()
 
+    @pytest.mark.parametrize("empty", [False, True], ids=["all-false-mask", "empty-tensors"])
+    def test_validate_split__rejects_training_without_scored_steps(self, empty):
+        shape = (0, 0) if empty else (1, 1)
+        data = SequenceDataset(
+            X=torch.zeros((*shape, 1)),
+            lengths=torch.empty(0, dtype=torch.int64) if empty else torch.tensor([1]),
+            identity=pd.DataFrame(),
+            feature_columns=["feature"],
+            y=torch.zeros(shape),
+            loss_mask=torch.zeros(shape, dtype=torch.bool),
+            sample_weight=torch.zeros(shape),
+        )
+
+        with pytest.raises(ValueError, match="train: At least one scored step with positive weight"):
+            self._prep()._validate_split(data, "train")
+
     def test_build_data_splits__allows_empty_heldout_and_prediction_splits(self):
         data = self._prep({
             "positions": ["RB"],

@@ -54,7 +54,8 @@ class LSTMModelTrainer:
         evaluate_each_epoch: bool = True,
     ) -> list[dict[str, float | int]]:
         """Train on the builder's training split over a specified number of epochs.
-        Optionally score its evaluation split each epoch, if it has scored steps.
+        Optionally score its evaluation split each epoch. Requested evaluation
+        requires at least one scored step; empty/unscored eval splits raise.
 
         - Training applies sampling weights when supplied by scaling error by sample weight.
           Batch loss is normalized by the batch's player count times the training
@@ -72,8 +73,9 @@ class LSTMModelTrainer:
 
         eval_loader = None
         eval_data = prepared[EVAL_SPLIT]
-        # A correctly built eval split can be empty when no seasons are reserved for it.
-        if evaluate_each_epoch and eval_data.loss_mask.any():
+        if evaluate_each_epoch:
+            if not eval_data.loss_mask.any():
+                raise ValueError("Cannot evaluate an empty 'eval' split with no scored steps.")
             eval_loader = self._make_loader(eval_data, training=False)
 
         history = []

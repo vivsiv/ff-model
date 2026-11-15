@@ -42,6 +42,25 @@ def make_builder(train=None, eval_data=None):
     return builder
 
 
+def make_unscored_data(empty):
+    data = make_data()
+    if empty:
+        return replace(
+            data,
+            X=torch.empty((0, 0, 1)),
+            lengths=torch.empty(0, dtype=torch.int64),
+            y=torch.empty((0, 0)),
+            loss_mask=torch.empty((0, 0), dtype=torch.bool),
+            sample_weight=torch.empty((0, 0)),
+        )
+    return replace(
+        data,
+        y=torch.zeros_like(data.y),
+        loss_mask=torch.zeros_like(data.loss_mask),
+        sample_weight=torch.zeros_like(data.sample_weight),
+    )
+
+
 def test_fit_updates_parameters_and_returns_epoch_history():
     builder = make_builder()
     trainer = LSTMModelTrainer(zero_model(), builder, batch_size=2)
@@ -194,22 +213,34 @@ def test_evaluate_selects_test_split():
         trainer.evaluate(split="prediction")
 
 
-def test_fit_skips_empty_eval_split():
-    eval_data = replace(make_data(), loss_mask=torch.zeros(2, 2, dtype=torch.bool))
+@pytest.mark.parametrize("empty", [False, True], ids=["all-false-mask", "empty-tensors"])
+def test_fit_rejects_unscored_eval_split_when_evaluation_requested(empty):
+    eval_data = make_unscored_data(empty)
     trainer = LSTMModelTrainer(zero_model(), make_builder(eval_data=eval_data))
 
-    history = trainer.fit(epochs=1)
+    with pytest.raises(ValueError, match="no scored steps"):
+        trainer.fit(epochs=1)
+
+
+@pytest.mark.parametrize("empty", [False, True], ids=["all-false-mask", "empty-tensors"])
+def test_fit_allows_unscored_eval_split_when_evaluation_disabled(empty):
+    trainer = LSTMModelTrainer(zero_model(), make_builder(eval_data=make_unscored_data(empty)))
+
+    history = trainer.fit(epochs=1, evaluate_each_epoch=False)
 
     assert "eval_mse" not in history[0]
 
 
-def test_evaluate_rejects_empty_eval_split():
-    eval_data = replace(make_data(), loss_mask=torch.zeros(2, 2, dtype=torch.bool))
-    trainer = LSTMModelTrainer(zero_model(), make_builder(eval_data=eval_data))
-    trainer.fit(epochs=1)
+@pytest.mark.parametrize("empty", [False, True], ids=["all-false-mask", "empty-tensors"])
+@pytest.mark.parametrize("split", ["eval", "test"])
+def test_evaluate_rejects_unscored_heldout_split(empty, split):
+    builder = make_builder()
+    builder.get_data_splits.return_value[split] = make_unscored_data(empty)
+    trainer = LSTMModelTrainer(zero_model(), builder)
+    trainer.fit(epochs=1, evaluate_each_epoch=False)
 
     with pytest.raises(ValueError, match="no scored steps"):
-        trainer.evaluate()
+        trainer.evaluate(split=split)
 
 
 def test_evaluate_requires_fitted_preprocessing():
@@ -299,6 +330,16 @@ def test_prepared_features_are_validated_before_training():
     assert trainer.prepared_data is None
     for old, new in zip(before, trainer.model.parameters()):
         torch.testing.assert_close(old, new)
+
+
+@pytest.mark.parametrize("model_output", [float("nan"), float("inf"), -float("inf")])
+def test_fit_rejects_nonfinite_model_output_loss(model_output):
+    trainer = LSTMModelTrainer(zero_model(), make_builder(), batch_size=2)
+    model_outputs = torch.full((2, 2), model_output)
+
+    with patch.object(trainer.model, "forward", return_value=model_outputs):
+        with pytest.raises(ValueError, match="Non-finite loss encountered"):
+            trainer.fit(epochs=1, evaluate_each_epoch=False)
 
 
 def test_main_uses_default_params_and_infers_input_size(monkeypatch):
