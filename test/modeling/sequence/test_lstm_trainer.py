@@ -34,6 +34,8 @@ def zero_model():
 def make_builder(train=None, eval_data=None):
     builder = Mock(spec=SequenceModelDataBuilder)
     builder.target = "ppr_points_per_game"
+    builder.positions = None
+    builder.config = {"target": builder.target, "split": {"prediction_season": 2026}}
     builder.get_data_splits.return_value = {
         "train": make_data() if train is None else train,
         "eval": make_data() if eval_data is None else eval_data,
@@ -347,6 +349,7 @@ def test_main_uses_default_params_and_infers_input_size(monkeypatch):
     monkeypatch.setattr("sys.argv", ["lstm_trainer", "--config", "sequence.yaml"])
     with patch.object(SequenceModelDataBuilder, "from_config_file", return_value=builder) as from_config:
         with patch("src.modeling.sequence.lstm_trainer.LSTMModelTrainer") as trainer_class:
+            trainer_class.return_value.setup_mlflow.return_value = "training-run"
             main()
 
     from_config.assert_called_once_with(data_dir="data", config_path="sequence.yaml")
@@ -360,7 +363,11 @@ def test_main_uses_default_params_and_infers_input_size(monkeypatch):
     assert kwargs["batch_size"] == 32
     assert kwargs["learning_rate"] == 1e-3
     assert kwargs["device"] == "cpu"
-    trainer_class.return_value.fit.assert_called_once_with(epochs=20)
+    assert kwargs["tracking_dir"] == "mlruns"
+    trainer_class.return_value.setup_mlflow.assert_called_once_with(
+        extra_params={"config_path": "sequence.yaml", "seed": 42, "epochs": 20}
+    )
+    trainer_class.return_value.fit.assert_called_once_with(epochs=20, run_id="training-run")
     trainer_class.return_value.evaluate.assert_not_called()
 
 
@@ -370,10 +377,11 @@ def test_main_passes_custom_params_and_evaluates_test_when_requested(monkeypatch
         "lstm_trainer", "--config", "sequence.yaml", "--data-dir", "custom-data",
         "--hidden-size", "8", "--num-layers", "2", "--dropout", "0.2",
         "--epochs", "3", "--batch-size", "4", "--learning-rate", "0.01",
-        "--device", "mps", "--seed", "123", "--evaluate-test",
+        "--device", "mps", "--seed", "123", "--evaluate-test", "--tracking-dir", "custom-mlruns",
     ])
     with patch.object(SequenceModelDataBuilder, "from_config_file", return_value=builder) as from_config:
         with patch("src.modeling.sequence.lstm_trainer.LSTMModelTrainer") as trainer_class:
+            trainer_class.return_value.setup_mlflow.return_value = "training-run"
             trainer_class.return_value.evaluate.return_value = 4.0
             with patch("src.modeling.sequence.lstm_trainer.torch.manual_seed") as seed:
                 main()
@@ -387,8 +395,9 @@ def test_main_passes_custom_params_and_evaluates_test_when_requested(monkeypatch
     assert kwargs["batch_size"] == 4
     assert kwargs["learning_rate"] == 0.01
     assert kwargs["device"] == "mps"
-    trainer_class.return_value.fit.assert_called_once_with(epochs=3)
-    trainer_class.return_value.evaluate.assert_called_once_with(split="test")
+    assert kwargs["tracking_dir"] == "custom-mlruns"
+    trainer_class.return_value.fit.assert_called_once_with(epochs=3, run_id="training-run")
+    trainer_class.return_value.evaluate.assert_called_once_with(split="test", run_id="training-run")
 
 
 def test_main_requires_config(monkeypatch):
@@ -406,8 +415,10 @@ def test_main_trains_and_evaluates_with_synthetic_data(monkeypatch, caplog):
         "--hidden-size", "2", "--evaluate-test",
     ])
     with patch.object(SequenceModelDataBuilder, "from_config_file", return_value=make_builder()):
-        with caplog.at_level("INFO", logger="src.modeling.sequence.lstm_trainer"):
-            main()
+        # MLflow persistence is exercised by the separate round-trip tests.
+        with patch.object(LSTMModelTrainer, "setup_mlflow", return_value=None):
+            with caplog.at_level("INFO", logger="src.modeling.sequence.lstm_trainer"):
+                main()
 
     assert "LSTM epoch metrics" in caplog.text
     assert "LSTM test MSE" in caplog.text

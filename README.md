@@ -56,10 +56,35 @@ uv run --no-sync python -m src.modeling.sequence.lstm_trainer \
 
 The config selects the target, features, sample weights, and chronological splits.
 The trainer fits mean imputation and scaling on real training inputs only and logs
-training/evaluation MSE each epoch. Training defaults to CPU; use `--device mps`
+training/evaluation MSE and RMSE each epoch to MLflow. Training defaults to CPU; use `--device mps`
 on a supported Mac or `--device cuda` on a CUDA-enabled machine. Add
-`--evaluate-test` to report test MSE/RMSE after training. This entry point does not
-yet save model artifacts or log to MLflow. Use `--help` for all options.
+`--evaluate-test` to report and log test MSE/RMSE after training. `--tracking-dir`
+selects the MLflow store (default: `mlruns`). Use `--help` for all options.
+
+The run saves the resolved builder config as `data_prep_config.json` and registers
+one complete inference pipeline under `{target}[_positions]_lstm`, in the
+`{target}[_positions]_sequence` experiment. Its artifacts contain the fitted
+preprocessor, CPU model weights, architecture, feature order, and source code.
+Load only trusted MLflow artifacts. The saved model is for inference, not for
+resuming optimizer state.
+
+```python
+import mlflow
+
+mlflow.set_tracking_uri("mlruns")
+pipeline = mlflow.pyfunc.load_model("models:/ppr_points_per_game_lstm/1")
+predictions = pipeline.predict({
+    "X": dataset.X.numpy(),           # Raw float32 [players, steps, features]
+    "lengths": dataset.lengths.numpy(),  # int64 [players]
+})
+```
+
+Use the saved builder config to reconstruct the same feature selection/order.
+Prediction applies saved preprocessing without refitting, runs the LSTM in
+evaluation mode on CPU, and returns `[players, steps]` predictions with padding
+zeroed. Batch sizes and padded sequence widths can differ from training. For a
+`SequenceDataset`, `pipeline.unwrap_python_model().predict_dataset(dataset)`
+also checks the feature names and order before prediction.
 
 ## Thoughts
 - The first model build from this project was for the 2025 season and was a ridge regression model to predict ppr_points_per_game.
