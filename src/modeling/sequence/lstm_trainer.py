@@ -1,16 +1,27 @@
 import argparse
+import json
 import logging
-from dataclasses import replace
+import pickle
+from datetime import datetime
+from importlib.metadata import version
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
+import mlflow
+import numpy as np
+from mlflow.models import ModelSignature
+from mlflow.types.schema import Schema, TensorSpec
 import torch
 from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from torch.utils.data import DataLoader, TensorDataset
 
-from src.modeling.data_builder import EVAL_SPLIT, TEST_SPLIT, TRAIN_SPLIT
+from src.modeling.data_builder import DATA_BUILDER_CONFIG_ARTIFACT_PATH, EVAL_SPLIT, TEST_SPLIT, TRAIN_SPLIT
 from src.modeling.sequence.data_builder import SequenceDataset, SequenceModelDataBuilder
 from src.modeling.sequence.lstm import LSTMModel
+from src.modeling.sequence.pipeline import LSTMPipeline, transform_sequence_dataset
+from src.modeling.utils import setup_mlflow_run
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +43,7 @@ class LSTMModelTrainer:
         batch_size: int = 32,
         learning_rate: float = 1e-3,
         device: str = "cpu",
+        tracking_dir: str = "mlruns",
     ):
         if batch_size < 1:
             raise ValueError("batch_size must be positive.")
@@ -47,11 +59,41 @@ class LSTMModelTrainer:
         self.model = model.to(self.device)
         self.batch_size = batch_size
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=learning_rate)
+        self.tracking_dir = tracking_dir
+        self.epochs_trained = 0
+
+    @property
+    def base_model_name(self) -> str:
+        positions = [pos.lower() for pos in self.data_builder.positions] if self.data_builder.positions else []
+        suffix = f"_{'_'.join(sorted(positions))}" if positions else ""
+        return f"{self.target}{suffix}"
+
+    def setup_mlflow(self, run_name: str | None = None, extra_params: dict | None = None) -> str:
+        """Create a sequence training run and save the resolved builder config."""
+        run_id = setup_mlflow_run(
+            experiment_name=f"{self.base_model_name}_sequence",
+            run_name=run_name or f"lstm_{datetime.now().strftime('%Y%m%d%H%M%S')}",
+            tracking_dir=self.tracking_dir,
+            tags={"model_type": "lstm", "phase": "train"},
+            params=extra_params,
+        )
+        mlflow.log_dict(self.data_builder.config, DATA_BUILDER_CONFIG_ARTIFACT_PATH, run_id=run_id)
+        return run_id
+
+    def _model_params(self) -> dict:
+        """Architecture arguments needed to reconstruct the trained network."""
+        return {
+            "input_size": self.model.lstm.input_size,
+            "hidden_size": self.model.lstm.hidden_size,
+            "num_layers": self.model.lstm.num_layers,
+            "dropout": self.model.lstm.dropout,
+        }
 
     def fit(
         self,
         epochs: int = 20,
         evaluate_each_epoch: bool = True,
+        run_id: str | None = None,
     ) -> list[dict[str, float | int]]:
         """Train on the builder's training split over a specified number of epochs.
         Optionally score its evaluation split each epoch. Requested evaluation
@@ -64,9 +106,20 @@ class LSTMModelTrainer:
         - Reported epoch MSE accounts for sample weights by aggregating squared errors and sample weights across all batches in an epoch.
         - Repeated calls to fit from the same Trainer object continue training where the last fit() call left off.
           Fitted preprocessing and prepared splits are reused along with optimizer state.
+        - If run_id is supplied, log epoch MSE/RMSE and register the fitted pipeline.
         """
         if epochs < 1:
             raise ValueError("epochs must be positive.")
+        if run_id is not None:
+            mlflow.log_params({
+                **self._model_params(),
+                "batch_size": self.batch_size,
+                "learning_rate": self.optimizer.param_groups[0]["lr"],
+                "device": str(self.device),
+                "imputation_strategy": "mean",
+                "keep_empty_features": True,
+                "scaler": "StandardScaler",
+            }, run_id=run_id)
         prepared = self._prepare_data()
         train = prepared[TRAIN_SPLIT]
         train_loader = self._make_loader(train, training=True)
@@ -84,11 +137,19 @@ class LSTMModelTrainer:
             if eval_loader is not None:
                 metrics["eval_mse"] = self._run_epoch(eval_loader, training=False)
             history.append(metrics)
+            self.epochs_trained += 1
+            if run_id is not None:
+                logged_metrics = {key: value for key, value in metrics.items() if key != "epoch"}
+                rmse_metrics = {key.replace("_mse", "_rmse"): value ** 0.5 for key, value in logged_metrics.items()}
+                logged_metrics.update(rmse_metrics)
+                mlflow.log_metrics(logged_metrics, step=self.epochs_trained, run_id=run_id)
             logger.info("LSTM epoch metrics: %s", metrics)
 
+        if run_id is not None:
+            self.log_model(run_id)
         return history
 
-    def evaluate(self, split: str = EVAL_SPLIT) -> float:
+    def evaluate(self, split: str = EVAL_SPLIT, run_id: str | None = None) -> float:
         """Return unweighted eval/test MSE using preprocessing learned by fit()."""
         if split not in (EVAL_SPLIT, TEST_SPLIT):
             raise ValueError("Evaluation split must be 'eval' or 'test'.")
@@ -99,7 +160,62 @@ class LSTMModelTrainer:
         if not data.loss_mask.any():
             raise ValueError(f"Cannot evaluate an empty '{split}' split with no scored steps.")
 
-        return self._run_epoch(self._make_loader(data, training=False), training=False)
+        mse = self._run_epoch(self._make_loader(data, training=False), training=False)
+        if run_id is not None:
+            mlflow.log_metrics(
+                {f"{split}_mse": mse, f"{split}_rmse": mse ** 0.5},
+                step=self.epochs_trained, run_id=run_id,
+            )
+        return mse
+
+    def get_pipeline(self) -> LSTMPipeline:
+        """Wrap the fitted preprocessing and model for raw-sequence inference."""
+        if self.prepared_data is None or self.epochs_trained == 0:
+            raise ValueError("Call fit() before creating or logging the pipeline.")
+        return LSTMPipeline(self.model, self.preprocessor, self.data[TRAIN_SPLIT].feature_columns)
+
+    def log_model(self, run_id: str):
+        """Register one pyfunc model containing preprocessing, CPU weights, and feature order.
+
+        Load with mlflow.pyfunc.load_model and predict with raw X/lengths arrays.
+        Shapes allow variable batch sizes and padded sequence widths. This is an
+        inference artifact, not an optimizer checkpoint for resuming training.
+        """
+        pipeline = self.get_pipeline()
+        train = self.data[TRAIN_SPLIT]
+        input_example = {"X": train.X[:2].detach().cpu().numpy(), "lengths": train.lengths[:2].cpu().numpy()}
+        signature = ModelSignature(
+            inputs=Schema([
+                TensorSpec(np.dtype("float32"), (-1, -1, self.model.lstm.input_size), "X"),
+                TensorSpec(np.dtype("int64"), (-1,), "lengths"),
+            ]),
+            outputs=Schema([TensorSpec(np.dtype("float32"), (-1, -1))]),
+        )
+        with TemporaryDirectory(prefix="lstm-model-") as directory:
+            directory = Path(directory)
+            artifacts = {
+                "preprocessor": str(directory / "preprocessor.pkl"),
+                "weights": str(directory / "weights.pt"),
+                "metadata": str(directory / "metadata.json"),
+            }
+            with open(artifacts["preprocessor"], "wb") as file:
+                pickle.dump(self.preprocessor, file)
+            torch.save({key: value.detach().cpu() for key, value in self.model.state_dict().items()}, artifacts["weights"])
+            with open(artifacts["metadata"], "w") as file:
+                json.dump({"model_params": self._model_params(), "feature_columns": pipeline.feature_columns}, file)
+            with mlflow.start_run(run_id=run_id):
+                return mlflow.pyfunc.log_model(
+                    name="lstm",
+                    python_model=LSTMPipeline(),
+                    artifacts=artifacts,
+                    code_paths=[str(Path(__file__).resolve().parents[2])],
+                    signature=signature,
+                    input_example=input_example,
+                    registered_model_name=f"{self.base_model_name}_lstm",
+                    pip_requirements=[f"{package}=={version(package)}" for package in (
+                        "mlflow", "cloudpickle", "numpy", "pandas", "scikit-learn", "torch", "nflreadpy", "PyYAML",
+                    )],
+                )
 
     def _prepare_data(self) -> dict[str, SequenceDataset]:
         """Fit preprocessing once and cache transformed copies of all raw splits.
@@ -120,15 +236,10 @@ class LSTMModelTrainer:
 
     def _transform_dataset(self, data: SequenceDataset, split: str) -> SequenceDataset:
         """Transform only real features, preserving padding and all other fields."""
-        real_mask = data.real_step_mask
-        X = data.X.clone()
-        if real_mask.any():
-            inputs = data.X[real_mask].detach().cpu().numpy()
-            transformed = self.preprocessor.transform(inputs)
-            X[real_mask] = torch.as_tensor(transformed, dtype=X.dtype, device=X.device)
-        if not torch.isfinite(X[real_mask]).all():
-            raise ValueError(f"{split}: Real input steps must be finite after preprocessing.")
-        return replace(data, X=X)
+        try:
+            return transform_sequence_dataset(data, self.preprocessor)
+        except ValueError as error:
+            raise ValueError(f"{split}: {error}") from error
 
     def _make_loader(self, data: SequenceDataset, training: bool) -> DataLoader:
         if data.X.shape[-1] != self.model.lstm.input_size:
@@ -187,6 +298,10 @@ class LSTMModelTrainer:
 def main():
     parser = argparse.ArgumentParser(description="Fits and evaluates an LSTM model against a gold dataset")
     parser.add_argument(
+        "--tracking-dir", type=str, default="mlruns",
+        help="MLflow tracking/registry directory, relative to the repo root (default: mlruns)",
+    )
+    parser.add_argument(
         "--data-dir", type=str, default="data",
         help="Parent directory containing gold data, relative to the repo root (default: data)",
     )
@@ -218,11 +333,13 @@ def main():
     )
     trainer = LSTMModelTrainer(
         model=model, data_builder=data_builder, batch_size=args.batch_size,
-        learning_rate=args.learning_rate, device=args.device,
+        learning_rate=args.learning_rate, device=args.device, tracking_dir=args.tracking_dir,
     )
-    trainer.fit(epochs=args.epochs)
+    run_id = trainer.setup_mlflow(extra_params={"config_path": args.config, "seed": args.seed, "epochs": args.epochs})
+    logger.info("MLflow training run: %s", run_id)
+    trainer.fit(epochs=args.epochs, run_id=run_id)
     if args.evaluate_test:
-        test_mse = trainer.evaluate(split=TEST_SPLIT)
+        test_mse = trainer.evaluate(split=TEST_SPLIT, run_id=run_id)
         logger.info("LSTM test MSE: %s; RMSE: %s", test_mse, test_mse ** 0.5)
 
 
