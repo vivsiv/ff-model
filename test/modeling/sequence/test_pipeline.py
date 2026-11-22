@@ -212,28 +212,9 @@ def test_tabular_and_sequence_runs_share_base_model_experiment(trainer, tmp_path
     assert tabular_run.data.tags["model_type"] == "ridge"
 
 
-def test_trainer_log_model_delegates_fitted_components_and_raw_example(trainer):
-    trainer.fit(epochs=1)
-    model_info = object()
-
-    with patch.object(LSTMPipeline, "log_pipeline", return_value=model_info) as log_pipeline:
-        actual = trainer.log_model("training-run")
-
-    assert actual is model_info
-    log_pipeline.assert_called_once()
-    kwargs = log_pipeline.call_args.kwargs
-    assert kwargs["model"] is trainer.model
-    assert kwargs["preprocessor"] is trainer.preprocessor
-    assert kwargs["feature_columns"] == trainer.prepared_data["train"].feature_columns
-    assert kwargs["run_id"] == "training-run"
-    assert kwargs["registered_model_name"] == "ppr_points_per_game_rb_wr_lstm"
-    np.testing.assert_allclose(kwargs["input_example"]["X"], trainer.data["train"].X[:2].numpy(), equal_nan=True)
-    np.testing.assert_array_equal(kwargs["input_example"]["lengths"], trainer.data["train"].lengths[:2].numpy())
-
-
 @pytest.mark.parametrize("installed_torch_version", ["2.14.1", "2.14.1+cpu", "2.14.1+cu130"])
 def test_log_pipeline_pins_public_torch_version(trainer, installed_torch_version):
-    trainer.fit(epochs=1)
+    trainer.preprocessor.fit(trainer.data["train"])
 
     def installed_version(package):
         return installed_torch_version if package == "torch" else package_version(package)
@@ -245,7 +226,7 @@ def test_log_pipeline_pins_public_torch_version(trainer, installed_torch_version
     ):
         LSTMPipeline.log_pipeline(
             model=trainer.model, preprocessor=trainer.preprocessor,
-            feature_columns=trainer.prepared_data["train"].feature_columns,
+            feature_columns=trainer.data["train"].feature_columns,
             run_id="training-run", registered_model_name="test_lstm",
             input_example={"X": trainer.data["train"].X.numpy(), "lengths": trainer.data["train"].lengths.numpy()},
         )
@@ -288,14 +269,38 @@ def test_pipeline_rejects_feature_order_mismatch(trainer, fitted_pipeline):
         fitted_pipeline.predict_dataset(data)
 
 
-def test_pipeline_handles_empty_prediction_dataset(fitted_pipeline):
-    actual = fitted_pipeline.predict(context=None, model_input={
-        "X": np.empty((0, 0, 2), dtype=np.float32),
+@pytest.mark.parametrize("max_steps", [0, 3])
+def test_logged_pipeline_handles_empty_input(logged_pipeline, max_steps):
+    actual = logged_pipeline.predict({
+        "X": np.empty((0, max_steps, 2), dtype=np.float32),
         "lengths": np.empty(0, dtype=np.int64),
     })
 
-    assert actual.shape == (0, 0)
+    assert actual.shape == (0, max_steps)
     assert actual.dtype == np.float32
+
+
+@pytest.mark.parametrize("invalid_input", ["missing-lengths", "wrong-X-dtype", "wrong-X-rank"])
+def test_logged_pipeline_enforces_input_signature(logged_pipeline, prediction_inputs, invalid_input):
+    inputs = dict(prediction_inputs)
+    if invalid_input == "missing-lengths":
+        del inputs["lengths"]
+    elif invalid_input == "wrong-X-dtype":
+        inputs["X"] = inputs["X"].astype(np.float64)
+    else:
+        inputs["X"] = inputs["X"][:, 0]
+
+    with pytest.raises(mlflow.exceptions.MlflowException):
+        logged_pipeline.predict(inputs)
+
+
+def test_logged_pipeline_rejects_mismatched_player_counts(logged_pipeline, prediction_inputs):
+    # Each array satisfies its own signature; their batch dimensions must also
+    # agree, which is checked when the pipeline constructs a SequenceDataset.
+    inputs = {"X": prediction_inputs["X"], "lengths": prediction_inputs["lengths"][:1]}
+
+    with pytest.raises(ValueError, match="lengths must have shape"):
+        logged_pipeline.predict(inputs)
 
 
 def test_pipeline_validates_empty_input_structure_before_returning(fitted_pipeline):

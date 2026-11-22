@@ -3,6 +3,7 @@ from unittest.mock import Mock, patch
 
 import mlflow
 from mlflow.tracking import MlflowClient
+import numpy as np
 import pandas as pd
 import pytest
 import torch
@@ -11,6 +12,7 @@ from torch.utils.data import DataLoader
 from src.modeling.sequence.data_builder import SequenceDataset, SequenceModelDataBuilder
 from src.modeling.sequence.lstm import LSTMModel
 from src.modeling.sequence.lstm_trainer import LSTMModelTrainer, main
+from src.modeling.sequence.pipeline import LSTMPipeline
 from src.modeling.sequence.preprocessor import SequencePreprocessor
 from src.modeling.utils import load_data_builder_config
 
@@ -67,6 +69,18 @@ def make_unscored_data(empty):
     )
 
 
+@pytest.fixture
+def trainer(tmp_path):
+    """A small trainer with an isolated MLflow store for logging tests."""
+    old_tracking_uri = mlflow.get_tracking_uri()
+    trainer = LSTMModelTrainer(
+        LSTMModel(input_size=1, hidden_size=2), make_builder(), SequencePreprocessor(),
+        batch_size=2, tracking_dir=str(tmp_path / "mlruns"),
+    )
+    yield trainer
+    mlflow.set_tracking_uri(old_tracking_uri)
+
+
 def test_prepared_data_requires_fit_without_triggering_preprocessing():
     preprocessor = SequencePreprocessor()
     trainer = LSTMModelTrainer(zero_model(), make_builder(), preprocessor)
@@ -92,34 +106,65 @@ def test_prepared_data_property_is_read_only():
     assert trainer.prepared_data is prepared
 
 
-def test_mlflow_training_run_logs_config_params_and_metrics(tmp_path):
-    builder = make_builder()
-    trainer = LSTMModelTrainer(
-        zero_model(), builder, SequencePreprocessor(), batch_size=2,
-        tracking_dir=str(tmp_path / "mlruns"),
-    )
-    old_tracking_uri = mlflow.get_tracking_uri()
-    try:
-        run_id = trainer.setup_mlflow(extra_params={"seed": 42})
-        history = trainer.fit(epochs=2, run_id=run_id)
-        test_mse = trainer.evaluate(split="test", run_id=run_id)
+def test_mlflow_training_run_logs_config_params_and_metrics(trainer):
+    run_id = trainer.setup_mlflow(extra_params={"seed": 42})
+    history = trainer.fit(epochs=2, run_id=run_id)
+    test_mse = trainer.evaluate(split="test", run_id=run_id)
 
-        run = mlflow.get_run(run_id)
-        assert mlflow.get_experiment(run.info.experiment_id).name == trainer.base_model_name
-        assert run.data.tags["model_family"] == "sequence"
-        assert run.data.tags["model_type"] == "lstm"
-        assert run.data.tags["phase"] == "train"
-        assert run.data.params["hidden_size"] == "2"
-        assert run.data.params["num_layers"] == "1"
-        assert run.data.params["imputation_strategy"] == "mean"
-        assert load_data_builder_config(run_id) == builder.config
-        assert run.data.metrics["test_mse"] == pytest.approx(test_mse)
-        assert run.data.metrics["test_rmse"] == pytest.approx(test_mse ** 0.5)
-        metric_history = MlflowClient().get_metric_history(run_id, "train_mse")
-        assert [metric.step for metric in metric_history] == [1, 2]
-        assert [metric.value for metric in metric_history] == pytest.approx([item["train_mse"] for item in history])
-    finally:
-        mlflow.set_tracking_uri(old_tracking_uri)
+    run = mlflow.get_run(run_id)
+    assert mlflow.get_experiment(run.info.experiment_id).name == trainer.base_model_name
+    assert run.data.tags["model_family"] == "sequence"
+    assert run.data.tags["model_type"] == "lstm"
+    assert run.data.tags["phase"] == "train"
+    assert run.data.params["hidden_size"] == "2"
+    assert run.data.params["num_layers"] == "1"
+    assert run.data.params["imputation_strategy"] == "mean"
+    assert load_data_builder_config(run_id) == trainer.data_builder.config
+    assert run.data.metrics["test_mse"] == pytest.approx(test_mse)
+    assert run.data.metrics["test_rmse"] == pytest.approx(test_mse ** 0.5)
+    metric_history = MlflowClient().get_metric_history(run_id, "train_mse")
+    assert [metric.step for metric in metric_history] == [1, 2]
+    assert [metric.value for metric in metric_history] == pytest.approx([item["train_mse"] for item in history])
+
+
+def test_fit_registers_a_loadable_pipeline_linked_to_training_run(trainer):
+    run_id = trainer.setup_mlflow()
+
+    trainer.fit(epochs=1, run_id=run_id)
+
+    registered_name = f"{trainer.base_model_name}_lstm"
+    versions = MlflowClient().search_model_versions(f"name = '{registered_name}'")
+    assert len(versions) == 1
+    assert versions[0].run_id == run_id
+    loaded = mlflow.pyfunc.load_model(f"models:/{registered_name}/{versions[0].version}")
+    raw = trainer.data["test"]
+    actual = loaded.predict({"X": raw.X.numpy(), "lengths": raw.lengths.numpy()})
+    trainer.model.eval()
+    with torch.no_grad():
+        expected = trainer.model(trainer.prepared_data["test"].X, raw.lengths).numpy()
+
+    np.testing.assert_allclose(actual, expected, rtol=1e-5, atol=1e-6)
+
+
+def test_repeated_fit_continues_mlflow_metric_steps(trainer):
+    run_id = trainer.setup_mlflow()
+
+    first_history = trainer.fit(epochs=2, run_id=run_id)
+    second_history = trainer.fit(epochs=1, run_id=run_id)
+
+    client = MlflowClient()
+    for name in ("train_mse", "train_rmse", "eval_mse", "eval_rmse"):
+        metrics = sorted(client.get_metric_history(run_id, name), key=lambda metric: metric.step)
+        assert [metric.step for metric in metrics] == [1, 2, 3]
+        expected = [epoch[name] for epoch in first_history + second_history]
+        assert [metric.value for metric in metrics] == pytest.approx(expected)
+
+    test_mse = trainer.evaluate(split="test", run_id=run_id)
+    for name, expected in {"test_mse": test_mse, "test_rmse": test_mse ** 0.5}.items():
+        metrics = client.get_metric_history(run_id, name)
+        assert len(metrics) == 1
+        assert metrics[0].step == 3
+        assert metrics[0].value == pytest.approx(expected)
 
 
 def test_log_model_requires_training():
@@ -127,6 +172,26 @@ def test_log_model_requires_training():
 
     with pytest.raises(ValueError, match="Call fit"):
         trainer.log_model("unused-run")
+
+
+def test_trainer_log_model_delegates_fitted_components_and_raw_example(trainer):
+    trainer.data_builder.positions = ["WR", "RB"]
+    trainer.fit(epochs=1)
+    model_info = object()
+
+    with patch.object(LSTMPipeline, "log_pipeline", return_value=model_info) as log_pipeline:
+        actual = trainer.log_model("training-run")
+
+    assert actual is model_info
+    log_pipeline.assert_called_once()
+    kwargs = log_pipeline.call_args.kwargs
+    assert kwargs["model"] is trainer.model
+    assert kwargs["preprocessor"] is trainer.preprocessor
+    assert kwargs["feature_columns"] == trainer.prepared_data["train"].feature_columns
+    assert kwargs["run_id"] == "training-run"
+    assert kwargs["registered_model_name"] == "ppr_points_per_game_rb_wr_lstm"
+    np.testing.assert_allclose(kwargs["input_example"]["X"], trainer.data["train"].X[:2].numpy(), equal_nan=True)
+    np.testing.assert_array_equal(kwargs["input_example"]["lengths"], trainer.data["train"].lengths[:2].numpy())
 
 
 def test_uses_supplied_preprocessor_for_training():
@@ -337,49 +402,37 @@ def test_evaluate_requires_fitted_preprocessing():
         trainer.evaluate()
 
 
-def test_preprocessing_fits_on_real_training_history_and_preserves_raw_data():
+def test_fit_preprocesses_all_splits_using_training_statistics():
     train = make_data()
     eval_data = make_data()
     eval_data.X[1, 0, 0] = float("nan")
     eval_data.X[1, 1, 0] = 100.0
     builder = make_builder(train=train, eval_data=eval_data)
-    prediction = replace(
-        make_data(),
-        X=torch.empty((0, 0, 1)),
-        lengths=torch.empty(0, dtype=torch.int64),
-        y=torch.empty((0, 0)),
-        loss_mask=torch.empty((0, 0), dtype=torch.bool),
-        sample_weight=None,
-    )
-    builder.get_data_splits.return_value["prediction"] = prediction
-    trainer = LSTMModelTrainer(zero_model(), builder, SequencePreprocessor())
+    builder.get_data_splits.return_value["prediction"] = replace(make_unscored_data(empty=True), sample_weight=None)
+    preprocessor = SequencePreprocessor()
+    trainer = LSTMModelTrainer(zero_model(), builder, preprocessor)
     raw_X = {split: data.X.clone() for split, data in trainer.data.items()}
-    assert not hasattr(trainer.preprocessor.preprocessor.named_steps["scaler"], "mean_")
 
-    trainer.fit(epochs=1)
+    with patch.object(preprocessor, "fit", wraps=preprocessor.fit) as fit:
+        trainer.fit(epochs=1)
 
-    # Real training steps are [1, 2, 3]; the unscored context step 2 is included.
-    scaler = trainer.preprocessor.preprocessor.named_steps["scaler"]
-    imputer = trainer.preprocessor.preprocessor.named_steps["imputer"]
-    assert imputer.statistics_[0] == pytest.approx(2.0)
+    fit.assert_called_once_with(train)
+    assert set(trainer.prepared_data) == set(trainer.data)
+
+    # Evaluation's value of 100 must not influence fitted statistics. Check one
+    # transformed value in each scored split rather than duplicating unit math.
+    scaler = preprocessor.preprocessor.named_steps["scaler"]
     assert scaler.mean_[0] == pytest.approx(2.0)
-    assert scaler.scale_[0] == pytest.approx((2.0 / 3.0) ** 0.5)
-    expected_train = torch.tensor([
-        [[-1.0 / scaler.scale_[0]], [float("nan")]],
-        [[0.0], [1.0 / scaler.scale_[0]]],
-    ], dtype=torch.float32)
-    torch.testing.assert_close(trainer.prepared_data["train"].X, expected_train, equal_nan=True)
-    expected_eval = torch.tensor([
-        [[-1.0 / scaler.scale_[0]], [float("nan")]],
-        [[0.0], [98.0 / scaler.scale_[0]]],
-    ], dtype=torch.float32)
-    torch.testing.assert_close(trainer.prepared_data["eval"].X, expected_eval, equal_nan=True)
+    assert trainer.prepared_data["train"].X[0, 0, 0].item() == pytest.approx(-1.0 / scaler.scale_[0])
+    assert trainer.prepared_data["eval"].X[1, 1, 0].item() == pytest.approx(98.0 / scaler.scale_[0])
+    assert trainer.prepared_data["test"].X[0, 0, 0].item() == pytest.approx(-1.0 / scaler.scale_[0])
+
+    # The trainer caches prepared copies without replacing the builder's raw data,
+    # including the empty prediction split.
     for split, raw in trainer.data.items():
-        prepared = trainer.prepared_data[split]
+        assert trainer.prepared_data[split] is not raw
+        assert trainer.prepared_data[split].X is not raw.X
         torch.testing.assert_close(raw.X, raw_X[split], equal_nan=True)
-        for field in ("identity", "lengths", "y", "loss_mask", "sample_weight", "feature_columns"):
-            assert getattr(prepared, field) is getattr(raw, field)
-        torch.testing.assert_close(prepared.X[~raw.real_step_mask], raw.X[~raw.real_step_mask], equal_nan=True)
 
 
 def test_missing_training_features_are_imputed_before_training():

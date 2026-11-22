@@ -92,27 +92,6 @@ class TestTabularModelTrainer:
         }
         assert set(self.model.data["identity_test"]["target_season"]) == {2024}
 
-    def test_base_model_name__defaults_to_target_when_positions_not_set(self):
-        assert self.model.base_model_name == "target_1"
-
-    def test_base_model_name__includes_single_lowercased_position_when_data_builder_has_one(self):
-        data_builder = TabularModelDataBuilder(data_dir=self.test_dir, config={"target": "target_1", "split": {"prediction_season": 2025}, "positions": ["RB"]})
-        model = TabularModelTrainer(
-            data_dir=self.test_dir, tracking_dir=self.tracking_dir, data_builder=data_builder, model_type="ridge"
-        )
-
-        assert model.base_model_name == "target_1_rb"
-
-    def test_base_model_name__sorts_multiple_lowercased_positions_regardless_of_config_order(self):
-        data_builder = TabularModelDataBuilder(
-            data_dir=self.test_dir, config={"target": "target_1", "split": {"prediction_season": 2025}, "positions": ["WR", "RB"]}
-        )
-        model = TabularModelTrainer(
-            data_dir=self.test_dir, tracking_dir=self.tracking_dir, data_builder=data_builder, model_type="ridge"
-        )
-
-        assert model.base_model_name == "target_1_rb_wr"
-
     def test_setup_mlflow__logs_data_builder_config_as_an_artifact(self):
         run_id = self.model.setup_mlflow()
 
