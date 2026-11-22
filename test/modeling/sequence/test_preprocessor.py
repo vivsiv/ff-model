@@ -29,21 +29,22 @@ def data():
     )
 
 
-def test_fit_uses_real_training_steps_including_unscored_history(data):
+def test_fit_uses_all_real_training_steps(data):
     preprocessor = SequencePreprocessor()
 
     assert preprocessor.fit(data) is preprocessor
 
-    # Feature a includes the unscored value 2; feature b's missing value is
-    # imputed to 15 before fitting the scaler. Padding contributes to neither.
-    np.testing.assert_allclose(preprocessor.pipeline.named_steps["imputer"].statistics_, [7.0 / 3.0, 15.0])
-    np.testing.assert_allclose(preprocessor.pipeline.named_steps["scaler"].mean_, [7.0 / 3.0, 15.0])
-    np.testing.assert_allclose(preprocessor.pipeline.named_steps["scaler"].scale_, [14.0 ** 0.5 / 3.0, (50.0 / 3.0) ** 0.5])
+    # Feature A includes Player 2, Step 0's value of 2 despite it not contributing to 2.
+    # Feature b's missing value is imputed to 15 before fitting the scaler.
+    # Padding contributes to neither.
+    np.testing.assert_allclose(preprocessor.preprocessor.named_steps["imputer"].statistics_, [7.0 / 3.0, 15.0])
+    np.testing.assert_allclose(preprocessor.preprocessor.named_steps["scaler"].mean_, [7.0 / 3.0, 15.0])
+    np.testing.assert_allclose(preprocessor.preprocessor.named_steps["scaler"].scale_, [14.0 ** 0.5 / 3.0, (50.0 / 3.0) ** 0.5])
     assert preprocessor.feature_columns == data.feature_columns
     assert preprocessor.feature_columns is not data.feature_columns
 
 
-def test_transform_preserves_layout_padding_metadata_and_raw_values(data):
+def test_transform_preserves_layout_padding_metadata_and_leaves_input_unchanges(data):
     preprocessor = SequencePreprocessor().fit(data)
     before = data.X.clone()
 
@@ -73,7 +74,7 @@ def test_transform_reuses_training_statistics(data):
 
     scale_a = 14.0 ** 0.5 / 3.0
     torch.testing.assert_close(actual.X[0, 0], torch.tensor([(100.0 - 7.0 / 3.0) / scale_a, 0.0]))
-    np.testing.assert_allclose(preprocessor.pipeline.named_steps["imputer"].statistics_, [7.0 / 3.0, 15.0])
+    np.testing.assert_allclose(preprocessor.preprocessor.named_steps["imputer"].statistics_, [7.0 / 3.0, 15.0])
 
 
 def test_transform_requires_fit(data):
@@ -104,7 +105,7 @@ def test_fit_rejects_empty_data(data):
 
 def test_transform_handles_empty_data_without_calling_sklearn_transform(data):
     preprocessor = SequencePreprocessor().fit(data)
-    with patch.object(preprocessor.pipeline, "transform") as transform:
+    with patch.object(preprocessor.preprocessor, "transform") as transform:
         actual = preprocessor.transform(empty_data(data))
 
     transform.assert_not_called()
@@ -124,7 +125,7 @@ def test_fit_keeps_entirely_missing_features(data):
 @pytest.mark.parametrize("value", [np.nan, np.inf, -np.inf])
 def test_transform_rejects_nonfinite_prepared_features(data, value):
     preprocessor = SequencePreprocessor().fit(data)
-    with patch.object(preprocessor.pipeline, "transform", return_value=np.full((3, 2), value)):
+    with patch.object(preprocessor.preprocessor, "transform", return_value=np.full((3, 2), value)):
         with pytest.raises(ValueError, match="finite after preprocessing"):
             preprocessor.transform(data)
 
@@ -136,15 +137,6 @@ def test_pickle_preserves_fitted_preprocessing(data):
 
     assert restored.feature_columns == preprocessor.feature_columns
     torch.testing.assert_close(restored.transform(data).X, preprocessor.transform(data).X, equal_nan=True)
-
-
-def test_wraps_legacy_fitted_sklearn_pipeline_without_refitting(data):
-    original = SequencePreprocessor().fit(data)
-
-    restored = SequencePreprocessor.from_fitted_pipeline(original.pipeline, data.feature_columns)
-
-    assert restored.pipeline is original.pipeline
-    torch.testing.assert_close(restored.transform(data).X, original.transform(data).X, equal_nan=True)
 
 
 @pytest.mark.parametrize("device", ["cpu", "mps", "cuda"])

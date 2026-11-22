@@ -1,6 +1,8 @@
 from dataclasses import replace
 from unittest.mock import Mock, patch
 
+import mlflow
+from mlflow.tracking import MlflowClient
 import pandas as pd
 import pytest
 import torch
@@ -10,6 +12,7 @@ from src.modeling.sequence.data_builder import SequenceDataset, SequenceModelDat
 from src.modeling.sequence.lstm import LSTMModel
 from src.modeling.sequence.lstm_trainer import LSTMModelTrainer, main
 from src.modeling.sequence.preprocessor import SequencePreprocessor
+from src.modeling.utils import load_data_builder_config
 
 
 def make_data():
@@ -87,6 +90,43 @@ def test_prepared_data_property_is_read_only():
         trainer.prepared_data = {}
 
     assert trainer.prepared_data is prepared
+
+
+def test_mlflow_training_run_logs_config_params_and_metrics(tmp_path):
+    builder = make_builder()
+    trainer = LSTMModelTrainer(
+        zero_model(), builder, SequencePreprocessor(), batch_size=2,
+        tracking_dir=str(tmp_path / "mlruns"),
+    )
+    old_tracking_uri = mlflow.get_tracking_uri()
+    try:
+        run_id = trainer.setup_mlflow(extra_params={"seed": 42})
+        history = trainer.fit(epochs=2, run_id=run_id)
+        test_mse = trainer.evaluate(split="test", run_id=run_id)
+
+        run = mlflow.get_run(run_id)
+        assert mlflow.get_experiment(run.info.experiment_id).name == trainer.base_model_name
+        assert run.data.tags["model_family"] == "sequence"
+        assert run.data.tags["model_type"] == "lstm"
+        assert run.data.tags["phase"] == "train"
+        assert run.data.params["hidden_size"] == "2"
+        assert run.data.params["num_layers"] == "1"
+        assert run.data.params["imputation_strategy"] == "mean"
+        assert load_data_builder_config(run_id) == builder.config
+        assert run.data.metrics["test_mse"] == pytest.approx(test_mse)
+        assert run.data.metrics["test_rmse"] == pytest.approx(test_mse ** 0.5)
+        metric_history = MlflowClient().get_metric_history(run_id, "train_mse")
+        assert [metric.step for metric in metric_history] == [1, 2]
+        assert [metric.value for metric in metric_history] == pytest.approx([item["train_mse"] for item in history])
+    finally:
+        mlflow.set_tracking_uri(old_tracking_uri)
+
+
+def test_log_model_requires_training():
+    trainer = LSTMModelTrainer(zero_model(), make_builder(), SequencePreprocessor())
+
+    with pytest.raises(ValueError, match="Call fit"):
+        trainer.log_model("unused-run")
 
 
 def test_uses_supplied_preprocessor_for_training():
@@ -314,13 +354,13 @@ def test_preprocessing_fits_on_real_training_history_and_preserves_raw_data():
     builder.get_data_splits.return_value["prediction"] = prediction
     trainer = LSTMModelTrainer(zero_model(), builder, SequencePreprocessor())
     raw_X = {split: data.X.clone() for split, data in trainer.data.items()}
-    assert not hasattr(trainer.preprocessor.pipeline.named_steps["scaler"], "mean_")
+    assert not hasattr(trainer.preprocessor.preprocessor.named_steps["scaler"], "mean_")
 
     trainer.fit(epochs=1)
 
     # Real training steps are [1, 2, 3]; the unscored context step 2 is included.
-    scaler = trainer.preprocessor.pipeline.named_steps["scaler"]
-    imputer = trainer.preprocessor.pipeline.named_steps["imputer"]
+    scaler = trainer.preprocessor.preprocessor.named_steps["scaler"]
+    imputer = trainer.preprocessor.preprocessor.named_steps["imputer"]
     assert imputer.statistics_[0] == pytest.approx(2.0)
     assert scaler.mean_[0] == pytest.approx(2.0)
     assert scaler.scale_[0] == pytest.approx((2.0 / 3.0) ** 0.5)
@@ -349,7 +389,7 @@ def test_missing_training_features_are_imputed_before_training():
 
     trainer.fit(epochs=1)
 
-    assert trainer.preprocessor.pipeline.named_steps["imputer"].statistics_[0] == pytest.approx(2.0)
+    assert trainer.preprocessor.preprocessor.named_steps["imputer"].statistics_[0] == pytest.approx(2.0)
     prepared = trainer.prepared_data["train"]
     assert prepared.X[1, 0, 0] == 0.0
     assert torch.isfinite(prepared.X[prepared.real_step_mask]).all()
@@ -370,7 +410,7 @@ def test_entirely_missing_training_features_keep_their_columns():
 def test_prepared_features_are_validated_before_training():
     trainer = LSTMModelTrainer(zero_model(), make_builder(), SequencePreprocessor())
     before = [parameter.detach().clone() for parameter in trainer.model.parameters()]
-    with patch.object(trainer.preprocessor.pipeline, "transform", return_value=[[float("nan")]] * 3):
+    with patch.object(trainer.preprocessor.preprocessor, "transform", return_value=[[float("nan")]] * 3):
         with pytest.raises(ValueError, match="finite after preprocessing"):
             trainer.fit(epochs=1)
 

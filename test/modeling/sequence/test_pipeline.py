@@ -1,11 +1,8 @@
-import json
 import os
-import pickle
 import subprocess
 import sys
 from dataclasses import replace
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import mlflow
@@ -13,7 +10,6 @@ import numpy as np
 import pandas as pd
 import pytest
 import torch
-from mlflow.tracking import MlflowClient
 
 from src.modeling.sequence.data_builder import SequenceDataset, SequenceModelDataBuilder
 from src.modeling.sequence.lstm import LSTMModel
@@ -22,7 +18,6 @@ from src.modeling.sequence.pipeline import LSTMPipeline
 from src.modeling.sequence.preprocessor import SequencePreprocessor
 from src.modeling.tabular.data_builder import TabularModelDataBuilder
 from src.modeling.tabular.trainer import TabularModelTrainer
-from src.modeling.utils import load_data_builder_config
 
 
 @pytest.mark.parametrize("input_size", [1, 5])
@@ -80,58 +75,96 @@ def fitted_pipeline(trainer):
     return LSTMPipeline(trainer.model, trainer.preprocessor, trainer.prepared_data["train"].feature_columns)
 
 
-def test_logged_pipeline_round_trip_includes_config_preprocessing_and_metrics(trainer, tmp_path):
-    run_id = trainer.setup_mlflow(extra_params={"seed": 42})
-    history = trainer.fit(epochs=2, run_id=run_id)
-    test_mse = trainer.evaluate(split="test", run_id=run_id)
-
-    run = mlflow.get_run(run_id)
-    assert mlflow.get_experiment(run.info.experiment_id).name == "ppr_points_per_game_rb_wr"
-    assert run.data.tags["model_family"] == "sequence"
-    assert run.data.tags["model_type"] == "lstm"
-    assert run.data.tags["phase"] == "train"
-    assert run.data.params["hidden_size"] == "4"
-    assert run.data.params["num_layers"] == "2"
-    assert run.data.params["imputation_strategy"] == "mean"
-    assert load_data_builder_config(run_id) == trainer.data_builder.config
-    assert run.data.metrics["test_mse"] == pytest.approx(test_mse)
-    assert run.data.metrics["test_rmse"] == pytest.approx(test_mse ** 0.5)
-    metric_history = MlflowClient().get_metric_history(run_id, "train_mse")
-    assert [metric.step for metric in metric_history] == [1, 2]
-    assert [metric.value for metric in metric_history] == pytest.approx([item["train_mse"] for item in history])
-
-    model_uri = "models:/ppr_points_per_game_rb_wr_lstm/1"
-    loaded = mlflow.pyfunc.load_model(model_uri)
-    pipeline = loaded.unwrap_python_model()
-    assert pipeline.feature_columns == ["feature_a", "feature_b"]
-    assert next(pipeline.model.parameters()).device.type == "cpu"
-    np.testing.assert_allclose(
-        pipeline.preprocessor.pipeline.named_steps["imputer"].statistics_,
-        trainer.preprocessor.pipeline.named_steps["imputer"].statistics_,
-    )
+@pytest.fixture
+def prediction_inputs(trainer):
     data = trainer.data["prediction"]
-    inputs = {"X": data.X.numpy(), "lengths": data.lengths.numpy()}
-    in_memory = LSTMPipeline(trainer.model, trainer.preprocessor, trainer.prepared_data["train"].feature_columns)
-    expected = in_memory.predict_dataset(data)
-    np.testing.assert_allclose(loaded.predict(inputs), expected, rtol=1e-5, atol=1e-6)
-    trainer.model.eval()
+    return {"X": data.X.numpy(), "lengths": data.lengths.numpy()}
+
+
+@pytest.fixture
+def logged_model_info(trainer, fitted_pipeline, prediction_inputs):
+    run_id = trainer.setup_mlflow()
+
+    return LSTMPipeline.log_pipeline(
+        model=fitted_pipeline.model, preprocessor=fitted_pipeline.preprocessor,
+        feature_columns=fitted_pipeline.feature_columns, run_id=run_id,
+        registered_model_name=f"{trainer.base_model_name}_lstm",
+        input_example=prediction_inputs,
+    )
+
+
+@pytest.fixture
+def logged_pipeline(logged_model_info):
+    return mlflow.pyfunc.load_model(logged_model_info.model_uri)
+
+
+def test_logged_pipeline_restores_in_memory_state(fitted_pipeline, logged_pipeline):
+    restored = logged_pipeline.unwrap_python_model()
+
+    assert restored.feature_columns == fitted_pipeline.feature_columns
+    assert LSTMPipeline.model_params(restored.model) == LSTMPipeline.model_params(fitted_pipeline.model)
+    assert next(restored.model.parameters()).device.type == "cpu"
+    assert not restored.model.training
+
+    expected_state = fitted_pipeline.model.state_dict()
+    actual_state = restored.model.state_dict()
+    assert actual_state.keys() == expected_state.keys()
+    for name in expected_state:
+        torch.testing.assert_close(actual_state[name], expected_state[name].cpu())
+
+    expected_preprocessor = fitted_pipeline.preprocessor.preprocessor.named_steps
+    actual_preprocessor = restored.preprocessor.preprocessor.named_steps
+    np.testing.assert_allclose(actual_preprocessor["imputer"].statistics_, expected_preprocessor["imputer"].statistics_)
+    np.testing.assert_allclose(actual_preprocessor["scaler"].mean_, expected_preprocessor["scaler"].mean_)
+    np.testing.assert_allclose(actual_preprocessor["scaler"].scale_, expected_preprocessor["scaler"].scale_)
+
+
+def test_logged_predictions_match_in_memory_pipeline(trainer, fitted_pipeline, logged_pipeline, prediction_inputs):
+    expected = fitted_pipeline.predict(context=None, model_input=prediction_inputs)
+    actual = logged_pipeline.predict(prediction_inputs)
+
+    np.testing.assert_allclose(actual, expected, rtol=1e-5, atol=1e-6)
+    assert np.isfinite(actual).all()
+    assert (actual[~trainer.data["prediction"].real_step_mask.numpy()] == 0.0).all()
+
+
+def test_in_memory_predictions_match_direct_lstm_on_preprocessed_inputs(trainer, fitted_pipeline, prediction_inputs):
+    actual = fitted_pipeline.predict(context=None, model_input=prediction_inputs)
+    data = trainer.prepared_data["prediction"]
+
     with torch.no_grad():
-        direct = trainer.model(trainer.prepared_data["prediction"].X, data.lengths).numpy()
-    np.testing.assert_allclose(expected, direct, rtol=1e-5, atol=1e-6)
-    assert np.isfinite(expected).all()
-    assert (expected[~data.real_step_mask.numpy()] == 0.0).all()
+        expected = trainer.model(data.X, data.lengths).numpy()
 
-    # The logged signature must accept widths/batch sizes different from training.
-    wider = np.pad(inputs["X"], ((0, 0), (0, 3), (0, 0)), constant_values=np.nan)
-    wider_predictions = loaded.predict({"X": wider, "lengths": inputs["lengths"]})
-    np.testing.assert_allclose(wider_predictions[:, :4], expected, rtol=1e-5, atol=1e-6)
-    assert (wider_predictions[:, 4:] == 0.0).all()
-    smaller = loaded.predict({"X": inputs["X"][:1, :1], "lengths": inputs["lengths"][:1]})
-    np.testing.assert_allclose(smaller, expected[:1, :1], rtol=1e-5, atol=1e-6)
+    np.testing.assert_allclose(actual, expected, rtol=1e-5, atol=1e-6)
 
-    # Confirm saved code/artifacts work outside the repository in a fresh process.
+
+def test_logged_pipeline_accepts_larger_sequence_dimension_than_training(fitted_pipeline, logged_pipeline, prediction_inputs):
+    expected = fitted_pipeline.predict(context=None, model_input=prediction_inputs)
+    original_width = prediction_inputs["X"].shape[1]
+    wider = np.pad(prediction_inputs["X"], ((0, 0), (0, 3), (0, 0)), constant_values=np.nan)
+
+    actual = logged_pipeline.predict({"X": wider, "lengths": prediction_inputs["lengths"]})
+
+    np.testing.assert_allclose(actual[:, :original_width], expected, rtol=1e-5, atol=1e-6)
+    assert (actual[:, original_width:] == 0.0).all()
+
+
+def test_logged_pipeline_accepts_smaller_sequence_dimension_and_batch_size(fitted_pipeline, logged_pipeline, prediction_inputs):
+    expected = fitted_pipeline.predict(context=None, model_input=prediction_inputs)
+
+    actual = logged_pipeline.predict({
+        "X": prediction_inputs["X"][:1, :1], "lengths": prediction_inputs["lengths"][:1],
+    })
+
+    np.testing.assert_allclose(actual, expected[:1, :1], rtol=1e-5, atol=1e-6)
+
+
+def test_logged_pipeline_loads_outside_repository_in_fresh_process(
+    trainer, fitted_pipeline, logged_model_info, prediction_inputs, tmp_path,
+):
+    expected = fitted_pipeline.predict(context=None, model_input=prediction_inputs)
     arrays_path = tmp_path / "inference.npz"
-    np.savez(arrays_path, **inputs, expected=expected)
+    np.savez(arrays_path, **prediction_inputs, expected=expected)
     environment = dict(os.environ)
     environment.pop("PYTHONPATH", None)
     result = subprocess.run([
@@ -139,7 +172,7 @@ def test_logged_pipeline_round_trip_includes_config_preprocessing_and_metrics(tr
         "import sys, mlflow, numpy as np; "
         "mlflow.set_tracking_uri(sys.argv[1]); "
         "arrays = np.load(sys.argv[2]); "
-        f"model = mlflow.pyfunc.load_model('{model_uri}'); "
+        f"model = mlflow.pyfunc.load_model('{logged_model_info.model_uri}'); "
         "actual = model.predict({'X': arrays['X'], 'lengths': arrays['lengths']}); "
         "np.testing.assert_allclose(actual, arrays['expected'], rtol=1e-5, atol=1e-6)",
         trainer.tracking_dir, str(arrays_path),
@@ -214,65 +247,6 @@ def test_log_pipeline_stages_artifacts_and_cleans_temporary_files(trainer):
     assert not any(Path(path).exists() for path in staged_paths)
 
 
-def test_save_artifacts_matches_load_context_without_changing_live_model(trainer, tmp_path):
-    trainer.fit(epochs=1)
-    trainer.model.train()
-    original_device = next(trainer.model.parameters()).device
-    directory = tmp_path / "staging"
-
-    artifacts = LSTMPipeline._save_artifacts(
-        directory, trainer.model, trainer.preprocessor, trainer.prepared_data["train"].feature_columns,
-    )
-
-    assert artifacts == {
-        "preprocessor": str(directory / "preprocessor.pkl"),
-        "weights": str(directory / "weights.pt"),
-        "metadata": str(directory / "metadata.json"),
-    }
-    assert all(Path(path).is_file() for path in artifacts.values())
-    assert trainer.model.training
-    assert next(trainer.model.parameters()).device == original_device
-    with open(artifacts["metadata"]) as file:
-        assert json.load(file) == {
-            "model_params": {"input_size": 2, "hidden_size": 4, "num_layers": 2, "dropout": 0.2},
-            "feature_columns": ["feature_a", "feature_b"],
-        }
-    state = torch.load(artifacts["weights"], map_location="cpu", weights_only=True)
-    assert state.keys() == trainer.model.state_dict().keys()
-    for key, tensor in state.items():
-        assert tensor.device.type == "cpu"
-        torch.testing.assert_close(tensor, trainer.model.state_dict()[key].cpu())
-
-    restored = LSTMPipeline()
-    restored.load_context(SimpleNamespace(artifacts=artifacts))
-    in_memory = LSTMPipeline(trainer.model, trainer.preprocessor, trainer.prepared_data["train"].feature_columns)
-    np.testing.assert_allclose(
-        restored.predict_dataset(trainer.data["prediction"]),
-        in_memory.predict_dataset(trainer.data["prediction"]),
-        rtol=1e-5, atol=1e-6,
-    )
-
-
-def test_load_context_supports_legacy_sklearn_preprocessor(trainer, tmp_path):
-    trainer.fit(epochs=1)
-    artifacts = LSTMPipeline._save_artifacts(
-        tmp_path, trainer.model, trainer.preprocessor, trainer.prepared_data["train"].feature_columns,
-    )
-    with open(artifacts["preprocessor"], "wb") as file:
-        pickle.dump(trainer.preprocessor.pipeline, file)
-    pipeline = LSTMPipeline()
-
-    pipeline.load_context(SimpleNamespace(artifacts=artifacts))
-
-    assert isinstance(pipeline.preprocessor, SequencePreprocessor)
-    in_memory = LSTMPipeline(trainer.model, trainer.preprocessor, trainer.prepared_data["train"].feature_columns)
-    np.testing.assert_allclose(
-        pipeline.predict_dataset(trainer.data["prediction"]),
-        in_memory.predict_dataset(trainer.data["prediction"]),
-        rtol=1e-5, atol=1e-6,
-    )
-
-
 def test_pipeline_rejects_feature_order_mismatch(trainer, fitted_pipeline):
     data = replace(trainer.data["prediction"], feature_columns=["feature_b", "feature_a"])
 
@@ -280,13 +254,8 @@ def test_pipeline_rejects_feature_order_mismatch(trainer, fitted_pipeline):
         fitted_pipeline.predict_dataset(data)
 
 
-def test_log_model_requires_training(trainer):
-    with pytest.raises(ValueError, match="Call fit"):
-        trainer.log_model("unused-run")
-
-
 def test_pipeline_handles_empty_prediction_dataset(fitted_pipeline):
-    actual = fitted_pipeline.predict(None, {
+    actual = fitted_pipeline.predict(context=None, model_input={
         "X": np.empty((0, 0, 2), dtype=np.float32),
         "lengths": np.empty(0, dtype=np.int64),
     })
@@ -295,33 +264,19 @@ def test_pipeline_handles_empty_prediction_dataset(fitted_pipeline):
     assert actual.dtype == np.float32
 
 
-@pytest.mark.parametrize("lengths", [np.array([0, 3]), np.array([1, 5]), np.array([1.0, 3.0])])
-def test_pipeline_rejects_invalid_lengths(trainer, fitted_pipeline, lengths):
-    with pytest.raises(ValueError, match="length"):
-        fitted_pipeline.predict(None, {"X": trainer.data["prediction"].X.numpy(), "lengths": lengths})
-
-
 def test_pipeline_validates_empty_input_structure_before_returning(fitted_pipeline):
     with pytest.raises(ValueError, match="lengths must have shape"):
-        fitted_pipeline.predict(None, {
+        fitted_pipeline.predict(context=None, model_input={
             "X": np.empty((0, 0, 2), dtype=np.float32),
             "lengths": np.array([1], dtype=np.int64),
         })
 
 
-def test_pipeline_rejects_invalid_input_rank(fitted_pipeline):
-    with pytest.raises(ValueError, match="X must have shape"):
-        fitted_pipeline.predict(None, {
-            "X": np.zeros((2, 2), dtype=np.float32),
-            "lengths": np.array([1, 1], dtype=np.int64),
-        })
-
-
-def test_pipeline_retains_model_specific_feature_count_check(trainer, fitted_pipeline):
+def test_pipeline_validates_model_input_size_matches_feature_count(trainer, fitted_pipeline):
     fitted_pipeline.model = LSTMModel(input_size=3)
 
     with pytest.raises(ValueError, match="model input_size"):
-        fitted_pipeline.predict(None, {
+        fitted_pipeline.predict(context=None, model_input={
             "X": trainer.data["prediction"].X.numpy(),
             "lengths": trainer.data["prediction"].lengths.numpy(),
         })

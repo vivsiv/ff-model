@@ -15,7 +15,6 @@ from mlflow.types.schema import Schema, TensorSpec
 import numpy as np
 import pandas as pd
 import torch
-from sklearn.pipeline import Pipeline
 
 from src.modeling.sequence.data_builder import SequenceDataset
 from src.modeling.sequence.lstm import LSTMModel
@@ -31,6 +30,16 @@ class LSTMPipeline(mlflow.pyfunc.PythonModel):
     CPU for portability, regardless of the device used during training.
     """
 
+    def __init__(
+        self,
+        model: LSTMModel | None = None,
+        preprocessor: SequencePreprocessor | None = None,
+        feature_columns: list[str] | None = None,
+    ) -> None:
+        self.model = model
+        self.preprocessor = preprocessor
+        self.feature_columns = feature_columns
+
     @staticmethod
     def model_params(model: LSTMModel) -> dict[str, int | float]:
         """Return architecture arguments used both for tracking and reconstruction."""
@@ -41,9 +50,8 @@ class LSTMPipeline(mlflow.pyfunc.PythonModel):
             "dropout": model.lstm.dropout,
         }
 
-    @classmethod
+    @staticmethod
     def _save_artifacts(
-        cls,
         directory: str | Path,
         model: LSTMModel,
         preprocessor: SequencePreprocessor,
@@ -66,12 +74,11 @@ class LSTMPipeline(mlflow.pyfunc.PythonModel):
             pickle.dump(preprocessor, file)
         torch.save({key: value.detach().cpu() for key, value in model.state_dict().items()}, artifacts["weights"])
         with open(artifacts["metadata"], "w") as file:
-            json.dump({"model_params": cls.model_params(model), "feature_columns": feature_columns}, file)
+            json.dump({"model_params": LSTMPipeline.model_params(model), "feature_columns": feature_columns}, file)
         return artifacts
 
-    @classmethod
+    @staticmethod
     def log_pipeline(
-        cls,
         *,
         model: LSTMModel,
         preprocessor: SequencePreprocessor,
@@ -87,14 +94,14 @@ class LSTMPipeline(mlflow.pyfunc.PythonModel):
         Temporary files are removed after MLflow copies them into its model store.
         """
         with TemporaryDirectory(prefix="lstm-model-") as directory:
-            artifacts = cls._save_artifacts(directory, model, preprocessor, feature_columns)
+            artifacts = LSTMPipeline._save_artifacts(directory, model, preprocessor, feature_columns)
             with mlflow.start_run(run_id=run_id):
                 return mlflow.pyfunc.log_model(
                     name="lstm",
-                    python_model=cls(),
+                    python_model=LSTMPipeline(),
                     artifacts=artifacts,
                     code_paths=[str(Path(__file__).resolve().parents[2])],
-                    signature=cls.build_signature(model.lstm.input_size),
+                    signature=LSTMPipeline.build_signature(model.lstm.input_size),
                     input_example=input_example,
                     registered_model_name=registered_model_name,
                     pip_requirements=[f"{package}=={version(package)}" for package in (
@@ -113,16 +120,6 @@ class LSTMPipeline(mlflow.pyfunc.PythonModel):
             outputs=Schema([TensorSpec(np.dtype("float32"), (-1, -1))]),
         )
 
-    def __init__(
-        self,
-        model: LSTMModel | None = None,
-        preprocessor: SequencePreprocessor | None = None,
-        feature_columns: list[str] | None = None,
-    ) -> None:
-        self.model = model
-        self.preprocessor = preprocessor
-        self.feature_columns = feature_columns
-
     def load_context(self, context: PythonModelContext) -> None:
         """Restore architecture, CPU weights, feature order, and fitted preprocessing."""
         with open(context.artifacts["metadata"]) as file:
@@ -135,8 +132,6 @@ class LSTMPipeline(mlflow.pyfunc.PythonModel):
         # Like other MLflow models, only load artifacts from trusted sources.
         with open(context.artifacts["preprocessor"], "rb") as file:
             self.preprocessor = pickle.load(file)
-        if isinstance(self.preprocessor, Pipeline):
-            self.preprocessor = SequencePreprocessor.from_fitted_pipeline(self.preprocessor, self.feature_columns)
 
     def predict(
         self,
@@ -173,7 +168,7 @@ class LSTMPipeline(mlflow.pyfunc.PythonModel):
         if data.feature_columns != self.feature_columns:
             raise ValueError("Feature columns must match the saved pipeline in order.")
 
-        return self.predict(None, {
+        return self.predict(context=None, model_input={
             "X": data.X.detach().cpu().numpy(),
             "lengths": data.lengths.cpu().numpy(),
         })

@@ -108,6 +108,7 @@ class TabularModelTrainer:
         run_name = run_name or f"{self.model_type}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
         tags = {"model_family": "tabular", "model_type": self.model_type, "phase": "train", **(extra_tags or {})}
 
+        # TODO: experiements run before the removal of "_tabular" in the expriment name keep _tabular in their experiment name and need to be migrated manually.
         run_id = setup_mlflow_run(
             experiment_name=self.base_model_name,
             run_name=run_name,

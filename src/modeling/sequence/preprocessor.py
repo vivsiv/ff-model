@@ -21,7 +21,7 @@ class SequencePreprocessor:
     """
 
     def __init__(self):
-        self.pipeline = Pipeline([
+        self.preprocessor = Pipeline([
             ("imputer", SimpleImputer(strategy="mean", keep_empty_features=True)),
             ("scaler", StandardScaler()),
         ])
@@ -32,30 +32,26 @@ class SequencePreprocessor:
         inputs = data.X[data.real_step_mask].detach().cpu().numpy()
         if len(inputs) == 0:
             raise ValueError("Real training steps are required to fit preprocessing.")
-        self.pipeline.fit(inputs)
+
+        self.preprocessor.fit(inputs)
         self.feature_columns = list(data.feature_columns)
+
         return self
 
     def transform(self, data: SequenceDataset) -> SequenceDataset:
         """Return a prepared copy, preserving padding and all non-feature fields."""
-        check_is_fitted(self.pipeline)
+        check_is_fitted(self.preprocessor)
         if data.feature_columns != self.feature_columns:
             raise ValueError("Feature columns must match fitted preprocessing in order.")
+
         real_mask = data.real_step_mask
         X = data.X.clone()
         if real_mask.any():
             inputs = data.X[real_mask].detach().cpu().numpy()
-            transformed = self.pipeline.transform(inputs)
+            transformed = self.preprocessor.transform(inputs)
             X[real_mask] = torch.as_tensor(transformed, dtype=X.dtype, device=X.device)
+
         if not torch.isfinite(X[real_mask]).all():
             raise ValueError("Real input steps must be finite after preprocessing.")
-        return replace(data, X=X)
 
-    @classmethod
-    def from_fitted_pipeline(cls, pipeline: Pipeline, feature_columns: list[str]) -> "SequencePreprocessor":
-        """Wrap a fitted sklearn pipeline from an older saved sequence model."""
-        check_is_fitted(pipeline)
-        preprocessor = cls()
-        preprocessor.pipeline = pipeline
-        preprocessor.feature_columns = list(feature_columns)
-        return preprocessor
+        return replace(data, X=X)

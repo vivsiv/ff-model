@@ -131,12 +131,11 @@ class LSTMModelTrainer:
             }, run_id=run_id)
 
         self._fit_preprocessing()
-        prepared = self.prepared_data
-        train = prepared[TRAIN_SPLIT]
+        train = self.prepared_data[TRAIN_SPLIT]
         train_loader = self._make_loader(train, training=True)
 
         eval_loader = None
-        eval_data = prepared[EVAL_SPLIT]
+        eval_data = self.prepared_data[EVAL_SPLIT]
         if evaluate_each_epoch:
             if not eval_data.loss_mask.any():
                 raise ValueError("Cannot evaluate an empty 'eval' split with no scored steps.")
@@ -273,6 +272,8 @@ def main():
         "--config", type=str, required=True,
         help="Path to a SequenceModelDataBuilder YAML config defining target, splits, features, and sample weights",
     )
+
+    # TODO: move to a lstm model config class
     parser.add_argument("--hidden-size", type=int, default=64, help="Hidden and cell state size (default: 64)")
     parser.add_argument("--num-layers", type=int, default=1, help="Number of stacked LSTM layers (default: 1)")
     parser.add_argument("--dropout", type=float, default=0.0, help="Between-layer dropout probability (default: 0.0)")
