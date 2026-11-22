@@ -93,6 +93,14 @@ class LSTMPipeline(mlflow.pyfunc.PythonModel):
         staging, serialization, signature, code/dependencies, and registration.
         Temporary files are removed after MLflow copies them into its model store.
         """
+        pip_requirements = [f"{package}=={version(package)}" for package in (
+            "mlflow", "cloudpickle", "numpy", "pandas", "scikit-learn", "nflreadpy", "PyYAML",
+        )]
+        # Build suffixes such as +cpu require a separate index/platform. Pin the
+        # public release so PyPI can select the destination platform's standard build.
+        torch_version = version("torch").split("+", 1)[0]
+        pip_requirements.append(f"torch=={torch_version}")
+
         with TemporaryDirectory(prefix="lstm-model-") as directory:
             artifacts = LSTMPipeline._save_artifacts(directory, model, preprocessor, feature_columns)
             with mlflow.start_run(run_id=run_id):
@@ -104,9 +112,7 @@ class LSTMPipeline(mlflow.pyfunc.PythonModel):
                     signature=LSTMPipeline.build_signature(model.lstm.input_size),
                     input_example=input_example,
                     registered_model_name=registered_model_name,
-                    pip_requirements=[f"{package}=={version(package)}" for package in (
-                        "mlflow", "cloudpickle", "numpy", "pandas", "scikit-learn", "torch", "nflreadpy", "PyYAML",
-                    )],
+                    pip_requirements=pip_requirements,
                 )
 
     @staticmethod

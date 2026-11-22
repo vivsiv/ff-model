@@ -2,6 +2,7 @@ import os
 import subprocess
 import sys
 from dataclasses import replace
+from importlib.metadata import version as package_version
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -159,7 +160,7 @@ def test_logged_pipeline_accepts_smaller_sequence_dimension_and_batch_size(fitte
     np.testing.assert_allclose(actual, expected[:1, :1], rtol=1e-5, atol=1e-6)
 
 
-def test_logged_pipeline_loads_outside_repository_in_fresh_process(
+def test_logged_pipeline_loads_in_readonly_working_directory_in_fresh_process(
     trainer, fitted_pipeline, logged_model_info, prediction_inputs, tmp_path,
 ):
     expected = fitted_pipeline.predict(context=None, model_input=prediction_inputs)
@@ -167,16 +168,26 @@ def test_logged_pipeline_loads_outside_repository_in_fresh_process(
     np.savez(arrays_path, **prediction_inputs, expected=expected)
     environment = dict(os.environ)
     environment.pop("PYTHONPATH", None)
-    result = subprocess.run([
-        sys.executable, "-c",
-        "import sys, mlflow, numpy as np; "
-        "mlflow.set_tracking_uri(sys.argv[1]); "
-        "arrays = np.load(sys.argv[2]); "
-        f"model = mlflow.pyfunc.load_model('{logged_model_info.model_uri}'); "
-        "actual = model.predict({'X': arrays['X'], 'lengths': arrays['lengths']}); "
-        "np.testing.assert_allclose(actual, arrays['expected'], rtol=1e-5, atol=1e-6)",
-        trainer.tracking_dir, str(arrays_path),
-    ], cwd=tmp_path, env=environment, capture_output=True, text=True, timeout=60)
+    working_directory = tmp_path / "readonly-inference"
+    working_directory.mkdir()
+    # A directory at the former log-file path also prevents opening that file
+    # when tests run as root, which can bypass read-only directory permissions.
+    (working_directory / "gold_builder.log").mkdir()
+    working_directory.chmod(0o555)
+    try:
+        result = subprocess.run([
+            sys.executable, "-c",
+            "import sys, mlflow, numpy as np; "
+            "mlflow.set_tracking_uri(sys.argv[1]); "
+            "arrays = np.load(sys.argv[2]); "
+            f"model = mlflow.pyfunc.load_model('{logged_model_info.model_uri}'); "
+            "actual = model.predict({'X': arrays['X'], 'lengths': arrays['lengths']}); "
+            "np.testing.assert_allclose(actual, arrays['expected'], rtol=1e-5, atol=1e-6)",
+            trainer.tracking_dir, str(arrays_path),
+        ], cwd=working_directory, env=environment, capture_output=True, text=True, timeout=60)
+    finally:
+        working_directory.chmod(0o755)
+
     assert result.returncode == 0, result.stdout + result.stderr
 
 
@@ -218,6 +229,29 @@ def test_trainer_log_model_delegates_fitted_components_and_raw_example(trainer):
     assert kwargs["registered_model_name"] == "ppr_points_per_game_rb_wr_lstm"
     np.testing.assert_allclose(kwargs["input_example"]["X"], trainer.data["train"].X[:2].numpy(), equal_nan=True)
     np.testing.assert_array_equal(kwargs["input_example"]["lengths"], trainer.data["train"].lengths[:2].numpy())
+
+
+@pytest.mark.parametrize("installed_torch_version", ["2.14.1", "2.14.1+cpu", "2.14.1+cu130"])
+def test_log_pipeline_pins_public_torch_version(trainer, installed_torch_version):
+    trainer.fit(epochs=1)
+
+    def installed_version(package):
+        return installed_torch_version if package == "torch" else package_version(package)
+
+    with (
+        patch("src.modeling.sequence.pipeline.version", side_effect=installed_version),
+        patch("src.modeling.sequence.pipeline.mlflow.start_run"),
+        patch("src.modeling.sequence.pipeline.mlflow.pyfunc.log_model") as log_model,
+    ):
+        LSTMPipeline.log_pipeline(
+            model=trainer.model, preprocessor=trainer.preprocessor,
+            feature_columns=trainer.prepared_data["train"].feature_columns,
+            run_id="training-run", registered_model_name="test_lstm",
+            input_example={"X": trainer.data["train"].X.numpy(), "lengths": trainer.data["train"].lengths.numpy()},
+        )
+
+    requirements = log_model.call_args.kwargs["pip_requirements"]
+    assert [requirement for requirement in requirements if requirement.startswith("torch==")] == ["torch==2.14.1"]
 
 
 def test_log_pipeline_stages_artifacts_and_cleans_temporary_files(trainer):

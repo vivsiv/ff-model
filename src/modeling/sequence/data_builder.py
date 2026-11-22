@@ -23,6 +23,7 @@ LOSS_STEP_COL = "_is_loss_step"
 SAMPLE_WEIGHT_COL = "_sample_weight"
 
 
+# TODO: This should live on its own
 @dataclass
 class SequenceDataset:
     """

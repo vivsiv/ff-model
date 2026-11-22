@@ -14,14 +14,6 @@ from src.processing.column_registry import (
     get_targets,
 )
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(funcName)s - %(message)s',
-    handlers=[
-        logging.FileHandler("gold_builder.log"),
-        logging.StreamHandler()
-    ]
-)
 logger = logging.getLogger(__name__)
 
 TARGET_COL = "target"
@@ -685,6 +677,15 @@ def main():
     )
 
     args = parser.parse_args()
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(funcName)s - %(message)s',
+        handlers=[
+            logging.FileHandler("gold_builder.log"),
+            logging.StreamHandler()
+        ]
+    )
 
     builder = GoldSetBuilder(data_dir=args.data_dir)
 
