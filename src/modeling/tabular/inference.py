@@ -164,15 +164,19 @@ class TabularModelInference:
             run_id - The resulting mlflow run id.
         """
         set_mlflow_tracking_uri(self.tracking_dir)
-        source_experiment_id = mlflow.get_run(self.source_run_id).info.experiment_id
+        source_run = mlflow.get_run(self.source_run_id)
+        source_experiment_id = source_run.info.experiment_id
         experiment_name = mlflow.get_experiment(source_experiment_id).name
+        tags = {"model_family": "tabular", "phase": phase}
+        if model_type := source_run.data.tags.get("model_type"):
+            tags["model_type"] = model_type
 
         run_id = setup_mlflow_run(
             experiment_name=experiment_name,
             run_name=f"{self.registered_model}_v{self.model_version}_{run_name_suffix}_"
                      f"{datetime.now().strftime('%Y%m%d%H%M%S')}",
             tracking_dir=self.tracking_dir,
-            tags={"phase": phase},
+            tags=tags,
             params={"source_run_id": self.source_run_id, "model_version": self.model_version},
         )
         mlflow.log_dict(self.config, DATA_BUILDER_CONFIG_ARTIFACT_PATH, run_id=run_id)

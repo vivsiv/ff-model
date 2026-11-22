@@ -202,6 +202,8 @@ class TestTabularModelInference:
 
         run = mlflow.get_run(run_id)
         assert run.data.tags["phase"] == "test"
+        assert run.data.tags["model_family"] == "tabular"
+        assert run.data.tags["model_type"] == "ridge"
         assert run.data.params["source_run_id"] == self.train_run_id
         assert run.data.params["model_version"] == "1"
 
@@ -210,7 +212,7 @@ class TestTabularModelInference:
 
         run = mlflow.get_run(run_id)
         experiment = mlflow.get_experiment(run.info.experiment_id)
-        assert experiment.name == "target_1_tabular"
+        assert experiment.name == "target_1"
 
     def test_setup_mlflow__also_logs_the_reconstructed_data_builder_config(self):
         run_id = self.inference.setup_mlflow(phase="test", run_name_suffix="test")
@@ -218,8 +220,19 @@ class TestTabularModelInference:
         logged_config = mlflow.artifacts.load_dict(f"runs:/{run_id}/data_prep_config.json")
         assert logged_config == self.config
 
+    def test_setup_mlflow__preserves_legacy_source_experiment(self):
+        source_run_id = setup_mlflow_run(
+            experiment_name="target_1_tabular", run_name="legacy_train", tracking_dir=self.tracking_dir,
+        )
+        with patch.object(self.inference, "source_run_id", source_run_id):
+            run_id = self.inference.setup_mlflow(phase="test", run_name_suffix="test")
+
+        run = mlflow.get_run(run_id)
+        assert mlflow.get_experiment(run.info.experiment_id).name == "target_1_tabular"
+        assert run.data.tags["model_family"] == "tabular"
+
     def test_setup_mlflow__uses_the_positional_models_own_experiment_when_positions_are_set(self):
-        # A positional model's training run lives in its own "{target}_{positions}_tabular"
+        # A positional model's training run lives in its own "{target}_{positions}"
         # experiment (see TabularModelTrainer.base_model_name) -- setup_mlflow() must log into that
         # same experiment (found by looking up which experiment source_run_id itself lives
         # in), not the general one.
@@ -249,7 +262,7 @@ class TestTabularModelInference:
 
             run = mlflow.get_run(run_id)
             experiment = mlflow.get_experiment(run.info.experiment_id)
-            assert experiment.name == "target_3_rb_tabular"
+            assert experiment.name == "target_3_rb"
             assert run.data.params["source_run_id"] == train_run_id
         finally:
             shutil.rmtree(test_dir)

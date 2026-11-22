@@ -19,7 +19,7 @@ from sklearn.ensemble import GradientBoostingRegressor
 from src.modeling.data_builder import DATA_BUILDER_CONFIG_ARTIFACT_PATH, EVAL_SPLIT
 from src.modeling.tabular.data_builder import TabularModelDataBuilder
 from src.modeling.tabular.inference import TabularModelInference
-from src.modeling.utils import setup_mlflow_run
+from src.modeling.utils import build_base_model_name, setup_mlflow_run
 
 logging.basicConfig(
     level=logging.INFO,
@@ -63,10 +63,7 @@ class TabularModelTrainer:
 
     @property
     def base_model_name(self) -> str:
-        positions = [pos.lower() for pos in self.data_builder.positions] if self.data_builder.positions else None
-        suffix = f"_{'_'.join(sorted(positions))}" if positions else ""
-
-        return f"{self.target}{suffix}"
+        return build_base_model_name(self.target, self.data_builder.positions)
 
     def get_base_model(self) -> Any:
         base_models = {
@@ -96,23 +93,24 @@ class TabularModelTrainer:
         extra_tags: Optional[dict] = None,
     ) -> str:
         """
-        Sets the active mlflow experiment and creates a new run for it, tagged with model_type and phase=train.
+        Creates a run in the base model's shared experiment, tagged with model_family, model_type, and phase=train.
         Logs self.data_builder.config as a "data_prep_config.json" artifact.
 
         Args:
             run_name: Overrides the default "{model_type}_{timestamp}" run name.
             parent_run_id: If given, nests the new run under parent_run_id.
             extra_params: Optional params to log on the run alongside the model's own hyperparameters.
-            extra_tags: Optional tags over the default {"model_type": model_type, "phase": "train"}.
+            extra_tags: Optional overrides for the default model_family, model_type, and phase tags.
 
         Returns:
             run_id - The resulting mlflow run id.
         """
         run_name = run_name or f"{self.model_type}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
-        tags = {"model_type": self.model_type, "phase": "train", **(extra_tags or {})}
+        tags = {"model_family": "tabular", "model_type": self.model_type, "phase": "train", **(extra_tags or {})}
 
+        # TODO: experiements run before the removal of "_tabular" in the expriment name keep _tabular in their experiment name and need to be migrated manually.
         run_id = setup_mlflow_run(
-            experiment_name=f"{self.base_model_name}_tabular",
+            experiment_name=self.base_model_name,
             run_name=run_name,
             tracking_dir=self.tracking_dir,
             tags=tags,

@@ -5,7 +5,21 @@ import tempfile
 import mlflow
 import pytest
 
-from src.modeling.utils import load_data_builder_config, setup_mlflow_run
+from src.modeling.utils import build_base_model_name, load_data_builder_config, setup_mlflow_run
+
+
+@pytest.mark.parametrize("positions, expected", [
+    (None, "ppr_points_per_game"),
+    ([], "ppr_points_per_game"),
+    (["RB"], "ppr_points_per_game_rb"),
+    (["WR", "RB"], "ppr_points_per_game_rb_wr"),
+    (["wr", "Rb", "TE"], "ppr_points_per_game_rb_te_wr"),
+])
+def test_build_base_model_name(positions, expected):
+    original = None if positions is None else positions.copy()
+
+    assert build_base_model_name("ppr_points_per_game", positions) == expected
+    assert positions == original
 
 
 class TestLoadDataBuilderConfig:
