@@ -9,6 +9,7 @@ from torch.utils.data import DataLoader
 from src.modeling.sequence.data_builder import SequenceDataset, SequenceModelDataBuilder
 from src.modeling.sequence.lstm import LSTMModel
 from src.modeling.sequence.lstm_trainer import LSTMModelTrainer, main
+from src.modeling.sequence.preprocessor import SequencePreprocessor
 
 
 def make_data():
@@ -63,9 +64,47 @@ def make_unscored_data(empty):
     )
 
 
+def test_prepared_data_requires_fit_without_triggering_preprocessing():
+    preprocessor = SequencePreprocessor()
+    trainer = LSTMModelTrainer(zero_model(), make_builder(), preprocessor)
+
+    with patch.object(preprocessor, "fit", wraps=preprocessor.fit) as fit:
+        with patch.object(preprocessor, "transform", wraps=preprocessor.transform) as transform:
+            with pytest.raises(ValueError, match="Call fit"):
+                _ = trainer.prepared_data
+
+    fit.assert_not_called()
+    transform.assert_not_called()
+    assert trainer._prepared_data is None
+
+
+def test_prepared_data_property_is_read_only():
+    trainer = LSTMModelTrainer(zero_model(), make_builder(), SequencePreprocessor())
+    trainer.fit(epochs=1)
+    prepared = trainer.prepared_data
+
+    with pytest.raises(AttributeError):
+        trainer.prepared_data = {}
+
+    assert trainer.prepared_data is prepared
+
+
+def test_uses_supplied_preprocessor_for_training():
+    preprocessor = SequencePreprocessor()
+    trainer = LSTMModelTrainer(zero_model(), make_builder(), preprocessor)
+
+    with patch.object(preprocessor, "fit", wraps=preprocessor.fit) as fit:
+        with patch.object(preprocessor, "transform", wraps=preprocessor.transform) as transform:
+            trainer.fit(epochs=1)
+
+    assert trainer.preprocessor is preprocessor
+    fit.assert_called_once_with(trainer.data["train"])
+    assert transform.call_count == len(trainer.data)
+
+
 def test_fit_updates_parameters_and_returns_epoch_history():
     builder = make_builder()
-    trainer = LSTMModelTrainer(zero_model(), builder, batch_size=2)
+    trainer = LSTMModelTrainer(zero_model(), builder, SequencePreprocessor(), batch_size=2)
     before = [parameter.detach().clone() for parameter in trainer.model.parameters()]
 
     history = trainer.fit(epochs=2)
@@ -78,12 +117,15 @@ def test_fit_updates_parameters_and_returns_epoch_history():
     assert history[1]["epoch"] == 2
     assert all(key in history[1] for key in ["train_mse", "eval_mse"])
     assert history[1]["eval_mse"] < history[0]["eval_mse"]
+    for metrics in history:
+        assert metrics["train_rmse"] == pytest.approx(metrics["train_mse"] ** 0.5)
+        assert metrics["eval_rmse"] == pytest.approx(metrics["eval_mse"] ** 0.5)
     assert any(not torch.equal(old, new) for old, new in zip(before, trainer.model.parameters()))
 
 
 def test_fit_clears_preloaded_gradients_before_backward():
-    clean = LSTMModelTrainer(zero_model(), make_builder(), batch_size=2)
-    preloaded = LSTMModelTrainer(zero_model(), make_builder(), batch_size=2)
+    clean = LSTMModelTrainer(zero_model(), make_builder(), SequencePreprocessor(), batch_size=2)
+    preloaded = LSTMModelTrainer(zero_model(), make_builder(), SequencePreprocessor(), batch_size=2)
     for parameter in preloaded.model.parameters():
         parameter.grad = torch.full_like(parameter, 100.0)
 
@@ -99,7 +141,7 @@ def test_fit_clears_preloaded_gradients_before_backward():
 
 
 def test_evaluate_is_unweighted_and_does_not_update_parameters():
-    trainer = LSTMModelTrainer(zero_model(), make_builder(), batch_size=1, learning_rate=0.0)
+    trainer = LSTMModelTrainer(zero_model(), make_builder(), SequencePreprocessor(), batch_size=1, learning_rate=0.0)
     trainer.fit(epochs=1, evaluate_each_epoch=False)
     trainer.optimizer.zero_grad(set_to_none=True)
     before = [parameter.detach().clone() for parameter in trainer.model.parameters()]
@@ -119,7 +161,7 @@ def test_epoch_loss_aggregates_scored_steps_not_batch_means():
         y=torch.tensor([[2.0, 0.0], [3.0, 4.0]]),
         loss_mask=torch.tensor([[True, False], [True, True]]),
     )
-    trainer = LSTMModelTrainer(zero_model(), make_builder(eval_data=data), batch_size=1, learning_rate=0.0)
+    trainer = LSTMModelTrainer(zero_model(), make_builder(eval_data=data), SequencePreprocessor(), batch_size=1, learning_rate=0.0)
     trainer.fit(epochs=1, evaluate_each_epoch=False)
 
     assert trainer.evaluate() == pytest.approx(29.0 / 3.0)
@@ -127,7 +169,7 @@ def test_epoch_loss_aggregates_scored_steps_not_batch_means():
 
 def test_zero_weight_batches_are_skipped():
     data = replace(make_data(), sample_weight=torch.tensor([[0.0, 0.0], [0.0, 3.0]]))
-    trainer = LSTMModelTrainer(zero_model(), make_builder(train=data), batch_size=1)
+    trainer = LSTMModelTrainer(zero_model(), make_builder(train=data), SequencePreprocessor(), batch_size=1)
 
     history = trainer.fit(epochs=1)
 
@@ -141,7 +183,7 @@ def test_zero_weight_batches_are_skipped():
 ])
 def test_single_player_batches_preserve_relative_sample_weights(sample_weights, expected_gradients):
     data = replace(make_data(), sample_weight=torch.tensor([[sample_weights[0], 0.0], [0.0, sample_weights[1]]]))
-    trainer = LSTMModelTrainer(zero_model(), make_builder(train=data), batch_size=1)
+    trainer = LSTMModelTrainer(zero_model(), make_builder(train=data), SequencePreprocessor(), batch_size=1)
     gradients = []
 
     # Record backward gradients without changing parameters, isolating the loss
@@ -163,8 +205,9 @@ def test_training_normalization_handles_unequal_scored_lengths_and_final_batch(w
         loss_mask=torch.tensor([[True, False], [True, True], [True, False]]),
         sample_weight=torch.tensor([[0.1, 0.0], [1.0, 2.0], [0.4, 0.0]]) if weighted else None,
     )
-    trainer = LSTMModelTrainer(zero_model(), make_builder(train=data), batch_size=2)
-    prepared = trainer._prepare_data()["train"]
+    trainer = LSTMModelTrainer(zero_model(), make_builder(train=data), SequencePreprocessor(), batch_size=2)
+    trainer._fit_preprocessing()
+    prepared = trainer.prepared_data["train"]
     tensors = trainer._make_loader(prepared, training=True).dataset
     # Fix player order: first batch has 2 players/3 scored steps, final batch 1/1.
     loader = DataLoader(tensors, batch_size=2, shuffle=False)
@@ -182,14 +225,14 @@ def test_training_normalization_handles_unequal_scored_lengths_and_final_batch(w
 
 
 def test_feature_count_must_match_model_input_size():
-    trainer = LSTMModelTrainer(LSTMModel(input_size=2), make_builder())
+    trainer = LSTMModelTrainer(LSTMModel(input_size=2), make_builder(), SequencePreprocessor())
 
     with pytest.raises(ValueError, match="input_size"):
         trainer.fit()
 
 
 def test_repeated_fit_reuses_optimizer_state():
-    trainer = LSTMModelTrainer(zero_model(), make_builder())
+    trainer = LSTMModelTrainer(zero_model(), make_builder(), SequencePreprocessor())
     trainer.fit(epochs=1)
     optimizer = trainer.optimizer
     prepared = trainer.prepared_data
@@ -207,7 +250,7 @@ def test_repeated_fit_reuses_optimizer_state():
 def test_evaluate_selects_test_split():
     builder = make_builder()
     builder.get_data_splits.return_value["test"] = replace(make_data(), y=torch.full((2, 2), 5.0))
-    trainer = LSTMModelTrainer(zero_model(), builder, learning_rate=0.0)
+    trainer = LSTMModelTrainer(zero_model(), builder, SequencePreprocessor(), learning_rate=0.0)
     trainer.fit(epochs=1, evaluate_each_epoch=False)
 
     assert trainer.evaluate(split="test") == pytest.approx(25.0)
@@ -218,7 +261,7 @@ def test_evaluate_selects_test_split():
 @pytest.mark.parametrize("empty", [False, True], ids=["all-false-mask", "empty-tensors"])
 def test_fit_rejects_unscored_eval_split_when_evaluation_requested(empty):
     eval_data = make_unscored_data(empty)
-    trainer = LSTMModelTrainer(zero_model(), make_builder(eval_data=eval_data))
+    trainer = LSTMModelTrainer(zero_model(), make_builder(eval_data=eval_data), SequencePreprocessor())
 
     with pytest.raises(ValueError, match="no scored steps"):
         trainer.fit(epochs=1)
@@ -226,11 +269,13 @@ def test_fit_rejects_unscored_eval_split_when_evaluation_requested(empty):
 
 @pytest.mark.parametrize("empty", [False, True], ids=["all-false-mask", "empty-tensors"])
 def test_fit_allows_unscored_eval_split_when_evaluation_disabled(empty):
-    trainer = LSTMModelTrainer(zero_model(), make_builder(eval_data=make_unscored_data(empty)))
+    trainer = LSTMModelTrainer(zero_model(), make_builder(eval_data=make_unscored_data(empty)), SequencePreprocessor())
 
     history = trainer.fit(epochs=1, evaluate_each_epoch=False)
 
     assert "eval_mse" not in history[0]
+    assert "eval_rmse" not in history[0]
+    assert history[0]["train_rmse"] == pytest.approx(history[0]["train_mse"] ** 0.5)
 
 
 @pytest.mark.parametrize("empty", [False, True], ids=["all-false-mask", "empty-tensors"])
@@ -238,7 +283,7 @@ def test_fit_allows_unscored_eval_split_when_evaluation_disabled(empty):
 def test_evaluate_rejects_unscored_heldout_split(empty, split):
     builder = make_builder()
     builder.get_data_splits.return_value[split] = make_unscored_data(empty)
-    trainer = LSTMModelTrainer(zero_model(), builder)
+    trainer = LSTMModelTrainer(zero_model(), builder, SequencePreprocessor())
     trainer.fit(epochs=1, evaluate_each_epoch=False)
 
     with pytest.raises(ValueError, match="no scored steps"):
@@ -246,9 +291,9 @@ def test_evaluate_rejects_unscored_heldout_split(empty, split):
 
 
 def test_evaluate_requires_fitted_preprocessing():
-    trainer = LSTMModelTrainer(zero_model(), make_builder())
+    trainer = LSTMModelTrainer(zero_model(), make_builder(), SequencePreprocessor())
 
-    with pytest.raises(ValueError, match="call fit"):
+    with pytest.raises(ValueError, match="Call fit"):
         trainer.evaluate()
 
 
@@ -267,15 +312,15 @@ def test_preprocessing_fits_on_real_training_history_and_preserves_raw_data():
         sample_weight=None,
     )
     builder.get_data_splits.return_value["prediction"] = prediction
-    trainer = LSTMModelTrainer(zero_model(), builder)
+    trainer = LSTMModelTrainer(zero_model(), builder, SequencePreprocessor())
     raw_X = {split: data.X.clone() for split, data in trainer.data.items()}
-    assert not hasattr(trainer.preprocessor.named_steps["scaler"], "mean_")
+    assert not hasattr(trainer.preprocessor.pipeline.named_steps["scaler"], "mean_")
 
     trainer.fit(epochs=1)
 
     # Real training steps are [1, 2, 3]; the unscored context step 2 is included.
-    scaler = trainer.preprocessor.named_steps["scaler"]
-    imputer = trainer.preprocessor.named_steps["imputer"]
+    scaler = trainer.preprocessor.pipeline.named_steps["scaler"]
+    imputer = trainer.preprocessor.pipeline.named_steps["imputer"]
     assert imputer.statistics_[0] == pytest.approx(2.0)
     assert scaler.mean_[0] == pytest.approx(2.0)
     assert scaler.scale_[0] == pytest.approx((2.0 / 3.0) ** 0.5)
@@ -300,11 +345,11 @@ def test_preprocessing_fits_on_real_training_history_and_preserves_raw_data():
 def test_missing_training_features_are_imputed_before_training():
     data = make_data()
     data.X[1, 0, 0] = float("nan")
-    trainer = LSTMModelTrainer(zero_model(), make_builder(train=data))
+    trainer = LSTMModelTrainer(zero_model(), make_builder(train=data), SequencePreprocessor())
 
     trainer.fit(epochs=1)
 
-    assert trainer.preprocessor.named_steps["imputer"].statistics_[0] == pytest.approx(2.0)
+    assert trainer.preprocessor.pipeline.named_steps["imputer"].statistics_[0] == pytest.approx(2.0)
     prepared = trainer.prepared_data["train"]
     assert prepared.X[1, 0, 0] == 0.0
     assert torch.isfinite(prepared.X[prepared.real_step_mask]).all()
@@ -313,7 +358,7 @@ def test_missing_training_features_are_imputed_before_training():
 def test_entirely_missing_training_features_keep_their_columns():
     train = make_data()
     train.X[:] = float("nan")
-    trainer = LSTMModelTrainer(zero_model(), make_builder(train=train))
+    trainer = LSTMModelTrainer(zero_model(), make_builder(train=train), SequencePreprocessor())
 
     trainer.fit(epochs=1)
 
@@ -323,20 +368,22 @@ def test_entirely_missing_training_features_keep_their_columns():
 
 
 def test_prepared_features_are_validated_before_training():
-    trainer = LSTMModelTrainer(zero_model(), make_builder())
+    trainer = LSTMModelTrainer(zero_model(), make_builder(), SequencePreprocessor())
     before = [parameter.detach().clone() for parameter in trainer.model.parameters()]
-    with patch.object(trainer.preprocessor, "transform", return_value=[[float("nan")]] * 3):
+    with patch.object(trainer.preprocessor.pipeline, "transform", return_value=[[float("nan")]] * 3):
         with pytest.raises(ValueError, match="finite after preprocessing"):
             trainer.fit(epochs=1)
 
-    assert trainer.prepared_data is None
+    assert trainer._prepared_data is None
+    with pytest.raises(ValueError, match="Call fit"):
+        _ = trainer.prepared_data
     for old, new in zip(before, trainer.model.parameters()):
         torch.testing.assert_close(old, new)
 
 
 @pytest.mark.parametrize("model_output", [float("nan"), float("inf"), -float("inf")])
 def test_fit_rejects_nonfinite_model_output_loss(model_output):
-    trainer = LSTMModelTrainer(zero_model(), make_builder(), batch_size=2)
+    trainer = LSTMModelTrainer(zero_model(), make_builder(), SequencePreprocessor(), batch_size=2)
     model_outputs = torch.full((2, 2), model_output)
 
     with patch.object(trainer.model, "forward", return_value=model_outputs):
@@ -360,6 +407,8 @@ def test_main_uses_default_params_and_infers_input_size(monkeypatch):
     assert model.lstm.num_layers == 1
     assert model.lstm.dropout == 0.0
     assert kwargs["data_builder"] is builder
+    assert isinstance(kwargs["preprocessor"], SequencePreprocessor)
+    assert kwargs["preprocessor"].feature_columns is None
     assert kwargs["batch_size"] == 32
     assert kwargs["learning_rate"] == 1e-3
     assert kwargs["device"] == "cpu"
@@ -377,7 +426,7 @@ def test_main_passes_custom_params_and_evaluates_test_when_requested(monkeypatch
         "lstm_trainer", "--config", "sequence.yaml", "--data-dir", "custom-data",
         "--hidden-size", "8", "--num-layers", "2", "--dropout", "0.2",
         "--epochs", "3", "--batch-size", "4", "--learning-rate", "0.01",
-        "--device", "mps", "--seed", "123", "--evaluate-test", "--tracking-dir", "custom-mlruns",
+        "--device", "mps", "--evaluate-test", "--tracking-dir", "custom-mlruns",
     ])
     with patch.object(SequenceModelDataBuilder, "from_config_file", return_value=builder) as from_config:
         with patch("src.modeling.sequence.lstm_trainer.LSTMModelTrainer") as trainer_class:
@@ -387,7 +436,7 @@ def test_main_passes_custom_params_and_evaluates_test_when_requested(monkeypatch
                 main()
 
     from_config.assert_called_once_with(data_dir="custom-data", config_path="sequence.yaml")
-    seed.assert_called_once_with(123)
+    seed.assert_called_once_with(42)
     kwargs = trainer_class.call_args.kwargs
     assert kwargs["model"].lstm.hidden_size == 8
     assert kwargs["model"].lstm.num_layers == 2

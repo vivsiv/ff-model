@@ -55,7 +55,9 @@ uv run --no-sync python -m src.modeling.sequence.lstm_trainer \
 ```
 
 The config selects the target, features, sample weights, and chronological splits.
-The trainer fits mean imputation and scaling on real training inputs only and logs
+The trainer fits `SequencePreprocessor` (`src/modeling/sequence/preprocessor.py`)
+on real training inputs only. This component owns mean imputation, scaling, and
+sequence-layout preservation and is reused by the inference pipeline. The trainer logs
 training/evaluation MSE and RMSE each epoch to MLflow. Training defaults to CPU; use `--device mps`
 on a supported Mac or `--device cuda` on a CUDA-enabled machine. Add
 `--evaluate-test` to report and log test MSE/RMSE after training. `--tracking-dir`
@@ -63,7 +65,10 @@ selects the MLflow store (default: `mlruns`). Use `--help` for all options.
 
 The run saves the resolved builder config as `data_prep_config.json` and registers
 one complete inference pipeline under `{target}[_positions]_lstm`, in the
-`{target}[_positions]_sequence` experiment. Its artifacts contain the fitted
+`{target}[_positions]` experiment, shared with tabular models. Runs carry
+`model_family` (`sequence` or `tabular`), `model_type`, and `phase` tags for filtering.
+Existing suffixed experiments are not migrated; inference stays in the source
+model's experiment. Its artifacts contain the fitted
 preprocessor, CPU model weights, architecture, feature order, and source code.
 Load only trusted MLflow artifacts. The saved model is for inference, not for
 resuming optimizer state.

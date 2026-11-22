@@ -1,6 +1,7 @@
 import os
 import shutil
 import tempfile
+from dataclasses import replace
 from unittest.mock import patch
 
 import numpy as np
@@ -49,6 +50,72 @@ class TestSequenceDataset:
             ),
             feature_columns=["f1", "f2"],
         )
+
+    @pytest.mark.parametrize("field, value, message", [
+        ("X", torch.zeros(2, 3), "X must have shape"),
+        ("X", [[[1.0]]], "X must have shape"),
+        ("feature_columns", ["f1"], "feature_columns must contain"),
+        ("lengths", torch.tensor([3]), "lengths must have shape"),
+        ("lengths", torch.tensor([[3], [1]]), "lengths must have shape"),
+        ("lengths", torch.tensor([3.0, 1.0]), "lengths must be an int64 tensor"),
+        ("lengths", torch.tensor([3, 1], dtype=torch.int32), "lengths must be an int64 tensor"),
+        ("lengths", [3, 1], "lengths must be an int64 tensor"),
+        ("lengths", torch.tensor([0, 1]), "between 1 and L"),
+        ("lengths", torch.tensor([-1, 1]), "between 1 and L"),
+        ("lengths", torch.tensor([4, 1]), "between 1 and L"),
+        ("y", torch.zeros(2, 2), "y must have shape"),
+        ("loss_mask", torch.zeros(2, 2, dtype=torch.bool), "loss_mask must have shape"),
+        ("loss_mask", torch.zeros(2, 3), "loss_mask must be boolean"),
+        ("sample_weight", torch.zeros(2, 1), "sample_weight must have shape"),
+        ("sample_weight", [[1.0]], "sample_weight must have shape"),
+    ])
+    def test_constructor_rejects_invalid_structure(self, field, value, message):
+        with pytest.raises(ValueError, match=message):
+            replace(self._dataset(), **{field: value})
+
+    def test_constructor_rejects_loss_mask_selecting_padding(self):
+        mask = torch.tensor([[True, True, True], [True, True, False]])
+
+        with pytest.raises(ValueError, match="cannot select padded steps"):
+            replace(self._dataset(), loss_mask=mask)
+
+    @pytest.mark.parametrize("max_steps", [0, 3])
+    def test_constructor_accepts_consistent_empty_datasets(self, max_steps):
+        data = replace(
+            self._dataset(),
+            X=torch.empty((0, max_steps, 2)), lengths=torch.empty(0, dtype=torch.int64),
+            identity=self._dataset().identity.iloc[:0], y=torch.empty((0, max_steps)),
+            loss_mask=torch.empty((0, max_steps), dtype=torch.bool),
+            sample_weight=torch.empty((0, max_steps)),
+        )
+
+        assert data.X.shape == (0, max_steps, 2)
+        assert data.real_step_mask.shape == (0, max_steps)
+        assert not data.real_step_mask.any()
+
+    @pytest.mark.parametrize("value", [float("nan"), float("inf"), -float("inf")])
+    def test_constructor_leaves_raw_feature_value_validation_to_preprocessing(self, value):
+        data = self._dataset()
+        X = data.X.clone()
+        X[0, 0, 0] = value
+
+        actual = replace(data, X=X)
+
+        assert actual.X is X
+        assert actual.y is None
+        assert actual.loss_mask is None
+        assert actual.sample_weight is None
+
+    def test_constructor_accepts_aligned_optional_tensors(self):
+        data = replace(
+            self._dataset(), y=torch.zeros(2, 3),
+            loss_mask=torch.tensor([[True, True, False], [True, False, False]]),
+            sample_weight=torch.ones(2, 3),
+        )
+
+        assert data.y.shape == (2, 3)
+        assert data.loss_mask.shape == (2, 3)
+        assert data.sample_weight.shape == (2, 3)
 
     def test_real_step_mask(self):
         _assert_tensors_equal(

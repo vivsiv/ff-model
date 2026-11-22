@@ -2,9 +2,16 @@
 
 import json
 import pickle
-from dataclasses import replace
+from importlib.metadata import version
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from typing import Any
 
 import mlflow.pyfunc
+from mlflow.pyfunc import PythonModelContext
+from mlflow.models import ModelSignature
+from mlflow.models.model import ModelInfo
+from mlflow.types.schema import Schema, TensorSpec
 import numpy as np
 import pandas as pd
 import torch
@@ -12,19 +19,7 @@ from sklearn.pipeline import Pipeline
 
 from src.modeling.sequence.data_builder import SequenceDataset
 from src.modeling.sequence.lstm import LSTMModel
-
-
-def transform_sequence_dataset(data: SequenceDataset, preprocessor: Pipeline) -> SequenceDataset:
-    """Transform real feature rows without changing padding or dataset metadata."""
-    real_mask = data.real_step_mask
-    X = data.X.clone()
-    if real_mask.any():
-        inputs = data.X[real_mask].detach().cpu().numpy()
-        transformed = preprocessor.transform(inputs)
-        X[real_mask] = torch.as_tensor(transformed, dtype=X.dtype, device=X.device)
-    if not torch.isfinite(X[real_mask]).all():
-        raise ValueError("Real input steps must be finite after preprocessing.")
-    return replace(data, X=X)
+from src.modeling.sequence.preprocessor import SequencePreprocessor
 
 
 class LSTMPipeline(mlflow.pyfunc.PythonModel):
@@ -36,15 +31,103 @@ class LSTMPipeline(mlflow.pyfunc.PythonModel):
     CPU for portability, regardless of the device used during training.
     """
 
-    def __init__(self, model=None, preprocessor=None, feature_columns=None):
+    @staticmethod
+    def model_params(model: LSTMModel) -> dict[str, int | float]:
+        """Return architecture arguments used both for tracking and reconstruction."""
+        return {
+            "input_size": model.lstm.input_size,
+            "hidden_size": model.lstm.hidden_size,
+            "num_layers": model.lstm.num_layers,
+            "dropout": model.lstm.dropout,
+        }
+
+    @classmethod
+    def _save_artifacts(
+        cls,
+        directory: str | Path,
+        model: LSTMModel,
+        preprocessor: SequencePreprocessor,
+        feature_columns: list[str],
+    ) -> dict[str, str]:
+        """Stage fitted components in the format consumed by load_context().
+
+        Return logical artifact names mapped to file paths for MLflow logging.
+        Saving CPU copies of the state dict leaves the live model's device and
+        training mode unchanged. The caller owns the staging directory's lifetime.
+        """
+        directory = Path(directory)
+        directory.mkdir(parents=True, exist_ok=True)
+        artifacts = {
+            "preprocessor": str(directory / "preprocessor.pkl"),
+            "weights": str(directory / "weights.pt"),
+            "metadata": str(directory / "metadata.json"),
+        }
+        with open(artifacts["preprocessor"], "wb") as file:
+            pickle.dump(preprocessor, file)
+        torch.save({key: value.detach().cpu() for key, value in model.state_dict().items()}, artifacts["weights"])
+        with open(artifacts["metadata"], "w") as file:
+            json.dump({"model_params": cls.model_params(model), "feature_columns": feature_columns}, file)
+        return artifacts
+
+    @classmethod
+    def log_pipeline(
+        cls,
+        *,
+        model: LSTMModel,
+        preprocessor: SequencePreprocessor,
+        feature_columns: list[str],
+        run_id: str,
+        registered_model_name: str,
+        input_example: dict[str, np.ndarray],
+    ) -> ModelInfo:
+        """Package and register fitted components as one MLflow inference model.
+
+        The caller creates the run and logs its config/metrics. This method owns
+        staging, serialization, signature, code/dependencies, and registration.
+        Temporary files are removed after MLflow copies them into its model store.
+        """
+        with TemporaryDirectory(prefix="lstm-model-") as directory:
+            artifacts = cls._save_artifacts(directory, model, preprocessor, feature_columns)
+            with mlflow.start_run(run_id=run_id):
+                return mlflow.pyfunc.log_model(
+                    name="lstm",
+                    python_model=cls(),
+                    artifacts=artifacts,
+                    code_paths=[str(Path(__file__).resolve().parents[2])],
+                    signature=cls.build_signature(model.lstm.input_size),
+                    input_example=input_example,
+                    registered_model_name=registered_model_name,
+                    pip_requirements=[f"{package}=={version(package)}" for package in (
+                        "mlflow", "cloudpickle", "numpy", "pandas", "scikit-learn", "torch", "nflreadpy", "PyYAML",
+                    )],
+                )
+
+    @staticmethod
+    def build_signature(input_size: int) -> ModelSignature:
+        """Describe raw array inputs and per-step outputs with variable batch/step sizes."""
+        return ModelSignature(
+            inputs=Schema([
+                TensorSpec(np.dtype("float32"), (-1, -1, input_size), "X"),
+                TensorSpec(np.dtype("int64"), (-1,), "lengths"),
+            ]),
+            outputs=Schema([TensorSpec(np.dtype("float32"), (-1, -1))]),
+        )
+
+    def __init__(
+        self,
+        model: LSTMModel | None = None,
+        preprocessor: SequencePreprocessor | None = None,
+        feature_columns: list[str] | None = None,
+    ) -> None:
         self.model = model
         self.preprocessor = preprocessor
         self.feature_columns = feature_columns
 
-    def load_context(self, context):
+    def load_context(self, context: PythonModelContext) -> None:
         """Restore architecture, CPU weights, feature order, and fitted preprocessing."""
         with open(context.artifacts["metadata"]) as file:
             metadata = json.load(file)
+
         self.feature_columns = metadata["feature_columns"]
         self.model = LSTMModel(**metadata["model_params"])
         self.model.load_state_dict(torch.load(context.artifacts["weights"], map_location="cpu", weights_only=True))
@@ -52,32 +135,44 @@ class LSTMPipeline(mlflow.pyfunc.PythonModel):
         # Like other MLflow models, only load artifacts from trusted sources.
         with open(context.artifacts["preprocessor"], "rb") as file:
             self.preprocessor = pickle.load(file)
+        if isinstance(self.preprocessor, Pipeline):
+            self.preprocessor = SequencePreprocessor.from_fitted_pipeline(self.preprocessor, self.feature_columns)
 
-    def predict(self, context, model_input, params=None):
-        """Predict from raw arrays without fitting preprocessing or using targets."""
+    def predict(
+        self,
+        context: PythonModelContext | None,
+        model_input,
+        params: dict[str, Any] | None = None,
+    ) -> np.ndarray:
+        """Predict from raw arrays without fitting preprocessing or using targets.
+
+        model_input is dict[str, np.ndarray]. Its annotation is intentionally
+        omitted because MLflow cannot infer that tensor-dictionary schema from
+        type hints; the logged ModelSignature supplies dtype/shape validation.
+        """
         X = torch.as_tensor(model_input["X"], dtype=torch.float32)
         lengths = torch.as_tensor(model_input["lengths"])
-        if X.ndim != 3 or X.shape[-1] != self.model.lstm.input_size:
+
+        data = SequenceDataset(X=X, lengths=lengths, identity=pd.DataFrame(), feature_columns=self.feature_columns)
+        if X.shape[-1] != self.model.lstm.input_size:
             raise ValueError("X must have shape [N, L, model input_size].")
-        if lengths.shape != (X.shape[0],) or lengths.dtype != torch.int64:
-            raise ValueError("lengths must be an int64 tensor of shape [N].")
-        if ((lengths < 1) | (lengths > X.shape[1])).any():
-            raise ValueError("Sequence lengths must be between 1 and L.")
         if X.shape[0] == 0:
             return np.zeros(X.shape[:2], dtype=np.float32)
 
-        data = SequenceDataset(X=X, lengths=lengths, identity=pd.DataFrame(), feature_columns=self.feature_columns)
-        prepared = transform_sequence_dataset(data, self.preprocessor)
+        prepared = self.preprocessor.transform(data)
         device = next(self.model.parameters()).device
         self.model.eval()
         with torch.inference_mode():
             predictions = self.model(prepared.X.to(device), lengths)
+
         return predictions.cpu().numpy()
 
+    # TODO: move to inference class
     def predict_dataset(self, data: SequenceDataset) -> np.ndarray:
         """Predict a raw SequenceDataset, verifying its feature names and order."""
         if data.feature_columns != self.feature_columns:
             raise ValueError("Feature columns must match the saved pipeline in order.")
+
         return self.predict(None, {
             "X": data.X.detach().cpu().numpy(),
             "lengths": data.lengths.cpu().numpy(),

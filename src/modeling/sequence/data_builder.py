@@ -76,6 +76,37 @@ class SequenceDataset:
     loss_mask: Optional[torch.Tensor] = None
     sample_weight: Optional[torch.Tensor] = None
 
+    def __post_init__(self) -> None:
+        """Validate sequence structure, not preprocessing or training objectives.
+
+        Raw features may be missing and empty datasets are allowed. This validates
+        construction (including dataclasses.replace), not later in-place mutations.
+        """
+        if not isinstance(self.X, torch.Tensor) or self.X.ndim != 3:
+            raise ValueError("X must have shape [N, L, F].")
+        num_sequences, max_steps, num_features = self.X.shape
+        if len(self.feature_columns) != num_features:
+            raise ValueError("feature_columns must contain one name per feature in X.")
+        if not isinstance(self.lengths, torch.Tensor) or self.lengths.dtype != torch.int64:
+            raise ValueError("lengths must be an int64 tensor of shape [N].")
+        if self.lengths.shape != (num_sequences,):
+            raise ValueError("lengths must have shape [N].")
+        if ((self.lengths < 1) | (self.lengths > max_steps)).any():
+            raise ValueError("Sequence lengths must be between 1 and L.")
+
+        for name in ("y", "loss_mask", "sample_weight"):
+            tensor = getattr(self, name)
+            if tensor is not None and (
+                not isinstance(tensor, torch.Tensor) or tensor.shape != (num_sequences, max_steps)
+            ):
+                raise ValueError(f"{name} must have shape [N, L] when supplied.")
+        if self.loss_mask is not None:
+            if self.loss_mask.dtype != torch.bool:
+                raise ValueError("loss_mask must be boolean.")
+            real_mask = self.real_step_mask.to(self.loss_mask.device)
+            if (self.loss_mask & ~real_mask).any():
+                raise ValueError("loss_mask cannot select padded steps.")
+
     @staticmethod
     def build_real_step_mask(lengths: torch.Tensor, max_steps: int) -> torch.Tensor:
         """Return an [N, max_steps] boolean mask on the lengths tensor's device."""

@@ -12,6 +12,13 @@ from src.modeling.data_builder import DATA_BUILDER_CONFIG_ARTIFACT_PATH
 logger = logging.getLogger(__name__)
 
 
+def build_base_model_name(target: str, positions: list[str] | None) -> str:
+    """Build a target name with an optional sorted, lowercase position suffix."""
+    normalized = sorted(pos.lower() for pos in positions or [])
+    suffix = f"_{'_'.join(normalized)}" if normalized else ""
+    return f"{target}{suffix}"
+
+
 def set_mlflow_tracking_uri(tracking_dir: str = "../mlruns") -> None:
     """
     Points mlflow at the file-based tracking/registry store at tracking_dir.
@@ -43,7 +50,7 @@ def setup_mlflow_run(
     additional params/metrics/artifacts into it.
 
     Args:
-        experiment_name: e.g. "{target}_{model_type}"
+        experiment_name: e.g. "{target}" or "{target}_{positions}", shared across model families.
         run_name: e.g. "{model_type}_{timestamp}"
         tracking_dir: The mlruns tracking/registry store directory (default: "../mlruns")
         tags: Optional tags to set on the run, e.g. {"model_type": "random_forest"}

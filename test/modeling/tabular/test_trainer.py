@@ -119,12 +119,13 @@ class TestTabularModelTrainer:
         logged_config = mlflow.artifacts.load_dict(f"runs:/{run_id}/data_prep_config.json")
         assert logged_config == self.data_builder.config
         assert logged_config["split"]["prediction_season"] == 2025
-        assert self._experiment_name_for_run(run_id) == "target_1_tabular"
+        assert self._experiment_name_for_run(run_id) == "target_1"
 
     def test_setup_mlflow__tags_the_run_with_model_type_and_phase_train(self):
         run_id = self.model.setup_mlflow()
 
         tags = mlflow.get_run(run_id).data.tags
+        assert tags["model_family"] == "tabular"
         assert tags["model_type"] == "ridge"
         assert tags["phase"] == "train"
 
@@ -136,7 +137,7 @@ class TestTabularModelTrainer:
 
         run_id = model.setup_mlflow()
 
-        assert self._experiment_name_for_run(run_id) == "target_1_rb_tabular"
+        assert self._experiment_name_for_run(run_id) == "target_1_rb"
 
     def test_setup_mlflow__sorts_multiple_positions_regardless_of_config_order(self):
         data_builder = TabularModelDataBuilder(
@@ -148,7 +149,7 @@ class TestTabularModelTrainer:
 
         run_id = model.setup_mlflow()
 
-        assert self._experiment_name_for_run(run_id) == "target_1_rb_wr_tabular"
+        assert self._experiment_name_for_run(run_id) == "target_1_rb_wr"
 
     def test_fit_model__registers_under_the_base_model_name_and_model_type(self):
         run_id = self.model.setup_mlflow()
