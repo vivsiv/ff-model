@@ -159,6 +159,7 @@ class LSTMModelTrainer:
             logger.info("LSTM epoch metrics: %s", metrics)
 
         if run_id is not None:
+            # TODO: log the eval dataset to mlflow
             self.log_model(run_id)
 
         return history
