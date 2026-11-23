@@ -223,8 +223,8 @@ def test_csv_rounding_does_not_change_evaluation_metrics(inference, tmp_path):
     np.testing.assert_allclose(pd.read_csv(csv_path)["ppr_points_per_game"], [0.12, 0.12])
 
 
-def test_evaluate_rejects_prediction_split(inference):
-    with pytest.raises(ValueError, match="Evaluation split"):
+def test_evaluate_rejects_unscored_prediction_split(inference):
+    with pytest.raises(ValueError, match="'prediction' split with no scored steps"):
         inference.evaluate(split="prediction")
 
 

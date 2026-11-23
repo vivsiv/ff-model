@@ -492,13 +492,13 @@ def test_main_uses_default_params_and_infers_input_size(monkeypatch):
     inference_class.assert_not_called()
 
 
-def test_main_passes_custom_params_and_evaluates_test_when_requested(monkeypatch):
+def test_main_passes_custom_params(monkeypatch):
     builder = make_builder()
     monkeypatch.setattr("sys.argv", [
         "lstm_trainer", "--config", "sequence.yaml", "--data-dir", "custom-data",
         "--hidden-size", "8", "--num-layers", "2", "--dropout", "0.2",
         "--epochs", "3", "--batch-size", "4", "--learning-rate", "0.01",
-        "--device", "mps", "--evaluate-test", "--tracking-dir", "custom-mlruns",
+        "--device", "mps", "--tracking-dir", "custom-mlruns",
     ])
     with (
         patch.object(SequenceModelDataBuilder, "from_config_file", return_value=builder) as from_config,
@@ -507,8 +507,6 @@ def test_main_passes_custom_params_and_evaluates_test_when_requested(monkeypatch
         patch("src.modeling.sequence.lstm_trainer.torch.manual_seed") as seed,
     ):
         trainer_class.return_value.setup_mlflow.return_value = "training-run"
-        trainer_class.return_value.epochs_trained = 3
-        inference_class.return_value.evaluate.return_value = 4.0
         main()
 
     from_config.assert_called_once_with(data_dir="custom-data", config_path="sequence.yaml")
@@ -522,10 +520,7 @@ def test_main_passes_custom_params_and_evaluates_test_when_requested(monkeypatch
     assert kwargs["device"] == "mps"
     assert kwargs["tracking_dir"] == "custom-mlruns"
     trainer_class.return_value.fit.assert_called_once_with(epochs=3, run_id="training-run")
-    inference_class.assert_called_once()
-    assert inference_class.call_args.kwargs["data_builder"] is builder
-    assert inference_class.call_args.kwargs["pipeline"].model is kwargs["model"]
-    inference_class.return_value.evaluate.assert_called_once_with(split="test", run_id="training-run", step=3)
+    inference_class.assert_not_called()
 
 
 def test_main_requires_config(monkeypatch):
@@ -540,7 +535,7 @@ def test_main_requires_config(monkeypatch):
 def test_main_trains_and_evaluates_with_synthetic_data(monkeypatch, caplog):
     monkeypatch.setattr("sys.argv", [
         "lstm_trainer", "--config", "sequence.yaml", "--epochs", "1",
-        "--hidden-size", "2", "--evaluate-test",
+        "--hidden-size", "2",
     ])
     with patch.object(SequenceModelDataBuilder, "from_config_file", return_value=make_builder()):
         # MLflow persistence is exercised by the separate round-trip tests.
@@ -549,4 +544,5 @@ def test_main_trains_and_evaluates_with_synthetic_data(monkeypatch, caplog):
                 main()
 
     assert "LSTM epoch metrics" in caplog.text
-    assert "LSTM test MSE" in caplog.text
+    assert "eval_mse" in caplog.text
+    assert "test_mse" not in caplog.text
