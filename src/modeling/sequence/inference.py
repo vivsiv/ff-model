@@ -75,9 +75,6 @@ class SequenceModelInference(ModelInference[LSTMPipeline | mlflow.pyfunc.PyFuncM
         actual: torch.Tensor | None = None,
     ) -> pd.DataFrame:
         """Build selected identity rows, gathering predictions and optional actuals by coordinates."""
-        if data.identity is None:
-            raise ValueError("Identity metadata is required for prediction export.")
-
         sequence_indices = data.identity["seq_idx"].to_numpy(dtype=np.int64)
         step_indices = data.identity["step_idx"].to_numpy(dtype=np.int64)
         selected = step_mask.cpu().numpy()[sequence_indices, step_indices]

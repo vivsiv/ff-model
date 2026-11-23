@@ -54,8 +54,12 @@ class TabularModelInference(ModelInference[Pipeline, TabularModelDataBuilder]):
                 and to look up its data_prep_config.json.
         """
         super().__init__(
-            pipeline=pipeline, data_builder=data_builder, tracking_dir=tracking_dir,
-            registered_model=registered_model, model_version=model_version, source_run_id=source_run_id,
+            pipeline=pipeline,
+            data_builder=data_builder,
+            tracking_dir=tracking_dir,
+            registered_model=registered_model,
+            model_version=model_version,
+            source_run_id=source_run_id,
         )
 
     @classmethod
@@ -347,8 +351,9 @@ def main():
         registered_model=args.registered_model,
         model_version=args.model_version,
     )
-    predictions_dir = os.path.join(args.data_dir, "predictions")
+
     run_id = inference.setup_mlflow(phase=args.mode)
+    predictions_dir = os.path.join(args.data_dir, "predictions")
     csv_path = TabularModelInference.build_predictions_csv_path(
         predictions_dir, inference.registered_model, inference.model_version, run_id,
         split=args.mode if args.mode in (EVAL_SPLIT, TEST_SPLIT) else None,

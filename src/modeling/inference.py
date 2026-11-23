@@ -97,6 +97,7 @@ class ModelInference(Generic[PipelineType, DataBuilderType]):
         if model_type := source_run.data.tags.get("model_type"):
             tags["model_type"] = model_type
         suffix = phase if run_name_suffix is None else run_name_suffix
+
         run_id = setup_mlflow_run(
             experiment_name=experiment_name,
             run_name=f"{self.registered_model}_v{self.model_version}_{suffix}_{datetime.now().strftime('%Y%m%d%H%M%S')}",

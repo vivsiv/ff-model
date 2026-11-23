@@ -4,6 +4,7 @@ from unittest.mock import Mock, patch
 import mlflow
 from mlflow.tracking import MlflowClient
 import numpy as np
+import pandas as pd
 import pytest
 import torch
 from torch.utils.data import DataLoader
@@ -21,7 +22,7 @@ def make_data():
     return SequenceDataset(
         X=torch.tensor([[[1.0], [float("nan")]], [[2.0], [3.0]]]),
         lengths=torch.tensor([1, 2]),
-        identity=None,
+        identity=pd.DataFrame(columns=["seq_idx", "step_idx"]),
         feature_columns=["feature"],
         y=torch.tensor([[2.0, float("nan")], [float("nan"), 4.0]]),
         loss_mask=torch.tensor([[True, False], [False, True]]),
@@ -311,7 +312,7 @@ def test_training_normalization_handles_unequal_scored_lengths_and_final_batch(w
     data = SequenceDataset(
         X=torch.tensor([[[1.0], [float("nan")]], [[2.0], [3.0]], [[4.0], [float("nan")]]]),
         lengths=torch.tensor([1, 2, 1]),
-        identity=None,
+        identity=pd.DataFrame(columns=["seq_idx", "step_idx"]),
         feature_columns=["feature"],
         y=torch.tensor([[2.0, float("nan")], [3.0, 4.0], [5.0, float("nan")]]),
         loss_mask=torch.tensor([[True, False], [True, True], [True, False]]),

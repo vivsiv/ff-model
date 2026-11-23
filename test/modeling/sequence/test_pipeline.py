@@ -8,6 +8,7 @@ from unittest.mock import Mock, patch
 
 import mlflow
 import numpy as np
+import pandas as pd
 import pytest
 import torch
 
@@ -44,7 +45,7 @@ def trainer(tmp_path):
             [[2.0, 20.0], [3.0, 30.0], [4.0, 40.0], [float("nan"), float("nan")]],
         ]),
         lengths=torch.tensor([1, 3]),
-        identity=None,
+        identity=pd.DataFrame(columns=["seq_idx", "step_idx"]),
         feature_columns=["feature_a", "feature_b"],
         y=torch.tensor([[2.0, 0.0, 0.0, 0.0], [0.0, 0.0, 4.0, 0.0]]),
         loss_mask=torch.tensor([[True, False, False, False], [False, False, True, False]]),

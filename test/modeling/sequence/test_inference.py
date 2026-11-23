@@ -122,27 +122,6 @@ def test_predict_split_preserves_player_step_layout(inference, data):
     assert actual.dtype == np.float32
 
 
-def test_predict_split_does_not_require_identity(inference, data):
-    actual = inference.predict_split(replace(data, identity=None))
-
-    np.testing.assert_array_equal(actual, np.zeros((2, 2), dtype=np.float32))
-
-
-def test_predict_requires_identity_for_export(inference, builder, data):
-    builder.get_data_splits.return_value["prediction"] = replace(data, identity=None)
-
-    with pytest.raises(ValueError, match="Identity metadata is required"):
-        inference.predict()
-
-
-def test_evaluate_without_csv_does_not_require_identity(inference, builder, data, tmp_path):
-    builder.get_data_splits.return_value["eval"] = replace(data, identity=None)
-
-    assert inference.evaluate() == pytest.approx(10.0)
-    with pytest.raises(ValueError, match="Identity metadata is required"):
-        inference.evaluate(csv_path=str(tmp_path / "evaluation.csv"))
-
-
 def test_predict_split_rejects_feature_order_mismatch(inference, data):
     reordered = replace(data, feature_columns=["feature_b", "feature_a"])
 
