@@ -4,17 +4,76 @@ import os
 import pytest
 import shutil
 import tempfile
+import subprocess
+import sys
+from pathlib import Path
 from typing import Tuple
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import mlflow
 from sklearn.pipeline import Pipeline
 
 from src.modeling.tabular.data_builder import TabularModelDataBuilder
 from src.modeling.tabular.trainer import TabularModelTrainer
-from src.modeling.tabular.inference import TabularModelInference
+from src.modeling.tabular.inference import TabularModelInference, main
 from src.modeling.utils import setup_mlflow_run
 from src.processing.column_registry import get_identity_columns
+
+
+def test_import_does_not_open_inference_log_file(tmp_path):
+    # Block the former log-file path even if CI runs as root.
+    (tmp_path / "model_inference.log").mkdir()
+    environment = dict(os.environ)
+    environment.pop("PYTHONPATH", None)
+    result = subprocess.run([
+        sys.executable, "-c",
+        "import sys; sys.path.insert(0, sys.argv[1]); from src.modeling.tabular.inference import TabularModelInference",
+        str(Path(__file__).resolve().parents[3]),
+    ], cwd=tmp_path, env=environment, capture_output=True, text=True, timeout=60)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("mode", ["eval", "test", "predict"])
+def test_main_sets_up_run_and_csv_path_once_then_dispatches(monkeypatch, tmp_path, mode):
+    data_dir = str(tmp_path / "data")
+    csv_path = str(tmp_path / "predictions.csv")
+    inference = Mock(spec=TabularModelInference)
+    inference.registered_model = "registered_model"
+    inference.model_version = 2
+    inference.setup_mlflow.return_value = "inference-run"
+    inference.evaluate.return_value = pd.DataFrame({"predictions": [1.0]})
+    inference.predict.return_value = pd.DataFrame({"predictions": [1.0]})
+    monkeypatch.setattr("sys.argv", [
+        "tabular_inference", "--data-dir", data_dir, "--tracking-dir", "tracking",
+        "--registered-model", "registered_model", "--model-version", "2", "--mode", mode,
+    ])
+
+    with (
+        patch.object(TabularModelInference, "from_registry", return_value=inference) as from_registry,
+        patch.object(TabularModelInference, "build_predictions_csv_path", return_value=csv_path) as build_path,
+        patch("src.modeling.tabular.inference.logging.basicConfig") as configure_logging,
+        patch("src.modeling.tabular.inference.logging.FileHandler"),
+    ):
+        main()
+
+    configure_logging.assert_called_once()
+    from_registry.assert_called_once_with(
+        data_dir=data_dir, tracking_dir="tracking", registered_model="registered_model", model_version=2,
+    )
+    inference.setup_mlflow.assert_called_once_with(phase=mode)
+    build_path.assert_called_once_with(
+        os.path.join(data_dir, "predictions"), "registered_model", 2, "inference-run",
+        split=mode if mode != "predict" else None,
+    )
+    if mode == "predict":
+        inference.predict.assert_called_once_with(run_id="inference-run", csv_path=csv_path)
+        inference.evaluate.assert_not_called()
+    else:
+        inference.evaluate.assert_called_once_with(
+            run_id="inference-run", csv_path=csv_path, split=mode, top_n_rows=[50, 100, 200],
+        )
+        inference.predict.assert_not_called()
 
 
 class _FakePipeline:
@@ -531,7 +590,7 @@ class TestTabularModelInference:
             key: value for key, value in legacy_config["split"].items() if key != "prediction_season"
         }
         with (
-            patch("src.modeling.tabular.inference.load_data_builder_config", return_value=legacy_config),
+            patch("src.modeling.inference.load_data_builder_config", return_value=legacy_config),
             patch("src.modeling.data_builder.get_current_season", return_value=2025) as current_season,
         ):
             inference = TabularModelInference.from_registry(

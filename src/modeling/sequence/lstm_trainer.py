@@ -8,6 +8,7 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from src.modeling.data_builder import DATA_BUILDER_CONFIG_ARTIFACT_PATH, EVAL_SPLIT, TEST_SPLIT, TRAIN_SPLIT
 from src.modeling.sequence.data_builder import SequenceDataset, SequenceModelDataBuilder
+from src.modeling.sequence.inference import SequenceModelInference
 from src.modeling.sequence.lstm import LSTMModel
 from src.modeling.sequence.pipeline import LSTMPipeline
 from src.modeling.sequence.preprocessor import SequencePreprocessor
@@ -216,24 +217,6 @@ class LSTMModelTrainer:
 
         return total_error / total_sample_weight
 
-    # TODO: this belongs in the inference class
-    def evaluate(self, split: str = EVAL_SPLIT, run_id: str | None = None) -> float:
-        """Return unweighted eval/test MSE using preprocessing learned by fit()."""
-        if split not in (EVAL_SPLIT, TEST_SPLIT):
-            raise ValueError("Evaluation split must be 'eval' or 'test'.")
-
-        data = self.prepared_data[split]
-        if not data.loss_mask.any():
-            raise ValueError(f"Cannot evaluate an empty '{split}' split with no scored steps.")
-
-        mse = self._run_epoch(self._make_loader(data, training=False), training=False)
-        if run_id is not None:
-            mlflow.log_metrics(
-                {f"{split}_mse": mse, f"{split}_rmse": mse ** 0.5},
-                step=self.epochs_trained, run_id=run_id,
-            )
-        return mse
-
     def log_model(self, run_id: str):
         """Register one pyfunc model containing preprocessing, CPU weights, and feature order.
 
@@ -307,7 +290,11 @@ def main():
 
     trainer.fit(epochs=args.epochs, run_id=run_id)
     if args.evaluate_test:
-        test_mse = trainer.evaluate(split=TEST_SPLIT, run_id=run_id)
+        inference = SequenceModelInference(
+            pipeline=LSTMPipeline(model, trainer.preprocessor, trainer.prepared_data[TRAIN_SPLIT].feature_columns),
+            data_builder=data_builder,
+        )
+        test_mse = inference.evaluate(split=TEST_SPLIT, run_id=run_id, step=trainer.epochs_trained)
         logger.info("LSTM test MSE: %s; RMSE: %s", test_mse, test_mse ** 0.5)
 
 

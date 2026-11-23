@@ -87,9 +87,50 @@ predictions = pipeline.predict({
 Use the saved builder config to reconstruct the same feature selection/order.
 Prediction applies saved preprocessing without refitting, runs the LSTM in
 evaluation mode on CPU, and returns `[players, steps]` predictions with padding
-zeroed. Batch sizes and padded sequence widths can differ from training. For a
-`SequenceDataset`, `pipeline.unwrap_python_model().predict_dataset(dataset)`
-also checks the feature names and order before prediction.
+zeroed. Batch sizes and padded sequence widths can differ from training.
+
+`SequenceModelInference` (`src/modeling/sequence/inference.py`) handles dataset-level
+prediction and standalone eval/test scoring. It accepts an in-memory `LSTMPipeline`
+or an MLflow-loaded pipeline and checks feature names/order before prediction:
+
+```python
+from src.modeling.sequence.inference import SequenceModelInference
+
+inference = SequenceModelInference(pipeline=pipeline, data_builder=data_builder)
+predictions = inference.predict_split(dataset)
+test_mse = inference.evaluate(split="test")
+```
+
+Evaluation scores only loss-mask steps, ignores sample weights, and can log MSE/RMSE
+with `run_id` and an optional metric `step`. The trainer retains per-epoch validation;
+its `--evaluate-test` option delegates standalone scoring to this inference class.
+
+Tabular and sequence inference inherit registry loading, common metadata,
+source-linked MLflow run setup, and CSV-path construction from `ModelInference`
+(`src/modeling/inference.py`). Each subclass provides a builder-construction hook;
+prediction and scoring remain model-family-specific.
+
+### Run sequence inference from the registry
+
+```sh
+uv run --no-sync python -m src.modeling.sequence.inference \
+  --registered-model ppr_points_per_game_rb_lstm \
+  --model-version 1 --mode test
+
+uv run --no-sync python -m src.modeling.sequence.inference \
+  --registered-model ppr_points_per_game_rb_lstm --mode predict
+```
+
+Use `--mode eval` or `test` to score held-out steps; `predict` exports only each
+player's last prediction step, without scoring. Omitting `--model-version` selects
+the latest version. The saved builder config selects the gold snapshot and
+prediction season; inference does not automatically advance that season.
+
+Each command creates a run in the source model's experiment, linked to its training
+run/version, and saves/logs a prediction CSV under `data/predictions`. Eval/test runs
+also log MSE/RMSE and export actual targets. CSV predictions are rounded to two
+decimal places; metrics use unrounded values. Override `--data-dir` and
+`--tracking-dir` as needed, or use `--help` for all options.
 
 ## Thoughts
 - The first model build from this project was for the 2025 season and was a ridge regression model to predict ppr_points_per_game.

@@ -8,7 +8,6 @@ from unittest.mock import Mock, patch
 
 import mlflow
 import numpy as np
-import pandas as pd
 import pytest
 import torch
 
@@ -45,7 +44,7 @@ def trainer(tmp_path):
             [[2.0, 20.0], [3.0, 30.0], [4.0, 40.0], [float("nan"), float("nan")]],
         ]),
         lengths=torch.tensor([1, 3]),
-        identity=pd.DataFrame(),
+        identity=None,
         feature_columns=["feature_a", "feature_b"],
         y=torch.tensor([[2.0, 0.0, 0.0, 0.0], [0.0, 0.0, 4.0, 0.0]]),
         loss_mask=torch.tensor([[True, False, False, False], [False, False, True, False]]),
@@ -260,13 +259,6 @@ def test_log_pipeline_stages_artifacts_and_cleans_temporary_files(trainer):
     start_run.assert_called_once_with(run_id="training-run")
     assert actual is model_info
     assert not any(Path(path).exists() for path in staged_paths)
-
-
-def test_pipeline_rejects_feature_order_mismatch(trainer, fitted_pipeline):
-    data = replace(trainer.data["prediction"], feature_columns=["feature_b", "feature_a"])
-
-    with pytest.raises(ValueError, match="Feature columns"):
-        fitted_pipeline.predict_dataset(data)
 
 
 @pytest.mark.parametrize("max_steps", [0, 3])

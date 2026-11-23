@@ -4,12 +4,12 @@ from unittest.mock import Mock, patch
 import mlflow
 from mlflow.tracking import MlflowClient
 import numpy as np
-import pandas as pd
 import pytest
 import torch
 from torch.utils.data import DataLoader
 
 from src.modeling.sequence.data_builder import SequenceDataset, SequenceModelDataBuilder
+from src.modeling.sequence.inference import SequenceModelInference
 from src.modeling.sequence.lstm import LSTMModel
 from src.modeling.sequence.lstm_trainer import LSTMModelTrainer, main
 from src.modeling.sequence.pipeline import LSTMPipeline
@@ -21,7 +21,7 @@ def make_data():
     return SequenceDataset(
         X=torch.tensor([[[1.0], [float("nan")]], [[2.0], [3.0]]]),
         lengths=torch.tensor([1, 2]),
-        identity=pd.DataFrame(),
+        identity=None,
         feature_columns=["feature"],
         y=torch.tensor([[2.0, float("nan")], [float("nan"), 4.0]]),
         loss_mask=torch.tensor([[True, False], [False, True]]),
@@ -35,6 +35,13 @@ def zero_model():
         for parameter in model.parameters():
             parameter.zero_()
     return model
+
+
+def make_inference(trainer):
+    return SequenceModelInference(
+        pipeline=LSTMPipeline(trainer.model, trainer.preprocessor, trainer.prepared_data["train"].feature_columns),
+        data_builder=trainer.data_builder,
+    )
 
 
 def make_builder(train=None, eval_data=None):
@@ -109,7 +116,7 @@ def test_prepared_data_property_is_read_only():
 def test_mlflow_training_run_logs_config_params_and_metrics(trainer):
     run_id = trainer.setup_mlflow(extra_params={"seed": 42})
     history = trainer.fit(epochs=2, run_id=run_id)
-    test_mse = trainer.evaluate(split="test", run_id=run_id)
+    test_mse = make_inference(trainer).evaluate(split="test", run_id=run_id, step=trainer.epochs_trained)
 
     run = mlflow.get_run(run_id)
     assert mlflow.get_experiment(run.info.experiment_id).name == trainer.base_model_name
@@ -159,7 +166,7 @@ def test_repeated_fit_continues_mlflow_metric_steps(trainer):
         expected = [epoch[name] for epoch in first_history + second_history]
         assert [metric.value for metric in metrics] == pytest.approx(expected)
 
-    test_mse = trainer.evaluate(split="test", run_id=run_id)
+    test_mse = make_inference(trainer).evaluate(split="test", run_id=run_id, step=trainer.epochs_trained)
     for name, expected in {"test_mse": test_mse, "test_rmse": test_mse ** 0.5}.items():
         metrics = client.get_metric_history(run_id, name)
         assert len(metrics) == 1
@@ -245,31 +252,31 @@ def test_fit_clears_preloaded_gradients_before_backward():
         torch.testing.assert_close(actual, expected)
 
 
-def test_evaluate_is_unweighted_and_does_not_update_parameters():
-    trainer = LSTMModelTrainer(zero_model(), make_builder(), SequencePreprocessor(), batch_size=1, learning_rate=0.0)
-    trainer.fit(epochs=1, evaluate_each_epoch=False)
-    trainer.optimizer.zero_grad(set_to_none=True)
+def test_validation_epoch_aggregates_scored_steps_not_batch_means():
+    data = replace(
+        make_data(), y=torch.tensor([[2.0, 0.0], [3.0, 4.0]]),
+        loss_mask=torch.tensor([[True, False], [True, True]]),
+    )
+    trainer = LSTMModelTrainer(zero_model(), make_builder(eval_data=data), SequencePreprocessor(), batch_size=1)
+    trainer._fit_preprocessing()
+    loader = trainer._make_loader(trainer.prepared_data["eval"], training=False)
+
+    assert trainer._run_epoch(loader, training=False) == pytest.approx(29.0 / 3.0)
+
+
+def test_validation_epoch_is_unweighted_and_does_not_update_parameters():
+    trainer = LSTMModelTrainer(zero_model(), make_builder(), SequencePreprocessor(), batch_size=1)
+    trainer._fit_preprocessing()
+    loader = trainer._make_loader(trainer.prepared_data["eval"], training=False)
     before = [parameter.detach().clone() for parameter in trainer.model.parameters()]
 
-    actual = trainer.evaluate()
+    actual = trainer._run_epoch(loader, training=False)
 
     assert actual == pytest.approx(10.0)
     assert not trainer.model.training
     assert all(parameter.grad is None for parameter in trainer.model.parameters())
     for old, new in zip(before, trainer.model.parameters()):
         torch.testing.assert_close(old, new)
-
-
-def test_epoch_loss_aggregates_scored_steps_not_batch_means():
-    data = replace(
-        make_data(),
-        y=torch.tensor([[2.0, 0.0], [3.0, 4.0]]),
-        loss_mask=torch.tensor([[True, False], [True, True]]),
-    )
-    trainer = LSTMModelTrainer(zero_model(), make_builder(eval_data=data), SequencePreprocessor(), batch_size=1, learning_rate=0.0)
-    trainer.fit(epochs=1, evaluate_each_epoch=False)
-
-    assert trainer.evaluate() == pytest.approx(29.0 / 3.0)
 
 
 def test_zero_weight_batches_are_skipped():
@@ -304,7 +311,7 @@ def test_training_normalization_handles_unequal_scored_lengths_and_final_batch(w
     data = SequenceDataset(
         X=torch.tensor([[[1.0], [float("nan")]], [[2.0], [3.0]], [[4.0], [float("nan")]]]),
         lengths=torch.tensor([1, 2, 1]),
-        identity=pd.DataFrame(),
+        identity=None,
         feature_columns=["feature"],
         y=torch.tensor([[2.0, float("nan")], [3.0, 4.0], [5.0, float("nan")]]),
         loss_mask=torch.tensor([[True, False], [True, True], [True, False]]),
@@ -352,17 +359,6 @@ def test_repeated_fit_reuses_optimizer_state():
     assert optimizer.state[trainer.model.head.bias]["step"].item() > step_before
 
 
-def test_evaluate_selects_test_split():
-    builder = make_builder()
-    builder.get_data_splits.return_value["test"] = replace(make_data(), y=torch.full((2, 2), 5.0))
-    trainer = LSTMModelTrainer(zero_model(), builder, SequencePreprocessor(), learning_rate=0.0)
-    trainer.fit(epochs=1, evaluate_each_epoch=False)
-
-    assert trainer.evaluate(split="test") == pytest.approx(25.0)
-    with pytest.raises(ValueError, match="Evaluation split"):
-        trainer.evaluate(split="prediction")
-
-
 @pytest.mark.parametrize("empty", [False, True], ids=["all-false-mask", "empty-tensors"])
 def test_fit_rejects_unscored_eval_split_when_evaluation_requested(empty):
     eval_data = make_unscored_data(empty)
@@ -381,25 +377,6 @@ def test_fit_allows_unscored_eval_split_when_evaluation_disabled(empty):
     assert "eval_mse" not in history[0]
     assert "eval_rmse" not in history[0]
     assert history[0]["train_rmse"] == pytest.approx(history[0]["train_mse"] ** 0.5)
-
-
-@pytest.mark.parametrize("empty", [False, True], ids=["all-false-mask", "empty-tensors"])
-@pytest.mark.parametrize("split", ["eval", "test"])
-def test_evaluate_rejects_unscored_heldout_split(empty, split):
-    builder = make_builder()
-    builder.get_data_splits.return_value[split] = make_unscored_data(empty)
-    trainer = LSTMModelTrainer(zero_model(), builder, SequencePreprocessor())
-    trainer.fit(epochs=1, evaluate_each_epoch=False)
-
-    with pytest.raises(ValueError, match="no scored steps"):
-        trainer.evaluate(split=split)
-
-
-def test_evaluate_requires_fitted_preprocessing():
-    trainer = LSTMModelTrainer(zero_model(), make_builder(), SequencePreprocessor())
-
-    with pytest.raises(ValueError, match="Call fit"):
-        trainer.evaluate()
 
 
 def test_fit_preprocesses_all_splits_using_training_statistics():
@@ -489,8 +466,9 @@ def test_main_uses_default_params_and_infers_input_size(monkeypatch):
     monkeypatch.setattr("sys.argv", ["lstm_trainer", "--config", "sequence.yaml"])
     with patch.object(SequenceModelDataBuilder, "from_config_file", return_value=builder) as from_config:
         with patch("src.modeling.sequence.lstm_trainer.LSTMModelTrainer") as trainer_class:
-            trainer_class.return_value.setup_mlflow.return_value = "training-run"
-            main()
+            with patch("src.modeling.sequence.lstm_trainer.SequenceModelInference") as inference_class:
+                trainer_class.return_value.setup_mlflow.return_value = "training-run"
+                main()
 
     from_config.assert_called_once_with(data_dir="data", config_path="sequence.yaml")
     kwargs = trainer_class.call_args.kwargs
@@ -510,7 +488,7 @@ def test_main_uses_default_params_and_infers_input_size(monkeypatch):
         extra_params={"config_path": "sequence.yaml", "seed": 42, "epochs": 20}
     )
     trainer_class.return_value.fit.assert_called_once_with(epochs=20, run_id="training-run")
-    trainer_class.return_value.evaluate.assert_not_called()
+    inference_class.assert_not_called()
 
 
 def test_main_passes_custom_params_and_evaluates_test_when_requested(monkeypatch):
@@ -521,12 +499,16 @@ def test_main_passes_custom_params_and_evaluates_test_when_requested(monkeypatch
         "--epochs", "3", "--batch-size", "4", "--learning-rate", "0.01",
         "--device", "mps", "--evaluate-test", "--tracking-dir", "custom-mlruns",
     ])
-    with patch.object(SequenceModelDataBuilder, "from_config_file", return_value=builder) as from_config:
-        with patch("src.modeling.sequence.lstm_trainer.LSTMModelTrainer") as trainer_class:
-            trainer_class.return_value.setup_mlflow.return_value = "training-run"
-            trainer_class.return_value.evaluate.return_value = 4.0
-            with patch("src.modeling.sequence.lstm_trainer.torch.manual_seed") as seed:
-                main()
+    with (
+        patch.object(SequenceModelDataBuilder, "from_config_file", return_value=builder) as from_config,
+        patch("src.modeling.sequence.lstm_trainer.LSTMModelTrainer") as trainer_class,
+        patch("src.modeling.sequence.lstm_trainer.SequenceModelInference") as inference_class,
+        patch("src.modeling.sequence.lstm_trainer.torch.manual_seed") as seed,
+    ):
+        trainer_class.return_value.setup_mlflow.return_value = "training-run"
+        trainer_class.return_value.epochs_trained = 3
+        inference_class.return_value.evaluate.return_value = 4.0
+        main()
 
     from_config.assert_called_once_with(data_dir="custom-data", config_path="sequence.yaml")
     seed.assert_called_once_with(42)
@@ -539,7 +521,10 @@ def test_main_passes_custom_params_and_evaluates_test_when_requested(monkeypatch
     assert kwargs["device"] == "mps"
     assert kwargs["tracking_dir"] == "custom-mlruns"
     trainer_class.return_value.fit.assert_called_once_with(epochs=3, run_id="training-run")
-    trainer_class.return_value.evaluate.assert_called_once_with(split="test", run_id="training-run")
+    inference_class.assert_called_once()
+    assert inference_class.call_args.kwargs["data_builder"] is builder
+    assert inference_class.call_args.kwargs["pipeline"].model is kwargs["model"]
+    inference_class.return_value.evaluate.assert_called_once_with(split="test", run_id="training-run", step=3)
 
 
 def test_main_requires_config(monkeypatch):

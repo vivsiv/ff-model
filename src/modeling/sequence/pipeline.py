@@ -13,7 +13,6 @@ from mlflow.models import ModelSignature
 from mlflow.models.model import ModelInfo
 from mlflow.types.schema import Schema, TensorSpec
 import numpy as np
-import pandas as pd
 import torch
 
 from src.modeling.sequence.data_builder import SequenceDataset
@@ -154,7 +153,7 @@ class LSTMPipeline(mlflow.pyfunc.PythonModel):
         X = torch.as_tensor(model_input["X"], dtype=torch.float32)
         lengths = torch.as_tensor(model_input["lengths"])
 
-        data = SequenceDataset(X=X, lengths=lengths, identity=pd.DataFrame(), feature_columns=self.feature_columns)
+        data = SequenceDataset(X=X, lengths=lengths, identity=None, feature_columns=self.feature_columns)
         if X.shape[-1] != self.model.lstm.input_size:
             raise ValueError("X must have shape [N, L, model input_size].")
         if X.shape[0] == 0:
@@ -167,14 +166,3 @@ class LSTMPipeline(mlflow.pyfunc.PythonModel):
             predictions = self.model(prepared.X.to(device), lengths)
 
         return predictions.cpu().numpy()
-
-    # TODO: move to inference class
-    def predict_dataset(self, data: SequenceDataset) -> np.ndarray:
-        """Predict a raw SequenceDataset, verifying its feature names and order."""
-        if data.feature_columns != self.feature_columns:
-            raise ValueError("Feature columns must match the saved pipeline in order.")
-
-        return self.predict(context=None, model_input={
-            "X": data.X.detach().cpu().numpy(),
-            "lengths": data.lengths.cpu().numpy(),
-        })

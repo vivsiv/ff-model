@@ -54,7 +54,8 @@ class SequenceDataset:
         lengths: [N] Tensor (rank 1, int64) tracking the number of real steps per player.
             Example:
                 lengths = torch.tensor([3, 1]) # Player A has 3 real steps, player B has 1
-        identity: Dataframe mapping sequences and steps in X back to player_ids in the tabular data.
+        identity: Optional DataFrame mapping sequences and steps in X back to player_ids in the tabular data.
+            None for numerical-only inputs without metadata. When provided, must contain seq_idx and step_idx.
             Only has rows for real steps (aligning with X[real_step_mask]). Besides the columns in the example it has
             the other identity columns (e.g. season, target_season).
             Example:
@@ -71,7 +72,7 @@ class SequenceDataset:
     """
     X: torch.Tensor
     lengths: torch.Tensor # TODO: rename to steps?
-    identity: pd.DataFrame
+    identity: pd.DataFrame | None
     feature_columns: List[str]
     y: Optional[torch.Tensor] = None
     loss_mask: Optional[torch.Tensor] = None
@@ -94,6 +95,10 @@ class SequenceDataset:
             raise ValueError("lengths must have shape [N].")
         if ((self.lengths < 1) | (self.lengths > max_steps)).any():
             raise ValueError("Sequence lengths must be between 1 and L.")
+
+        if self.identity is not None:
+            if not isinstance(self.identity, pd.DataFrame) or not {"seq_idx", "step_idx"}.issubset(self.identity.columns):
+                raise ValueError("identity must be a DataFrame containing seq_idx and step_idx when supplied.")
 
         for name in ("y", "loss_mask", "sample_weight"):
             tensor = getattr(self, name)
@@ -135,6 +140,9 @@ class SequenceDataset:
 
     def last_step_identity(self) -> pd.DataFrame:
         """Identity rows of each sequence's last real step, ordered by seq_idx."""
+        if self.identity is None:
+            raise ValueError("Identity metadata is required to select last-step identity rows.")
+
         return self.identity.groupby("seq_idx").tail(1)
 
 

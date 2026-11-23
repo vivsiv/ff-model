@@ -81,14 +81,15 @@ def load_mlflow_model(
     registered_model: str,
     model_version: Optional[int] = None,
     tracking_dir: str = "../mlruns",
-) -> Tuple[Pipeline, ModelVersion]:
+) -> Tuple[Pipeline | mlflow.pyfunc.PyFuncModel, ModelVersion]:
     """
     Loads a registered {target}_{model_type} model from the mlflow model registry rooted at
-    tracking_dir.
+    tracking_dir. Inspect the saved flavors to select the loader: prefer native
+    sklearn (preserving estimator attributes), otherwise use the pyfunc interface.
 
     Args:
         registered_model: registered model to load.
-        model_version: Specific registered version to load. Defaults to the latest version.
+        model_version: Specific registered version to load. Defaults to the highest numeric version.
         tracking_dir: The mlruns tracking/registry store directory (default: "../mlruns")
 
     Returns:
@@ -101,13 +102,25 @@ def load_mlflow_model(
 
     client = MlflowClient()
     if model_version is None:
-        model_version = client.get_latest_versions(registered_model, stages=["None"])[0]
+        versions = client.search_model_versions(
+            f"name = '{registered_model}'", max_results=1, order_by=["version_number DESC"],
+        )
+        if not versions:
+            raise ValueError(f"No versions found for registered model '{registered_model}'.")
+        version = versions[0]
     else:
-        model_version = client.get_model_version(registered_model, str(model_version))
+        version = client.get_model_version(registered_model, str(model_version))
 
-    pipeline = mlflow.sklearn.load_model(f"models:/{registered_model}/{model_version.version}")
+    model_uri = f"models:/{registered_model}/{version.version}"
+    flavors = mlflow.models.Model.load(model_uri).flavors
+    if "sklearn" in flavors:
+        pipeline = mlflow.sklearn.load_model(model_uri)
+    elif "python_function" in flavors:
+        pipeline = mlflow.pyfunc.load_model(model_uri)
+    else:
+        raise ValueError(f"No supported sklearn or pyfunc flavor found for '{model_uri}'.")
 
-    return pipeline, model_version
+    return pipeline, version
 
 
 def load_data_builder_config(source_run_id: str) -> dict[str, Any]:
