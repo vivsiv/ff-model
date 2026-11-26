@@ -55,6 +55,12 @@ class TestSequenceDataset:
         ("X", torch.zeros(2, 3), "X must have shape"),
         ("X", [[[1.0]]], "X must have shape"),
         ("feature_columns", ["f1"], "feature_columns must contain"),
+        ("identity", None, "identity must be a DataFrame"),
+        ("identity", pd.DataFrame(), "identity must be a DataFrame"),
+        ("identity", pd.DataFrame({"player_id": ["A"]}), "identity must be a DataFrame"),
+        ("identity", pd.DataFrame({"seq_idx": [0]}), "identity must be a DataFrame"),
+        ("identity", pd.DataFrame({"step_idx": [0]}), "identity must be a DataFrame"),
+        ("identity", {"seq_idx": [0], "step_idx": [0]}, "identity must be a DataFrame"),
         ("lengths", torch.tensor([3]), "lengths must have shape"),
         ("lengths", torch.tensor([[3], [1]]), "lengths must have shape"),
         ("lengths", torch.tensor([3.0, 1.0]), "lengths must be an int64 tensor"),
@@ -72,6 +78,13 @@ class TestSequenceDataset:
     def test_constructor_rejects_invalid_structure(self, field, value, message):
         with pytest.raises(ValueError, match=message):
             replace(self._dataset(), **{field: value})
+
+    def test_constructor_accepts_empty_identity_schema_for_numerical_inputs(self):
+        data = replace(self._dataset(), identity=pd.DataFrame(columns=["seq_idx", "step_idx"]))
+
+        assert data.identity.empty
+        _assert_tensors_equal(data.real_step_mask, self._dataset().real_step_mask)
+        assert data.last_step_identity().empty
 
     def test_constructor_rejects_loss_mask_selecting_padding(self):
         mask = torch.tensor([[True, True, True], [True, True, False]])
@@ -603,7 +616,7 @@ class TestSequenceModelDataBuilder:
         data = SequenceDataset(
             X=torch.zeros((*shape, 1)),
             lengths=torch.empty(0, dtype=torch.int64) if empty else torch.tensor([1]),
-            identity=pd.DataFrame(),
+            identity=pd.DataFrame(columns=["seq_idx", "step_idx"]),
             feature_columns=["feature"],
             y=torch.zeros(shape),
             loss_mask=torch.zeros(shape, dtype=torch.bool),

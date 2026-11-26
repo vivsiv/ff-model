@@ -8,6 +8,7 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from src.modeling.data_builder import DATA_BUILDER_CONFIG_ARTIFACT_PATH, EVAL_SPLIT, TEST_SPLIT, TRAIN_SPLIT
 from src.modeling.sequence.data_builder import SequenceDataset, SequenceModelDataBuilder
+from src.modeling.sequence.inference import SequenceModelInference
 from src.modeling.sequence.lstm import LSTMModel
 from src.modeling.sequence.pipeline import LSTMPipeline
 from src.modeling.sequence.preprocessor import SequencePreprocessor
@@ -158,6 +159,7 @@ class LSTMModelTrainer:
             logger.info("LSTM epoch metrics: %s", metrics)
 
         if run_id is not None:
+            # TODO: log the eval dataset to mlflow
             self.log_model(run_id)
 
         return history
@@ -216,24 +218,6 @@ class LSTMModelTrainer:
 
         return total_error / total_sample_weight
 
-    # TODO: this belongs in the inference class
-    def evaluate(self, split: str = EVAL_SPLIT, run_id: str | None = None) -> float:
-        """Return unweighted eval/test MSE using preprocessing learned by fit()."""
-        if split not in (EVAL_SPLIT, TEST_SPLIT):
-            raise ValueError("Evaluation split must be 'eval' or 'test'.")
-
-        data = self.prepared_data[split]
-        if not data.loss_mask.any():
-            raise ValueError(f"Cannot evaluate an empty '{split}' split with no scored steps.")
-
-        mse = self._run_epoch(self._make_loader(data, training=False), training=False)
-        if run_id is not None:
-            mlflow.log_metrics(
-                {f"{split}_mse": mse, f"{split}_rmse": mse ** 0.5},
-                step=self.epochs_trained, run_id=run_id,
-            )
-        return mse
-
     def log_model(self, run_id: str):
         """Register one pyfunc model containing preprocessing, CPU weights, and feature order.
 
@@ -281,10 +265,6 @@ def main():
     parser.add_argument("--batch-size", type=int, default=32, help="Players per batch (default: 32)")
     parser.add_argument("--learning-rate", type=float, default=1e-3, help="Adam learning rate (default: 0.001)")
     parser.add_argument("--device", choices=["cpu", "cuda", "mps"], default="cpu", help="Training device (default: cpu)")
-    parser.add_argument(
-        "--evaluate-test", action="store_true",
-        help="Also evaluate the test split after training; omitted by default to keep test data held out",
-    )
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
@@ -306,9 +286,6 @@ def main():
     logger.info("MLflow training run: %s", run_id)
 
     trainer.fit(epochs=args.epochs, run_id=run_id)
-    if args.evaluate_test:
-        test_mse = trainer.evaluate(split=TEST_SPLIT, run_id=run_id)
-        logger.info("LSTM test MSE: %s; RMSE: %s", test_mse, test_mse ** 0.5)
 
 
 if __name__ == "__main__":

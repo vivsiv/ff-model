@@ -21,7 +21,7 @@ def data():
             [[2.0, nan], [4.0, 20.0], [nan, nan]],
         ]),
         lengths=torch.tensor([1, 2]),
-        identity=pd.DataFrame({"player_id": ["A", "B", "B"], "step_idx": [0, 0, 1]}),
+        identity=pd.DataFrame({"player_id": ["A", "B", "B"], "seq_idx": [0, 1, 1], "step_idx": [0, 0, 1]}),
         feature_columns=["a", "b"],
         y=torch.tensor([[2.0, 0.0, 0.0], [0.0, 4.0, 0.0]]),
         loss_mask=torch.tensor([[True, False, False], [False, True, False]]),
