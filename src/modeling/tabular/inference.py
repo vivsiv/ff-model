@@ -9,7 +9,7 @@ import mlflow
 from sklearn.metrics import mean_squared_error
 from sklearn.pipeline import Pipeline
 
-from src.modeling.data_builder import EVAL_SPLIT, TEST_SPLIT
+from src.modeling.data_builder import EVAL_SPLIT, PREDICTION_SPLIT, TEST_SPLIT
 from src.modeling.inference import ModelInference
 from src.modeling.tabular.data_builder import TabularModelDataBuilder
 
@@ -356,7 +356,7 @@ def main():
     predictions_dir = os.path.join(args.data_dir, "predictions")
     csv_path = TabularModelInference.build_predictions_csv_path(
         predictions_dir, inference.registered_model, inference.model_version, run_id,
-        split=args.mode if args.mode in (EVAL_SPLIT, TEST_SPLIT) else None,
+        split=PREDICTION_SPLIT if args.mode == "predict" else args.mode,
     )
 
     if args.mode in (EVAL_SPLIT, TEST_SPLIT):

@@ -10,7 +10,6 @@ import torch
 from torch.utils.data import DataLoader
 
 from src.modeling.sequence.data_builder import SequenceDataset, SequenceModelDataBuilder
-from src.modeling.sequence.inference import SequenceModelInference
 from src.modeling.sequence.lstm import LSTMModel
 from src.modeling.sequence.lstm_trainer import LSTMModelTrainer, main
 from src.modeling.sequence.pipeline import LSTMPipeline
@@ -36,13 +35,6 @@ def zero_model():
         for parameter in model.parameters():
             parameter.zero_()
     return model
-
-
-def make_inference(trainer):
-    return SequenceModelInference(
-        pipeline=LSTMPipeline(trainer.model, trainer.preprocessor, trainer.prepared_data["train"].feature_columns),
-        data_builder=trainer.data_builder,
-    )
 
 
 def make_builder(train=None, eval_data=None):
@@ -117,7 +109,6 @@ def test_prepared_data_property_is_read_only():
 def test_mlflow_training_run_logs_config_params_and_metrics(trainer):
     run_id = trainer.setup_mlflow(extra_params={"seed": 42})
     history = trainer.fit(epochs=2, run_id=run_id)
-    test_mse = make_inference(trainer).evaluate(split="test", run_id=run_id, step=trainer.epochs_trained)
 
     run = mlflow.get_run(run_id)
     assert mlflow.get_experiment(run.info.experiment_id).name == trainer.base_model_name
@@ -128,8 +119,8 @@ def test_mlflow_training_run_logs_config_params_and_metrics(trainer):
     assert run.data.params["num_layers"] == "1"
     assert run.data.params["imputation_strategy"] == "mean"
     assert load_data_builder_config(run_id) == trainer.data_builder.config
-    assert run.data.metrics["test_mse"] == pytest.approx(test_mse)
-    assert run.data.metrics["test_rmse"] == pytest.approx(test_mse ** 0.5)
+    expected_metrics = {name: history[-1][name] for name in ("train_mse", "train_rmse", "eval_mse", "eval_rmse")}
+    assert run.data.metrics == pytest.approx(expected_metrics)
     metric_history = MlflowClient().get_metric_history(run_id, "train_mse")
     assert [metric.step for metric in metric_history] == [1, 2]
     assert [metric.value for metric in metric_history] == pytest.approx([item["train_mse"] for item in history])
@@ -166,13 +157,6 @@ def test_repeated_fit_continues_mlflow_metric_steps(trainer):
         assert [metric.step for metric in metrics] == [1, 2, 3]
         expected = [epoch[name] for epoch in first_history + second_history]
         assert [metric.value for metric in metrics] == pytest.approx(expected)
-
-    test_mse = make_inference(trainer).evaluate(split="test", run_id=run_id, step=trainer.epochs_trained)
-    for name, expected in {"test_mse": test_mse, "test_rmse": test_mse ** 0.5}.items():
-        metrics = client.get_metric_history(run_id, name)
-        assert len(metrics) == 1
-        assert metrics[0].step == 3
-        assert metrics[0].value == pytest.approx(expected)
 
 
 def test_log_model_requires_training():
@@ -467,9 +451,8 @@ def test_main_uses_default_params_and_infers_input_size(monkeypatch):
     monkeypatch.setattr("sys.argv", ["lstm_trainer", "--config", "sequence.yaml"])
     with patch.object(SequenceModelDataBuilder, "from_config_file", return_value=builder) as from_config:
         with patch("src.modeling.sequence.lstm_trainer.LSTMModelTrainer") as trainer_class:
-            with patch("src.modeling.sequence.lstm_trainer.SequenceModelInference") as inference_class:
-                trainer_class.return_value.setup_mlflow.return_value = "training-run"
-                main()
+            trainer_class.return_value.setup_mlflow.return_value = "training-run"
+            main()
 
     from_config.assert_called_once_with(data_dir="data", config_path="sequence.yaml")
     kwargs = trainer_class.call_args.kwargs
@@ -489,7 +472,6 @@ def test_main_uses_default_params_and_infers_input_size(monkeypatch):
         extra_params={"config_path": "sequence.yaml", "seed": 42, "epochs": 20}
     )
     trainer_class.return_value.fit.assert_called_once_with(epochs=20, run_id="training-run")
-    inference_class.assert_not_called()
 
 
 def test_main_passes_custom_params(monkeypatch):
@@ -503,7 +485,6 @@ def test_main_passes_custom_params(monkeypatch):
     with (
         patch.object(SequenceModelDataBuilder, "from_config_file", return_value=builder) as from_config,
         patch("src.modeling.sequence.lstm_trainer.LSTMModelTrainer") as trainer_class,
-        patch("src.modeling.sequence.lstm_trainer.SequenceModelInference") as inference_class,
         patch("src.modeling.sequence.lstm_trainer.torch.manual_seed") as seed,
     ):
         trainer_class.return_value.setup_mlflow.return_value = "training-run"
@@ -520,7 +501,6 @@ def test_main_passes_custom_params(monkeypatch):
     assert kwargs["device"] == "mps"
     assert kwargs["tracking_dir"] == "custom-mlruns"
     trainer_class.return_value.fit.assert_called_once_with(epochs=3, run_id="training-run")
-    inference_class.assert_not_called()
 
 
 def test_main_requires_config(monkeypatch):
@@ -545,4 +525,3 @@ def test_main_trains_and_evaluates_with_synthetic_data(monkeypatch, caplog):
 
     assert "LSTM epoch metrics" in caplog.text
     assert "eval_mse" in caplog.text
-    assert "test_mse" not in caplog.text

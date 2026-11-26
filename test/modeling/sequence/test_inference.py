@@ -184,29 +184,70 @@ def test_predict_exports_only_last_steps_with_identity(inference, data, tmp_path
     )
     csv_path = str(tmp_path / "predictions.csv")
 
-    actual = inference.predict(csv_path=csv_path)
+    predictions = np.array([[11.0, 0.0], [22.0, 33.0]], dtype=np.float32)
+    with patch.object(inference.pipeline, "predict", return_value=predictions):
+        actual = inference.predict(csv_path=csv_path)
 
     expected = pd.DataFrame({
         "player_id": ["B", "A"],
         "season": [2021, 2020], "target_season": [2022, 2022],
-        "predictions": np.array([0.0, 0.0], dtype=np.float32),
+        "predictions": np.array([33.0, 11.0], dtype=np.float32),
     })
     pd.testing.assert_frame_equal(actual, expected)
     expected_csv = pd.DataFrame({
         "player_id": ["B", "A"], "season": [2021, 2020], "target_season": [2022, 2022],
-        "ppr_points_per_game": [0.0, 0.0],
+        "ppr_points_per_game": [33.0, 11.0],
     })
     pd.testing.assert_frame_equal(pd.read_csv(csv_path), expected_csv)
 
 
-def test_evaluate_exports_only_scored_steps_and_actuals(inference, tmp_path):
-    csv_path = str(tmp_path / "evaluation.csv")
+@pytest.mark.parametrize("split", ["train", "eval", "test"])
+def test_predict_selects_split_target_steps_without_actuals_or_scoring(inference, builder, data, tmp_path, split):
+    builder.get_data_splits.return_value[split] = replace(
+        data, identity=data.identity.iloc[[2, 0, 1]],
+        y=None, sample_weight=None,
+        loss_mask=torch.tensor([[True, False], [True, True]]),
+    )
+    csv_path = str(tmp_path / "predictions.csv")
 
-    assert inference.evaluate(csv_path=csv_path) == pytest.approx(10.0)
+    predictions = np.array([[11.0, 0.0], [22.0, 33.0]], dtype=np.float32)
+    with (
+        patch.object(inference.pipeline, "predict", return_value=predictions),
+        patch("src.modeling.sequence.inference.mlflow.log_metrics") as log_metrics,
+    ):
+        actual = inference.predict(split=split, csv_path=csv_path)
 
     expected = pd.DataFrame({
-        "player_id": ["A", "B"], "season": [2020, 2021], "target_season": [2022, 2022],
-        "ppr_points_per_game": [0.0, 0.0], "actual": [2.0, 4.0],
+        "player_id": ["B", "A", "B"],
+        "season": [2021, 2020, 2020], "target_season": [2022, 2022, 2021],
+        "predictions": np.array([33.0, 11.0, 22.0], dtype=np.float32),
+    })
+    pd.testing.assert_frame_equal(actual, expected)
+    expected_csv = expected.rename(columns={"predictions": "ppr_points_per_game"}).astype(
+        {"ppr_points_per_game": "float64"}
+    )
+    pd.testing.assert_frame_equal(pd.read_csv(csv_path), expected_csv)
+    log_metrics.assert_not_called()
+
+
+def test_predict_requires_loss_mask_for_non_prediction_split(inference, builder, data):
+    builder.get_data_splits.return_value["eval"] = replace(data, loss_mask=None, sample_weight=None)
+
+    with pytest.raises(ValueError, match="A loss mask is required"):
+        inference.predict(split="eval")
+
+
+def test_evaluate_exports_only_scored_steps_and_actuals(inference, builder, data, tmp_path):
+    builder.get_data_splits.return_value["eval"] = replace(data, identity=data.identity.iloc[[2, 0, 1]])
+    csv_path = str(tmp_path / "evaluation.csv")
+    predictions = np.array([[11.0, 0.0], [22.0, 33.0]], dtype=np.float32)
+
+    with patch.object(inference.pipeline, "predict", return_value=predictions):
+        assert inference.evaluate(csv_path=csv_path) == pytest.approx(461.0)
+
+    expected = pd.DataFrame({
+        "player_id": ["B", "A"], "season": [2021, 2020], "target_season": [2022, 2022],
+        "ppr_points_per_game": [33.0, 11.0], "actual": [4.0, 2.0],
     })
     pd.testing.assert_frame_equal(pd.read_csv(csv_path), expected)
 

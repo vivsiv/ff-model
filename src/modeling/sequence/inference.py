@@ -102,11 +102,24 @@ class SequenceModelInference(ModelInference[LSTMPipeline | mlflow.pyfunc.PyFuncM
         if run_id is not None:
             mlflow.log_artifact(csv_path, run_id=run_id)
 
-    def predict(self, run_id: str | None = None, csv_path: str | None = None) -> pd.DataFrame:
-        """Return each prediction sequence's last-step output with player identity, without scoring."""
-        data = self.data_builder.get_data_splits()[PREDICTION_SPLIT]
+    def predict(
+        self,
+        split: str = PREDICTION_SPLIT,
+        run_id: str | None = None,
+        csv_path: str | None = None,
+    ) -> pd.DataFrame:
+        """Return identity-aligned predictions for a split, without actuals or scoring."""
+        data = self.data_builder.get_data_splits()[split]
+
+        if split == PREDICTION_SPLIT:
+            step_mask = data.last_step_mask
+        else:
+            if data.loss_mask is None:
+                raise ValueError("A loss mask is required to select split prediction steps.")
+            step_mask = data.loss_mask
+
         predictions = self.predict_split(data)
-        frame = self._build_predictions_frame(data, predictions, step_mask=data.last_step_mask)
+        frame = self._build_predictions_frame(data, predictions, step_mask=step_mask)
 
         if csv_path is not None:
             self._save_predictions(frame, csv_path, run_id)
@@ -178,7 +191,7 @@ def main():
     predictions_dir = os.path.join(args.data_dir, "predictions")
     csv_path = SequenceModelInference.build_predictions_csv_path(
         predictions_dir, inference.registered_model,
-        inference.model_version, run_id, split=args.mode if args.mode != "predict" else None,
+        inference.model_version, run_id, split=PREDICTION_SPLIT if args.mode == "predict" else args.mode,
     )
     if args.mode in (EVAL_SPLIT, TEST_SPLIT):
         mse = inference.evaluate(split=args.mode, run_id=run_id, csv_path=csv_path)

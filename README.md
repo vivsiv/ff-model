@@ -59,9 +59,10 @@ The trainer fits `SequencePreprocessor` (`src/modeling/sequence/preprocessor.py`
 on real training inputs only. This component owns mean imputation, scaling, and
 sequence-layout preservation and is reused by the inference pipeline. The trainer logs
 training/evaluation MSE and RMSE each epoch to MLflow. Training defaults to CPU; use `--device mps`
-on a supported Mac or `--device cuda` on a CUDA-enabled machine. Add
-`--evaluate-test` to report and log test MSE/RMSE after training. `--tracking-dir`
-selects the MLflow store (default: `mlruns`). Use `--help` for all options.
+on a supported Mac or `--device cuda` on a CUDA-enabled machine. The trainer does
+not score the test split; use the separate sequence inference CLI with `--mode test`
+when test evaluation is intended (see below). `--tracking-dir` selects the MLflow
+store (default: `mlruns`). Use `--help` for all options.
 
 The run saves the resolved builder config as `data_prep_config.json` and registers
 one complete inference pipeline under `{target}[_positions]_lstm`, in the
@@ -102,8 +103,9 @@ test_mse = inference.evaluate(split="test")
 ```
 
 Evaluation scores only loss-mask steps, ignores sample weights, and can log MSE/RMSE
-with `run_id` and an optional metric `step`. The trainer retains per-epoch validation;
-its `--evaluate-test` option delegates standalone scoring to this inference class.
+with `run_id` and an optional metric `step`. The trainer retains per-epoch validation
+on the eval split; test scoring is performed separately through this inference class
+or the registered sequence inference CLI below.
 
 Tabular and sequence inference inherit registry loading, common metadata,
 source-linked MLflow run setup, and CSV-path construction from `ModelInference`

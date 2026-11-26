@@ -7,7 +7,7 @@ from typing import Any, ClassVar, Generic, Self, TypeVar
 
 import mlflow
 
-from src.modeling.data_builder import DATA_BUILDER_CONFIG_ARTIFACT_PATH, ModelDataBuilder
+from src.modeling.data_builder import DATA_BUILDER_CONFIG_ARTIFACT_PATH, PREDICTION_SPLIT, ModelDataBuilder
 from src.modeling.utils import load_data_builder_config, load_mlflow_model, set_mlflow_tracking_uri, setup_mlflow_run
 
 PipelineType = TypeVar("PipelineType")
@@ -56,6 +56,7 @@ class ModelInference(Generic[PipelineType, DataBuilderType]):
         pipeline, version = load_mlflow_model(registered_model, model_version, tracking_dir)
         if not version.run_id:
             raise ValueError("The registered model version has no source training run.")
+
         config = load_data_builder_config(version.run_id)
         data_builder = cls._build_data_builder(data_dir, config)
         if config.get("split", {}).get("prediction_season") is None:
@@ -67,8 +68,12 @@ class ModelInference(Generic[PipelineType, DataBuilderType]):
             )
 
         return cls(
-            pipeline=pipeline, data_builder=data_builder, tracking_dir=tracking_dir,
-            registered_model=registered_model, model_version=int(version.version), source_run_id=version.run_id,
+            pipeline=pipeline,
+            data_builder=data_builder,
+            tracking_dir=tracking_dir,
+            registered_model=registered_model,
+            model_version=int(version.version),
+            source_run_id=version.run_id,
         )
 
     @staticmethod
@@ -90,18 +95,22 @@ class ModelInference(Generic[PipelineType, DataBuilderType]):
         set_mlflow_tracking_uri(self.tracking_dir)
         source_run = mlflow.get_run(self.source_run_id)
         experiment_name = mlflow.get_experiment(source_run.info.experiment_id).name
+
+        suffix = phase if run_name_suffix is None else run_name_suffix
+        run_name = f"{self.registered_model}_v{self.model_version}_{suffix}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+
         tags = {"phase": phase}
         model_family = self.model_family or source_run.data.tags.get("model_family")
         if model_family:
             tags["model_family"] = model_family
         if model_type := source_run.data.tags.get("model_type"):
             tags["model_type"] = model_type
-        suffix = phase if run_name_suffix is None else run_name_suffix
 
         run_id = setup_mlflow_run(
             experiment_name=experiment_name,
-            run_name=f"{self.registered_model}_v{self.model_version}_{suffix}_{datetime.now().strftime('%Y%m%d%H%M%S')}",
-            tracking_dir=self.tracking_dir, tags=tags,
+            run_name=run_name,
+            tracking_dir=self.tracking_dir,
+            tags=tags,
             params={"source_run_id": self.source_run_id, "model_version": self.model_version},
         )
         mlflow.log_dict(self.config, DATA_BUILDER_CONFIG_ARTIFACT_PATH, run_id=run_id)
@@ -114,11 +123,10 @@ class ModelInference(Generic[PipelineType, DataBuilderType]):
         registered_model: str,
         model_version: int,
         run_id: str,
-        split: str | None = None,
+        split: str = PREDICTION_SPLIT,
     ) -> str:
         """Create a version/run-specific CSV path under the predictions directory."""
         directory = Path(predictions_dir)
         directory.mkdir(parents=True, exist_ok=True)
-        middle = f"{split}_predictions" if split else "predictions"
 
-        return str(directory / f"{registered_model}_v{model_version}_{middle}_{run_id}.csv")
+        return str(directory / f"{registered_model}_v{model_version}_{split}_{run_id}.csv")

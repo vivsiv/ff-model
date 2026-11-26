@@ -75,11 +75,11 @@ def test_setup_mlflow_defaults_or_preserves_run_name_suffix(inference, suffix, e
     log_config.assert_called_once_with(inference.config, "data_prep_config.json", run_id="inference-run")
 
 
-@pytest.mark.parametrize("split, middle", [(None, "predictions"), ("test", "test_predictions")])
-def test_build_predictions_csv_path_creates_directory(tmp_path, split, middle):
+@pytest.mark.parametrize("split", ["prediction", "eval", "test"])
+def test_build_predictions_csv_path_creates_directory(tmp_path, split):
     directory = tmp_path / "predictions"
 
     actual = ModelInference.build_predictions_csv_path(str(directory), "registered_model", 2, "run", split=split)
 
     assert directory.is_dir()
-    assert Path(actual) == directory / f"registered_model_v2_{middle}_run.csv"
+    assert Path(actual) == directory / f"registered_model_v2_{split}_run.csv"

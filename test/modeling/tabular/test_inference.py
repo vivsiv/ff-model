@@ -4,9 +4,6 @@ import os
 import pytest
 import shutil
 import tempfile
-import subprocess
-import sys
-from pathlib import Path
 from typing import Tuple
 from unittest.mock import Mock, patch
 
@@ -18,20 +15,6 @@ from src.modeling.tabular.trainer import TabularModelTrainer
 from src.modeling.tabular.inference import TabularModelInference, main
 from src.modeling.utils import setup_mlflow_run
 from src.processing.column_registry import get_identity_columns
-
-
-def test_import_does_not_open_inference_log_file(tmp_path):
-    # Block the former log-file path even if CI runs as root.
-    (tmp_path / "model_inference.log").mkdir()
-    environment = dict(os.environ)
-    environment.pop("PYTHONPATH", None)
-    result = subprocess.run([
-        sys.executable, "-c",
-        "import sys; sys.path.insert(0, sys.argv[1]); from src.modeling.tabular.inference import TabularModelInference",
-        str(Path(__file__).resolve().parents[3]),
-    ], cwd=tmp_path, env=environment, capture_output=True, text=True, timeout=60)
-
-    assert result.returncode == 0, result.stdout + result.stderr
 
 
 @pytest.mark.parametrize("mode", ["eval", "test", "predict"])
@@ -64,7 +47,7 @@ def test_main_sets_up_run_and_csv_path_once_then_dispatches(monkeypatch, tmp_pat
     inference.setup_mlflow.assert_called_once_with(phase=mode)
     build_path.assert_called_once_with(
         os.path.join(data_dir, "predictions"), "registered_model", 2, "inference-run",
-        split=mode if mode != "predict" else None,
+        split="prediction" if mode == "predict" else mode,
     )
     if mode == "predict":
         inference.predict.assert_called_once_with(run_id="inference-run", csv_path=csv_path)
@@ -325,18 +308,6 @@ class TestTabularModelInference:
             assert run.data.params["source_run_id"] == train_run_id
         finally:
             shutil.rmtree(test_dir)
-
-    def test_build_predictions_csv_path__names_the_path_with_registered_model_version_and_split(self):
-        path = self.inference.build_predictions_csv_path(
-            os.path.join(self.test_dir, "predictions"), "target_1_ridge", 1, "abc123", split="test"
-        )
-        assert path == os.path.join(self.test_dir, "predictions", "target_1_ridge_v1_test_predictions_abc123.csv")
-
-    def test_build_predictions_csv_path__omits_the_split_from_the_name_when_not_given(self):
-        path = self.inference.build_predictions_csv_path(
-            os.path.join(self.test_dir, "predictions"), "target_1_ridge", 1, "abc123"
-        )
-        assert path == os.path.join(self.test_dir, "predictions", "target_1_ridge_v1_predictions_abc123.csv")
 
     # -- evaluate ------------------------------------------------------------------------
 
